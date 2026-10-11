@@ -22,6 +22,11 @@ AirSIM is a source-available, noncommercial cross-device calling and messaging p
 
 **Tags / Topics:** `Samsung Android` · `iPhone` · `Apple Watch` · `CallKit` · `PushKit` · `VoWLAN` · `Android AVF` · `Cloudflare Workers` · `APNs` · `SwiftUI` · `Go`
 
+## Buy Me A Coffee
+<img width="1120" height="1434" alt="05d04c887d99c9df849f81b1cff672dd" src="https://github.com/user-attachments/assets/91620ed1-727e-4a81-9d99-d20d6d55bb58" />
+
+**软件发布后大家的热情太高了，测试服务器的小水管撑不过大家的热情导致超出限额。如果你喜欢本软件，可以支持一下作者**
+
 ## 核心能力
 
 - **跨设备电话**：在 iPhone 或 Apple Watch 上拨号、接听、拒接、挂断、静音并发送 DTMF，由三星 Android 手机完成运营商通话。
