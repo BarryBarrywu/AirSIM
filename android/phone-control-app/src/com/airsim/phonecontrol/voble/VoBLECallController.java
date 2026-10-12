@@ -57,6 +57,23 @@ public final class VoBLECallController {
         return remember(request.requestId, result);
     }
 
+    public synchronized Result executeOnce(
+            Request request, boolean authenticated, Gateway operation) {
+        if (!authenticated) return Result.failure("authentication_failed");
+        if (request == null || request.requestId == null || request.requestId.isBlank()
+                || operation == null) return Result.failure("invalid_request");
+        Result cached = results.get(request.requestId);
+        if (cached != null) return cached;
+        Result result;
+        try {
+            result = operation.execute(request);
+            if (result == null) result = Result.failure("gateway_failed");
+        } catch (RuntimeException error) {
+            result = Result.failure("gateway_failed", error.getClass().getSimpleName());
+        }
+        return remember(request.requestId, result);
+    }
+
     /** Returns true only for the first matching terminal event. */
     public synchronized boolean observeCall(String callId, long generation, String state) {
         if (callId == null || callId.isBlank() || generation <= 0) return false;
@@ -75,6 +92,10 @@ public final class VoBLECallController {
     }
 
     public synchronized long currentGeneration() { return currentGeneration; }
+
+    public synchronized boolean ownsCall(String callId, long generation) {
+        return callId != null && callId.equals(currentCallId) && generation == currentGeneration;
+    }
 
     private Result remember(String requestId, Result result) {
         results.put(requestId, result);

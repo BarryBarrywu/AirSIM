@@ -15,12 +15,16 @@ import android.os.IBinder;
 import android.telecom.TelecomManager;
 
 import com.airsim.phonecontrol.AndroidAgentIdentity;
+import com.airsim.phonecontrol.AppConfig;
 import com.airsim.phonecontrol.BridgeLog;
 import com.airsim.phonecontrol.CallRepository;
+import com.airsim.phonecontrol.RuntimeMode;
 
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
@@ -39,6 +43,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             String deviceId, byte[] sessionId, String callId, long generation) {}
 
     private final ExecutorService controlQueue = Executors.newSingleThreadExecutor();
+    private final ExecutorService mediaQueue = Executors.newSingleThreadExecutor();
     private final VoBLEControlChannel channel = new VoBLEControlChannel();
     private final AtomicLong generations = new AtomicLong();
     private final Map<String, Long> callGenerations = new ConcurrentHashMap<>();
@@ -47,6 +52,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     private VoBLEPairingManager pairingManager;
     private VoBLEGattServer gatt;
     private VoBLECallController calls;
+    private VoBLEMediaSession media;
+    private VoBLEMediaSession.Identity mediaIdentity;
     private volatile SessionContext session;
 
     public static void start(Context context) {
@@ -166,12 +173,29 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             if (!valid) throw new SecurityException("control authentication failed");
             String requestId = body.getString("request_id");
             String action = normalizeAction(envelope.command());
+            session = new SessionContext(deviceId, envelope.sessionId(),
+                    envelope.callId(), envelope.generation());
             VoBLECallController.Request request = new VoBLECallController.Request(
                     requestId, action, envelope.callId(), body.optString("number", ""),
                     envelope.generation());
-            VoBLECallController.Result result = calls.execute(request, true);
-            session = new SessionContext(deviceId, envelope.sessionId(),
-                    envelope.callId(), envelope.generation());
+            VoBLECallController.Result result;
+            if ("ping".equals(action)) {
+                result = calls.executeOnce(request, true,
+                        ignored -> VoBLECallController.Result.success("ready"));
+            } else if ("start_media".equals(action)) {
+                result = calls.executeOnce(request, true,
+                        ignored -> startMedia(deviceId, identity, envelope));
+            } else if ("stop_media".equals(action)) {
+                result = calls.executeOnce(request, true, ignored -> {
+                    if (!calls.ownsCall(envelope.callId(), envelope.generation())) {
+                        return VoBLECallController.Result.failure("call_mismatch");
+                    }
+                    stopMedia(envelope.callId(), envelope.generation());
+                    return VoBLECallController.Result.success("stopped");
+                });
+            } else {
+                result = calls.execute(request, true);
+            }
             sendControl(deviceId, envelope.sessionId(), envelope.callId(), envelope.generation(),
                     "response", new JSONObject().put("request_id", requestId)
                             .put("ok", result.success()).put("code", result.code())
@@ -183,14 +207,25 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     }
 
     @Override public void onAudioWrite(String deviceId, byte[] value) {
-        // Task 5 owns PCM startup and media forwarding. Reject non-owner traffic now.
-        if (!channel.owns(deviceId)) BridgeLog.info("voble_audio_rejected_unowned_peer");
+        mediaQueue.execute(() -> {
+            VoBLEMediaSession active = media;
+            VoBLEMediaSession.Identity identity = mediaIdentity;
+            if (!channel.owns(deviceId) || active == null || identity == null
+                    || !active.onUplinkFragment(identity, value)) {
+                BridgeLog.info("voble_audio_rejected_unowned_or_stale");
+            }
+        });
     }
 
     @Override public void onDisconnected(String deviceId) {
-        peerIdentities.remove(deviceId);
-        SessionContext value = session;
-        if (value != null && value.deviceId.equals(deviceId)) session = null;
+        controlQueue.execute(() -> {
+            peerIdentities.remove(deviceId);
+            SessionContext value = session;
+            if (value != null && value.deviceId.equals(deviceId)) {
+                session = null;
+                stopMedia("", 0);
+            }
+        });
     }
 
     private void publishCallState(String callId, String direction, String state, String number) {
@@ -215,6 +250,57 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             }
         }
         if (terminal) callGenerations.remove(callId);
+        if (terminal) stopMedia(callId, generation);
+    }
+
+    private VoBLECallController.Result startMedia(
+            String deviceId, String peerIdentity, VoBLEProtocol.ControlEnvelope envelope) {
+        if (!calls.ownsCall(envelope.callId(), envelope.generation())) {
+            return VoBLECallController.Result.failure("call_mismatch");
+        }
+        try {
+            InetSocketAddress endpoint;
+            if (RuntimeMode.isStandalone(this)) {
+                endpoint = VoBLEPCMBackendResolver.resolve(
+                        VoBLEPCMBackendResolver.Runtime.STANDALONE, "");
+            } else {
+                String host = URI.create(AppConfig.endpoint(this)).getHost();
+                endpoint = VoBLEPCMBackendResolver.resolve(
+                        VoBLEPCMBackendResolver.Runtime.AVF, host);
+            }
+            VoBLEPairingManager.SessionKeys keys = pairingManager.storedSessionKeys(
+                    peerIdentity, envelope.sessionId(), envelope.callId(), envelope.generation());
+            byte[] mediaKey = keys.media();
+            try {
+                stopMedia("", 0);
+                VoBLEMediaSession next = new VoBLEMediaSession(
+                        endpoint,
+                        address -> VoBLEPCMBridgeSession.open(
+                                address, VoBLEPCMBridgeSession.socketConnector()),
+                        packet -> gatt.notifyAudioPacket(deviceId, packet));
+                VoBLEMediaSession.Identity identity = new VoBLEMediaSession.Identity(
+                        envelope.callId(), envelope.generation());
+                next.start(identity, mediaKey);
+                media = next;
+                mediaIdentity = identity;
+                return VoBLECallController.Result.success("media_ready");
+            } finally {
+                Arrays.fill(mediaKey, (byte) 0);
+            }
+        } catch (Exception error) {
+            BridgeLog.error("voble_media_start_failed", error);
+            return VoBLECallController.Result.failure("pcm_unavailable", error.getClass().getSimpleName());
+        }
+    }
+
+    private void stopMedia(String callId, long generation) {
+        VoBLEMediaSession.Identity identity = mediaIdentity;
+        if (identity != null && callId != null && !callId.isEmpty()
+                && (!identity.callId().equals(callId) || identity.generation() != generation)) return;
+        VoBLEMediaSession active = media;
+        media = null;
+        mediaIdentity = null;
+        if (active != null) active.close();
     }
 
     private void sendControl(
@@ -276,6 +362,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     @Override public void onDestroy() {
         instance = null;
         controlQueue.shutdownNow();
+        mediaQueue.shutdownNow();
+        stopMedia("", 0);
         if (gatt != null) gatt.close();
         super.onDestroy();
     }

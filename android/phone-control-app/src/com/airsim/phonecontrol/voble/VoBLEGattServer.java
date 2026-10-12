@@ -56,6 +56,7 @@ public final class VoBLEGattServer implements AutoCloseable {
     private final Map<String, Integer> negotiatedMtus = new ConcurrentHashMap<>();
     private final Map<String, ArrayDeque<Outbound>> outbound = new ConcurrentHashMap<>();
     private final Set<String> sending = new HashSet<>();
+    private final Set<String> notificationFailures = new HashSet<>();
     private final Map<String, VoBLEProtocol.MessageReassembler> inbound = new ConcurrentHashMap<>();
     private final AtomicInteger messageIds = new AtomicInteger();
     private BluetoothAdapter adapter;
@@ -121,6 +122,19 @@ public final class VoBLEGattServer implements AutoCloseable {
     @SuppressLint("MissingPermission")
     public boolean notifyAudio(String deviceId, byte[] value) {
         return channel.isAudioSubscribed(deviceId) && enqueue(deviceId, audioDownlink, List.of(value), false);
+    }
+
+    @SuppressLint("MissingPermission")
+    public synchronized boolean notifyAudioPacket(
+            String deviceId, VoBLEProtocol.AudioPacket packet) {
+        if (!channel.isAudioSubscribed(deviceId) || !devices.containsKey(deviceId)) return false;
+        if (notificationFailures.remove(deviceId)) return false;
+        ArrayDeque<Outbound> queue = outbound.get(deviceId);
+        if (queue != null && queue.stream().anyMatch(
+                value -> value.characteristic == audioDownlink)) return false;
+        int packetLength = Math.max(23, negotiatedMtus.getOrDefault(deviceId, 23) - 3);
+        List<byte[]> fragments = VoBLEProtocol.encodeAudioFragments(packet, packetLength);
+        return enqueue(deviceId, audioDownlink, fragments, false);
     }
 
     @SuppressLint("MissingPermission")
@@ -278,8 +292,13 @@ public final class VoBLEGattServer implements AutoCloseable {
             String id = device.getAddress();
             synchronized (VoBLEGattServer.this) {
                 ArrayDeque<Outbound> queue = outbound.get(id);
-                if (queue != null) queue.poll();
+                Outbound completed = queue == null ? null : queue.poll();
                 if (status != BluetoothGatt.GATT_SUCCESS) {
+                    if (queue != null && completed != null) {
+                        BluetoothGattCharacteristic characteristic = completed.characteristic;
+                        if (characteristic == audioDownlink) notificationFailures.add(id);
+                        queue.removeIf(value -> value.characteristic == characteristic);
+                    }
                     sending.remove(id);
                     return;
                 }
@@ -337,5 +356,6 @@ public final class VoBLEGattServer implements AutoCloseable {
         outbound.clear();
         inbound.clear();
         sending.clear();
+        notificationFailures.clear();
     }
 }

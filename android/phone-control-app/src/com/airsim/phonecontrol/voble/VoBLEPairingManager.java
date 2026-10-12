@@ -230,6 +230,18 @@ public final class VoBLEPairingManager {
         }
     }
 
+    public SessionKeys storedSessionKeys(
+            String identity, byte[] sessionId, String callId, long generation)
+            throws GeneralSecurityException {
+        byte[] pairingKey = credentials.load(identity);
+        if (pairingKey == null) throw new GeneralSecurityException("peer is not paired");
+        try {
+            return deriveSessionKeys(pairingKey, sessionId, callId, generation);
+        } finally {
+            Arrays.fill(pairingKey, (byte) 0);
+        }
+    }
+
     private static byte[] authenticationMessage(byte[] nonce, long timestamp, byte[] message) {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         writeField(output, nonce);

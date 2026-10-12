@@ -5,6 +5,7 @@ public final class CoreTests {
 		assertVoBLEAudioVectorAndBounds();
 		assertVoBLEPairingAndReplay();
 		assertVoBLEControlOwnershipAndCallDeduplication();
+		assertVoBLEPCMResolutionHandshakeAndMediaCrypto();
 		assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry();
 		assertMutedCallRecoversAfterThreeTransientAudioFailures();
 		assertLiveStatusPollerUpdatesWithoutRebuildingPage();
@@ -658,6 +659,7 @@ public final class CoreTests {
 		}
 		assertEquals(8, queue.size());
 		assertEquals(2L, queue.poll().sequence());
+		assertEquals(1L, queue.droppedFrames());
 		assertTrue(queue.consumeDiscontinuity());
 		assertTrue(!queue.consumeDiscontinuity());
 
@@ -794,6 +796,147 @@ public final class CoreTests {
 		assertEquals(1, calls.get());
 		assertTrue(controller.observeCall("call-1", 7, "ended"));
 		assertTrue(!controller.observeCall("call-1", 7, "ended"));
+		java.util.concurrent.atomic.AtomicInteger mediaStarts = new java.util.concurrent.atomic.AtomicInteger();
+		var mediaRequest = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"media-1", "start_media", "call-1", "", 7);
+		controller.executeOnce(mediaRequest, true, ignored -> {
+			mediaStarts.incrementAndGet();
+			return com.airsim.phonecontrol.voble.VoBLECallController.Result.success("media_ready");
+		});
+		controller.executeOnce(mediaRequest, true, ignored -> {
+			mediaStarts.incrementAndGet();
+			return com.airsim.phonecontrol.voble.VoBLECallController.Result.success("media_ready");
+		});
+		assertEquals(1, mediaStarts.get());
+	}
+
+	private static void assertVoBLEPCMResolutionHandshakeAndMediaCrypto() throws Exception {
+		var standalone = com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.resolve(
+				com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.Runtime.STANDALONE, "");
+		assertEquals("127.0.0.1", standalone.getAddress().getHostAddress());
+		assertEquals(7580, standalone.getPort());
+		var avf = com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.resolve(
+				com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.Runtime.AVF, "10.185.5.25");
+		assertEquals("10.185.5.25", avf.getAddress().getHostAddress());
+		try {
+			com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.resolve(
+					com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.Runtime.AVF, "");
+			throw new AssertionError("missing AVF address must fail closed");
+		} catch (IllegalArgumentException expected) {}
+
+		java.io.ByteArrayOutputStream hello = new java.io.ByteArrayOutputStream();
+		var bridge = com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.open(
+				standalone, endpoint -> new com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.Duplex() {
+					@Override public java.io.InputStream input() {
+						return new java.io.ByteArrayInputStream("AIRSIMREADY".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+					}
+					@Override public java.io.OutputStream output() { return hello; }
+					@Override public void close() {}
+				});
+		assertEquals("AIRSIMPCM1\n", hello.toString(java.nio.charset.StandardCharsets.US_ASCII));
+		assertTrue(bridge.ready());
+		bridge.close();
+		try {
+			com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.open(
+					standalone, endpoint -> new com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.Duplex() {
+						@Override public java.io.InputStream input() { return new java.io.ByteArrayInputStream("BAD".getBytes()); }
+						@Override public java.io.OutputStream output() { return java.io.OutputStream.nullOutputStream(); }
+						@Override public void close() {}
+					});
+			throw new AssertionError("AIRSIMREADY is required");
+		} catch (java.io.IOException expected) {}
+
+		byte[] pcm = new byte[320];
+		for (int index = 0; index < 160; index++) {
+			short sample = (short) ((index - 80) * 300);
+			pcm[index * 2] = (byte) sample;
+			pcm[index * 2 + 1] = (byte) (sample >>> 8);
+		}
+		byte[] ulaw = com.airsim.phonecontrol.voble.VoBLEMediaSession.encodeMuLaw(pcm);
+		assertEquals(160, ulaw.length);
+		assertEquals(320, com.airsim.phonecontrol.voble.VoBLEMediaSession.decodeMuLaw(ulaw).length);
+		byte[] key = filledBytes(32, 7);
+		var encrypted = com.airsim.phonecontrol.voble.VoBLEMediaSession.encrypt(
+				ulaw, key, true, 3, 9, 1_440);
+		assertTrue(java.util.Arrays.equals(ulaw,
+				com.airsim.phonecontrol.voble.VoBLEMediaSession.decrypt(
+						encrypted, key, true, 3, 9, 1_440)));
+		try {
+			com.airsim.phonecontrol.voble.VoBLEMediaSession.decrypt(
+					encrypted, filledBytes(32, 8), true, 3, 9, 1_440);
+			throw new AssertionError("wrong media key must fail");
+		} catch (java.security.GeneralSecurityException expected) {}
+
+		class BlockingDuplex implements com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.Duplex {
+			final byte[] ready = "AIRSIMREADY".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+			final java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+			int offset;
+			boolean closed;
+			final java.io.InputStream input = new java.io.InputStream() {
+				@Override public synchronized int read() throws java.io.IOException {
+					if (offset < ready.length) return ready[offset++] & 0xff;
+					while (!closed) try { wait(); }
+					catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new java.io.IOException(error); }
+					return -1;
+				}
+			};
+			@Override public java.io.InputStream input() { return input; }
+			@Override public java.io.OutputStream output() { return output; }
+			@Override public void close() {
+				closed = true;
+				synchronized (input) { input.notifyAll(); }
+			}
+		}
+		BlockingDuplex duplex = new BlockingDuplex();
+		var identity = new com.airsim.phonecontrol.voble.VoBLEMediaSession.Identity("call-media", 3);
+		var media = new com.airsim.phonecontrol.voble.VoBLEMediaSession(
+				standalone,
+				endpoint -> com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.open(endpoint, ignored -> duplex),
+				packet -> true);
+		assertTrue(!media.onUplinkFragment(identity, new byte[]{1}));
+		media.start(identity, key);
+		assertTrue(media.ready());
+		var uplinkEncrypted = com.airsim.phonecontrol.voble.VoBLEMediaSession.encrypt(
+				ulaw, key, true, 3, 10, 1_600);
+		var uplinkPacket = new com.airsim.phonecontrol.voble.VoBLEProtocol.AudioPacket(
+				0, com.airsim.phonecontrol.voble.VoBLEProtocol.CODEC_G711_MULAW,
+				3, 10, 1_600, uplinkEncrypted.payload(), uplinkEncrypted.authenticationTag());
+		for (byte[] fragment : com.airsim.phonecontrol.voble.VoBLEProtocol.encodeAudioFragments(
+				uplinkPacket, 247)) assertTrue(media.onUplinkFragment(identity, fragment));
+		boolean duplicateAccepted = true;
+		for (byte[] fragment : com.airsim.phonecontrol.voble.VoBLEProtocol.encodeAudioFragments(
+				uplinkPacket, 247)) duplicateAccepted = media.onUplinkFragment(identity, fragment);
+		assertTrue(!duplicateAccepted);
+		long deadline = System.currentTimeMillis() + 1_000;
+		while (duplex.output.size() < "AIRSIMPCM1\n".length() + 320
+				&& System.currentTimeMillis() < deadline) Thread.sleep(5);
+		assertTrue(duplex.output.size() >= "AIRSIMPCM1\n".length() + 320);
+		media.stop();
+		assertTrue(duplex.closed);
+		assertTrue(!media.ready());
+
+		byte[] readyAndPCM = new byte["AIRSIMREADY".length() + 320];
+		System.arraycopy("AIRSIMREADY".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+				0, readyAndPCM, 0, "AIRSIMREADY".length());
+		java.util.concurrent.atomic.AtomicInteger notificationAttempts =
+				new java.util.concurrent.atomic.AtomicInteger();
+		var retryMedia = new com.airsim.phonecontrol.voble.VoBLEMediaSession(
+				standalone,
+				endpoint -> com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.open(endpoint, ignored ->
+						new com.airsim.phonecontrol.voble.VoBLEPCMBridgeSession.Duplex() {
+							@Override public java.io.InputStream input() { return new java.io.ByteArrayInputStream(readyAndPCM); }
+							@Override public java.io.OutputStream output() { return java.io.OutputStream.nullOutputStream(); }
+							@Override public void close() {}
+						}),
+				packet -> { notificationAttempts.incrementAndGet(); return false; });
+		retryMedia.start(new com.airsim.phonecontrol.voble.VoBLEMediaSession.Identity("call-retry", 4), key);
+		deadline = System.currentTimeMillis() + 1_000;
+		while (retryMedia.stats().droppedFrames() == 0 && System.currentTimeMillis() < deadline) {
+			Thread.sleep(5);
+		}
+		assertTrue(notificationAttempts.get() > 1);
+		assertTrue(retryMedia.stats().droppedFrames() >= 1);
+		retryMedia.stop();
 	}
 
 	private static byte[] filledBytes(int count, int value) {

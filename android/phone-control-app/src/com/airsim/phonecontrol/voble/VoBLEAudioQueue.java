@@ -11,6 +11,7 @@ public final class VoBLEAudioQueue {
     private final int capacity;
     private final ArrayDeque<Frame> frames = new ArrayDeque<>();
     private boolean discontinuity;
+    private long droppedFrames;
 
     public VoBLEAudioQueue(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("capacity must be positive");
@@ -22,6 +23,7 @@ public final class VoBLEAudioQueue {
         if (frames.size() == capacity) {
             frames.removeFirst();
             discontinuity = true;
+            droppedFrames++;
         }
         frames.addLast(new Frame(sequence, payload));
     }
@@ -33,6 +35,8 @@ public final class VoBLEAudioQueue {
     public synchronized int size() {
         return frames.size();
     }
+
+    public synchronized long droppedFrames() { return droppedFrames; }
 
     public synchronized void clear() {
         frames.clear();
