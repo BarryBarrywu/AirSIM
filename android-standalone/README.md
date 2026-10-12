@@ -10,6 +10,7 @@ Standalone 复用 [`android/phone-control-app`](../android/phone-control-app/REA
 - Android Telecom 拨号、接听、拒接、挂断、DTMF 和系统短信发送；
 - 来电 Push、通话生命周期以及单路云端 PCM 媒体编排；
 - VoWLAN 本地控制和 PCM 链路；
+- VoBLE 蓝牙本地控制和加密 G.711 μ-law 双向音频链路；
 - 原 Agent `/api/health`、`/api/android/status`、通话和音频配置接口的进程内兼容层；
 - 小米 HyperOS 默认电话角色引导，以及在系统角色界面不可用时通过已授权 Shizuku 设置默认电话 App；
 - 非三星设备通过 Android `TYPE_TELEPHONY` 音频设备选择通话上下行，三星设备继续使用其语音 TX 路由。
@@ -21,7 +22,7 @@ VoWLAN 的 `/api/calls/answer`、`/api/calls/reject`、`/api/calls/hangup` 接�
 
 ```text
 iPhone / Apple Watch
-        │  VoWLAN 或 Cloudflare Relay
+        │  VoWLAN、VoBLE 或 Cloudflare Relay
         ▼
 AirSIM Android Standalone APK
         ├─ 内置 Agent：身份、心跳、命令和媒体编排
@@ -68,6 +69,19 @@ AIRSIM_ANDROID_KEY_PASSWORD='从 Secret Store 注入' \
 4. 在 Android 页面填写自己的 Relay 地址、设备标识与配对资料；使用自己的 Apple Bundle ID 时，Relay 的 `ALLOWED_BUNDLE_ID` 和 APNs topic 必须一致。
 5. iPhone 与 Android 在同一热点或局域网时优先验证 VoWLAN；随后再验证 Relay 远程模式。
 
+### 配置 VoBLE 蓝牙模式
+
+VoBLE 是设置中的独立模式，不要求先建立 VoWLAN，也不会改变已有 VoWLAN/Relay 配置：
+
+1. Android 保持 AirSIM Standalone 为默认电话 App，授予附近设备/蓝牙与通知权限，并确认 Shizuku PCM 音频桥显示运行中。
+2. 在 Android 状态页启用 VoBLE；在 iPhone AirSIM 设置中选择“蓝牙直连”，扫描并选择目标 Android。
+3. 两端核对同一个短码后确认配对。长期密钥仅保存在 Android Keystore 和 iOS Keychain，不应截图、记录或写入日志。
+4. 配对完成后先做一通拨出和一通呼入，分别检查接听、拒接、挂断、静音、扬声器和 DTMF，再检查双向音频。
+
+蓝牙模式通过 BLE GATT 传送控制与 G.711 μ-law 8 kHz 单声道音频，帧使用 AES-256-GCM 认证加密。它不使用 Relay、PushKit 或云端注册参数，也不提供 Bluetooth PAN 网络共享；iPhone 的互联网连接需要单独配置。Android PCM 桥、默认电话角色和系统 Telecom 仍是必需条件。三秒内的短暂断链只恢复同一 `call_id`/generation，超过三秒会结束本次媒体会话，防止旧包进入下一通电话。
+
+iOS 被用户强制退出后不保证后台 BLE 来电唤醒；重新打开 AirSIM 后会恢复扫描。Apple Watch 由 iPhone 的 CallKit/WatchConnectivity 镜像来电与控制状态，不直接连接 Android BLE，音频能否切到手表取决于 iPhone/watchOS 的系统路由。
+
 锁屏来电使用独立的高优先级「AirSIM 来电」通知渠道；Android 14 及以上若系统关闭了该 App 的全屏来电权限，可能只显示可操作的横幅通知。此权限由系统/用户控制，App 不能绕过。请在目标设备上分别实测锁屏接听、拒接、挂断以及 iPhone 端音频路径。
 
 无线调试安装示例：
@@ -94,6 +108,9 @@ adb install -r android-standalone/build/android/AirSIM-Android-Standalone-debug.
 - Android 与 iPhone 双向通话音频都从预期设备输出，没有回到小米本机听筒；
 - 短信发送结果以 Android 系统回执为准，并由收件方确认实际收到；
 - 分别测试同网 VoWLAN 与异网 Relay，通话中不切换传输路径。
+- 单独选择 VoBLE 后关闭 Wi-Fi，确认拨出、呼入和双向音频不访问 Relay；再验证三秒内同通话恢复和超时终止。
+
+完整项目级结果、未连接设备和失败场景记录在 [VoBLE 真机测试矩阵](../docs/voble-real-device-test-matrix.md)。
 
 ## 安全边界
 

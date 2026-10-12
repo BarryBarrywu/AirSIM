@@ -37,6 +37,7 @@ https://t.me/+TRDazm-qnXlhNGRl
 - **跨设备短信**：同步短信状态、发送短信并通过 APNs 通知 Apple 客户端。
 - **CallKit 与 PushKit**：在 iPhone 上呈现系统来电界面，并支持 VoIP push 唤醒与来电上报。
 - **VoWLAN 本地直连**：iPhone 与三星手机处于同一局域网或三星热点时，使用经过 HMAC 认证的控制与 PCM 链路。
+- **VoBLE 蓝牙直连（VoBLE 分支）**：把蓝牙作为设置中的独立连接模式；不依赖 Wi-Fi、Relay、PushKit 或云端参数，通过认证 BLE GATT 通道承载电话控制和双向通话音频。
 - **单 APK Android 端**：内置 Agent 与 Bridge，安装后不再依赖 AVF Linux、Terminal、Debian 或 installer。
 - **云端 Relay**：通过独立部署的 Cloudflare Worker、KV 与 Durable Objects 连接 Android 内置 Agent 和 Apple 客户端。
 - **可观察的模式与自检**：Android 首页和 iOS 设置页显示当前 VoWLAN / 云端状态；iOS 可依次验证 Push 凭据、AirSIM Relay 身份、设备注册和 AVF Agent 90 秒心跳。
@@ -49,7 +50,7 @@ https://t.me/+TRDazm-qnXlhNGRl
 
 ```text
 iPhone / Apple Watch
-        │  VoWLAN 或 Cloudflare Relay
+        │  VoWLAN、VoBLE 或 Cloudflare Relay
         ▼
 Android AirSIM Standalone APK
         ├─ 内置 Agent：身份、心跳、命令和媒体编排
@@ -63,6 +64,14 @@ Android AirSIM Standalone APK
 
 每通电话在建立时选择 VoWLAN 或 Relay，并在本次通话结束前保持同一传输路径，避免媒体和控制面在通话中途漂移。
 
+### VoBLE 蓝牙模式
+
+VoBLE 是与 VoWLAN、云端 Relay 并列的模式选项，不是现有 Wi-Fi 链路的必需组件。选择“蓝牙直连”后，iPhone 与 Android 使用一次性短码确认的临时密钥完成配对，控制消息和 G.711 μ-law 8 kHz 单声道音频均使用 AES-256-GCM 认证加密；通话期间绑定同一个 `call_id` 和 generation，避免重连后误操作另一通电话。短暂断链只允许在三秒内、同一通电话和同一 generation 上恢复。
+
+蓝牙模式只传送 AirSIM 控制与通话音频，**不会把 Android 的移动网络通过 Bluetooth PAN 共享给 iPhone**。需要上网时仍应单独使用 Android 热点、Wi-Fi 或 iPhone 自身蜂窝网络。iOS 端继续使用 CallKit 展示和管理通话，但本地蓝牙模式不需要 PushKit 或 Relay；App 被用户强制退出后，iOS 不保证 BLE 后台唤醒，来电前应重新打开 AirSIM。Apple Watch 可镜像 iPhone 的 CallKit 来电和控制状态，实际音频路由仍由 iPhone/watchOS 系统决定，并不是 Watch 直接连接 Android BLE。
+
+实现与验收边界见 [VoBLE 设计](docs/superpowers/specs/2026-10-12-voble-bluetooth-call-design.md) 和 [VoBLE 真机测试矩阵](docs/voble-real-device-test-matrix.md)。
+
 ## 仓库结构
 
 | 目录 | 组件 | 主要职责 |
@@ -75,7 +84,7 @@ Android AirSIM Standalone APK
 | [`module/packaging`](module/packaging/README.md) | AVF Debian 发布 | 构建单一 `arm64` 包、systemd 单元和首次安装脚本 |
 | [`iOS`](iOS/README.md) | iPhone / Apple Watch App | CallKit、PushKit、VoWLAN、短信、实时活动与通话媒体 |
 | [`push-relay-worker`](push-relay-worker/README.md) | Cloudflare Relay | 设备注册、APNs、云端命令、Dashboard 与公网媒体 |
-| [`docs`](docs) | 协议与设计文档 | VoWLAN 设计、三星热点配对协议与安全边界 |
+| [`docs`](docs) | 协议与设计文档 | VoWLAN / VoBLE 设计、三星热点配对协议与安全边界 |
 
 ## 快速开始
 
@@ -194,6 +203,7 @@ AirSIM 不附带原作者的 Apple Developer Team、App ID、证书或 provision
 | [iOS 与 watchOS](iOS/README.md) | Xcode、Bundle ID、Apple 签名、CallKit、PushKit 与真机测试 |
 | [Cloudflare Relay](push-relay-worker/README.md) | Wrangler、KV、Durable Objects、APNs、Secret 与自定义域名 |
 | [VoWLAN 设计](docs/2026-09-11-vowlan-design.md) | 本地传输设计与协议边界 |
+| [VoBLE 真机测试矩阵](docs/voble-real-device-test-matrix.md) | 蓝牙模式配置、自动化结果、设备矩阵与尚未完成的硬件验收 |
 | [三星热点配对协议](docs/samsung-hotspot-pairing-protocol.md) | 配对、密钥派生、HMAC 与防重放 |
 | [Codex 部署辅助](codex.md) | 面向 Codex 的全项目构建、验证与部署规则 |
 | [Claude 部署辅助](claude.md) | 面向 Claude 的全项目操作顺序与安全约束 |

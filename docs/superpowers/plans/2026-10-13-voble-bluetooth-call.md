@@ -47,7 +47,7 @@
 - Produces: `AirSIMConnectionMode`, `ConnectionModePreference.selected(defaults:)`, `ConnectionModeRuntimePolicy`.
 - Consumes: existing `LocalModePreference`, `CloudModePreference`, VoWLAN browsing, PushKit registration, and background standby entry points.
 
-- [ ] **Step 1: Add failing mode-policy tests**
+- [x] **Step 1: Add failing mode-policy tests**
 
 ```swift
 func testExplicitBluetoothModeDisablesUnrelatedLifecycles() {
@@ -66,7 +66,7 @@ func testOnlyAutomaticAllowsCrossModeSelection() {
 }
 ```
 
-- [ ] **Step 2: Run the focused XCTest target and verify the new symbols fail to compile**
+- [x] **Step 2: Run the focused XCTest target and verify the new symbols fail to compile**
 
 Run:
 
@@ -78,7 +78,7 @@ xcodebuild test -project iOS/AirSIM.xcodeproj -scheme AirSIM \
 
 Expected: failure because `ConnectionModeRuntimePolicy` is undefined.
 
-- [ ] **Step 3: Implement the mode preference and pure runtime policy**
+- [x] **Step 3: Implement the mode preference and pure runtime policy**
 
 ```swift
 enum AirSIMConnectionMode: String, Codable, CaseIterable, Sendable {
@@ -96,11 +96,11 @@ struct ConnectionModeRuntimePolicy: Equatable, Sendable {
 
 Rename the current online presentation enum so it cannot be confused with the persisted selection. Convert the existing local/cloud toggles into compatibility accessors backed by the selected mode. Add a four-option settings picker and route lifecycle start/stop through the pure policy.
 
-- [ ] **Step 4: Run XCTest and verify all existing local/cloud compatibility tests pass**
+- [x] **Step 4: Run XCTest and verify all existing local/cloud compatibility tests pass**
 
 Run the command from Step 2. Expected: PASS.
 
-- [ ] **Step 5: Commit only mode-owned paths**
+- [x] **Step 5: Commit only mode-owned paths**
 
 ```bash
 git add iOS/AirSIM/ConnectionModePreference.swift iOS/AirSIM/VoIPPushController.swift \
@@ -125,7 +125,7 @@ git commit -m "feat: add isolated AirSIM connection modes"
 - Produces: `VoBLEControlEnvelope`, `VoBLEAudioPacket`, `VoBLEAudioReassembler`, Java `VoBLEProtocol.ControlEnvelope`, `AudioHeader`, and bounded queue behavior.
 - Consumes: call ID, generation, session ID, and HMAC/AEAD byte arrays supplied by pairing tasks.
 
-- [ ] **Step 1: Add cross-language protocol-vector tests**
+- [x] **Step 1: Add cross-language protocol-vector tests**
 
 Use this fixed audio vector in Swift and Java tests:
 
@@ -136,7 +136,7 @@ fragment=0/1 codec=g711 payload=00 7f 80 ff
 
 Assert encoded header fields, payload length, and round-trip equality. Add MTU 23, 185, and 247 fragmentation tests and an eight-frame bounded queue test that drops sequence 1 when sequence 9 arrives.
 
-- [ ] **Step 2: Run XCTest and JVM tests and verify missing protocol types fail**
+- [x] **Step 2: Run XCTest and JVM tests and verify missing protocol types fail**
 
 ```bash
 ./android/phone-control-app/test.sh
@@ -145,15 +145,15 @@ xcodebuild test -project iOS/AirSIM.xcodeproj -scheme AirSIM \
   -only-testing:AirSIMTests
 ```
 
-- [ ] **Step 3: Implement exact big-endian framing, validation, fragmentation, reassembly, and queue bounds**
+- [x] **Step 3: Implement exact big-endian framing, validation, fragmentation, reassembly, and queue bounds**
 
 Reject bad magic/version, payload length beyond the packet, fragment index at or above count, more than 64 fragments, and completed payloads above 512 bytes. Expire incomplete frames after 200 ms. Mark discontinuity after overflow or expiration.
 
-- [ ] **Step 4: Run both suites and verify vectors match**
+- [x] **Step 4: Run both suites and verify vectors match**
 
 Expected: PASS with identical serialized bytes in Swift and Java.
 
-- [ ] **Step 5: Commit protocol paths**
+- [x] **Step 5: Commit protocol paths**
 
 ```bash
 git add iOS/AirSIM/VoBLEProtocol.swift iOS/AirSIM.xcodeproj/project.pbxproj \
@@ -179,21 +179,21 @@ git commit -m "feat: define VoBLE control and audio protocol"
 - Produces: `VoBLEPairingStore`, `VoBLESessionAuthenticator`, `VoBLEPairingManager.begin/confirm/authenticate`, derived control/media keys.
 - Consumes: peer identity, ephemeral Curve25519 public keys, transcript nonces, Android protected preferences, iOS Keychain.
 
-- [ ] **Step 1: Add deterministic cryptographic transcript tests**
+- [x] **Step 1: Add deterministic cryptographic transcript tests**
 
 Use fixed private keys and nonces to assert both languages derive the same 32-byte pairing key and six-digit SAS. Add wrong-key, modified-transcript, duplicate-nonce, expired timestamp, revoked-peer, and reconnect-session key-separation tests.
 
-- [ ] **Step 2: Run tests and verify pairing APIs are absent**
+- [x] **Step 2: Run tests and verify pairing APIs are absent**
 
 Use both commands from Task 2 Step 2. Expected: FAIL.
 
-- [ ] **Step 3: Implement X25519, HKDF-SHA256, transcript confirmation, secure persistence, and replay window**
+- [x] **Step 3: Implement X25519, HKDF-SHA256, transcript confirmation, secure persistence, and replay window**
 
 The transcript is length-prefixed protocol version, Android identity, both public keys, and both 32-byte nonces. Derive labeled keys `pairing`, `control`, `media`, and `reconnect`. Store no ephemeral private key after confirmation. Redact all key material from descriptions and logs.
 
-- [ ] **Step 4: Run both suites and verify all negative authentication cases pass**
+- [x] **Step 4: Run both suites and verify all negative authentication cases pass**
 
-- [ ] **Step 5: Commit pairing paths**
+- [x] **Step 5: Commit pairing paths**
 
 ```bash
 git add iOS/AirSIM/VoBLEPairing.swift iOS/AirSIM.xcodeproj/project.pbxproj \
@@ -219,21 +219,21 @@ git commit -m "feat: add authenticated VoBLE pairing"
 - Produces: the AirSIM BLE service, independent CCCD state, authenticated command dispatch, and call-state indications.
 - Consumes: Task 2 framing, Task 3 authentication, existing `AgentClient`, `StandaloneAgentGateway`, and call repository events.
 
-- [ ] **Step 1: Add pure call-controller and subscription tests**
+- [x] **Step 1: Add pure call-controller and subscription tests**
 
 Assert unauthenticated health cannot become ready, wrong-key dial returns authentication failure, duplicate request ID invokes the fake call gateway once, stale generation is rejected, audio CCCD removal preserves control, and matching `ended` emits once.
 
-- [ ] **Step 2: Run JVM tests and verify failures**
+- [x] **Step 2: Run JVM tests and verify failures**
 
 ```bash
 ./android/phone-control-app/test.sh
 ```
 
-- [ ] **Step 3: Implement foreground service, GATT database, serialized control queue, and call-controller adapter**
+- [x] **Step 3: Implement foreground service, GATT database, serialized control queue, and call-controller adapter**
 
 Use `BLUETOOTH_ADVERTISE`, `BLUETOOTH_CONNECT`, and foreground connected-device permissions appropriate to API 31+. Control RX uses writes with response; Control TX uses indications. Bind one active authenticated central and reject media/control ownership from another central.
 
-- [ ] **Step 4: Run JVM tests and build both Android variants**
+- [x] **Step 4: Run JVM tests and build both Android variants**
 
 ```bash
 ./android/phone-control-app/test.sh
@@ -245,7 +245,7 @@ AIRSIM_ANDROID_MANIFEST=android/phone-control-app/AndroidManifest-standalone.xml
 
 Expected: tests PASS and both APKs sign successfully.
 
-- [ ] **Step 5: Commit Android gateway paths**
+- [x] **Step 5: Commit Android gateway paths**
 
 ```bash
 git add android/phone-control-app
@@ -266,21 +266,21 @@ git commit -m "feat: add authenticated Android VoBLE gateway"
 - Produces: `resolve(RuntimeMode, avfAddress)`, `startMedia(callIdentity)`, `onUplinkPacket`, serialized downlink notifications, media statistics.
 - Consumes: existing runtime/AVF detection, port 7580 PCM handshake, Task 2 packets, Task 3 media key, Task 4 call ownership.
 
-- [ ] **Step 1: Add resolver, startup-order, queue, and notification-flow tests**
+- [x] **Step 1: Add resolver, startup-order, queue, and notification-flow tests**
 
 Assert Standalone resolves loopback, AVF resolves the supplied private address, missing AVF address fails closed, `start_media` opens PCM before any uplink, `AIRSIMREADY` is required, eight-frame overflow drops oldest, notification failure retries only within deadline, and stop closes both pumps.
 
-- [ ] **Step 2: Run JVM tests and verify media types fail**
+- [x] **Step 2: Run JVM tests and verify media types fail**
 
-- [ ] **Step 3: Implement backend resolver, PCM handshake, G.711 pumps, AEAD packets, and one-at-a-time notifications**
+- [x] **Step 3: Implement backend resolver, PCM handshake, G.711 pumps, AEAD packets, and one-at-a-time notifications**
 
 Use fixed-capacity queues and interruptible pump threads. Never block a Bluetooth callback on socket I/O. Reject media unless the authenticated central owns the active call and the call identity matches.
 
-- [ ] **Step 4: Run JVM tests and both Android builds**
+- [x] **Step 4: Run JVM tests and both Android builds**
 
 Use Task 4 Step 4 commands. Expected: PASS.
 
-- [ ] **Step 5: Commit media paths**
+- [x] **Step 5: Commit media paths**
 
 ```bash
 git add android/phone-control-app
@@ -304,17 +304,17 @@ git commit -m "feat: bridge Android PCM over VoBLE"
 - Produces: observable Bluetooth discovery/auth/readiness state, pairing confirmation UI, `send(command:) async throws`, and typed Android events.
 - Consumes: Tasks 1-3 mode/protocol/pairing APIs and Core Bluetooth delegate callbacks.
 
-- [ ] **Step 1: Add reducer tests for connect, wrong-key authentication, restoration, command timeout, stale response, and explicit-mode failure**
+- [x] **Step 1: Add reducer tests for connect, wrong-key authentication, restoration, command timeout, stale response, and explicit-mode failure**
 
 Use a fake central adapter so XCTest does not require simulator Bluetooth. Assert connected-but-unauthenticated never becomes ready and failure does not start VoWLAN or Cloud.
 
-- [ ] **Step 2: Run XCTest and verify controller symbols fail**
+- [x] **Step 2: Run XCTest and verify controller symbols fail**
 
-- [ ] **Step 3: Implement central lifecycle, state restoration, independent subscriptions, pairing UI, and control serialization**
+- [x] **Step 3: Implement central lifecycle, state restoration, independent subscriptions, pairing UI, and control serialization**
 
 Add `NSBluetoothAlwaysUsageDescription` and `bluetooth-central` background mode. Store peripheral identity only after authenticated pairing. Authenticate again on every reconnect before publishing ready.
 
-- [ ] **Step 4: Run XCTest and an unsigned simulator build**
+- [x] **Step 4: Run XCTest and an unsigned simulator build**
 
 ```bash
 xcodebuild test -project iOS/AirSIM.xcodeproj -scheme AirSIM \
@@ -323,7 +323,7 @@ xcodebuild build -project iOS/AirSIM.xcodeproj -scheme AirSIM \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 ```
 
-- [ ] **Step 5: Commit iOS BLE control paths**
+- [x] **Step 5: Commit iOS BLE control paths**
 
 ```bash
 git add iOS/AirSIM iOS/AirSIMTests iOS/AirSIM.xcodeproj/project.pbxproj
@@ -344,21 +344,21 @@ git commit -m "feat: add iOS VoBLE pairing and control"
 - Produces: `CallMediaTransport`, `VoBLEGATTMediaTransport`, bounded uplink scheduling, downlink reassembly/jitter, and Voice Processing I/O lifecycle.
 - Consumes: Task 2 audio frames, Task 3 media key, Task 6 subscribed characteristics, CallKit audio activation.
 
-- [ ] **Step 1: Add tests for backpressure, eight-frame overflow, incomplete fragments, replayed packets, jitter progression, stale call identity, and audio-engine start gating**
+- [x] **Step 1: Add tests for backpressure, eight-frame overflow, incomplete fragments, replayed packets, jitter progression, stale call identity, and audio-engine start gating**
 
 Inject fake writer/player/capture adapters. Assert `canSendWriteWithoutResponse == false` stops dequeuing until the ready callback and no audio starts before both `media_ready` and CallKit activation.
 
-- [ ] **Step 2: Run XCTest and verify media/audio symbols fail**
+- [x] **Step 2: Run XCTest and verify media/audio symbols fail**
 
-- [ ] **Step 3: Implement GATT transport, adaptive jitter, G.711 conversion, sample-rate conversion, and voice-processing audio lifecycle**
+- [x] **Step 3: Implement GATT transport, adaptive jitter, G.711 conversion, sample-rate conversion, and voice-processing audio lifecycle**
 
 Keep real-time callbacks allocation-light. Move crypto/fragmentation off the render callback through preallocated bounded rings. Late packets and packets for another media session are discarded.
 
-- [ ] **Step 4: Run XCTest and simulator build**
+- [x] **Step 4: Run XCTest and simulator build**
 
 Use Task 6 Step 4 commands. Expected: PASS.
 
-- [ ] **Step 5: Commit iOS media paths**
+- [x] **Step 5: Commit iOS media paths**
 
 ```bash
 git add iOS/AirSIM iOS/AirSIMTests iOS/AirSIM.xcodeproj/project.pbxproj
@@ -382,19 +382,19 @@ git commit -m "feat: add iOS VoBLE call audio"
 - Produces: outgoing/incoming Bluetooth call flows, generation-locked media, and exact-once terminal cleanup.
 - Consumes: Tasks 1, 6, and 7 plus existing CallKit/Watch/Live Activity APIs.
 
-- [ ] **Step 1: Add lifecycle tests**
+- [x] **Step 1: Add lifecycle tests**
 
 Cover Bluetooth outgoing without Relay/VoWLAN calls, incoming report, answer-media ordering, reject, hangup idempotency, stale ended ignored, matching ended exact-once cleanup, Watch ringing termination, and disconnect recovery refusing a different generation.
 
-- [ ] **Step 2: Run XCTest and verify coordinator tests fail**
+- [x] **Step 2: Run XCTest and verify coordinator tests fail**
 
-- [ ] **Step 3: Implement coordinator and route Bluetooth mode through it**
+- [x] **Step 3: Implement coordinator and route Bluetooth mode through it**
 
 Remove BLE decisions from VoWLAN route helpers. Start media only after Android `media_ready` and CallKit activation. On matching `ended`, stop audio/PCM state, end CallKit, clear Live Activity, publish Watch terminal state, and resume background behavior exactly once.
 
-- [ ] **Step 4: Run XCTest and simulator build**
+- [x] **Step 4: Run XCTest and simulator build**
 
-- [ ] **Step 5: Commit lifecycle paths**
+- [x] **Step 5: Commit lifecycle paths**
 
 ```bash
 git add iOS/AirSIM iOS/AirSIMTests iOS/Shared iOS/AirSIM.xcodeproj/project.pbxproj
@@ -419,17 +419,17 @@ git commit -m "feat: integrate VoBLE with CallKit and Watch"
 - Produces: sanitized Bluetooth status on both devices and three-second same-call recovery.
 - Consumes: all prior transport, backend, queue, and call-state metrics.
 
-- [ ] **Step 1: Add tests for redaction, AVF address replacement, reconnect deadline, same-generation validation, and UI presentation**
+- [x] **Step 1: Add tests for redaction, AVF address replacement, reconnect deadline, same-generation validation, and UI presentation**
 
 Assert diagnostics contain no number, secret, nonce, tag, or audio payload. Assert an AVF address change is used on the next media session and never mutates an active socket.
 
-- [ ] **Step 2: Run XCTest and JVM suites and verify failures**
+- [x] **Step 2: Run XCTest and JVM suites and verify failures**
 
-- [ ] **Step 3: Implement diagnostics snapshots, settings/status cards, and bounded recovery policy**
+- [x] **Step 3: Implement diagnostics snapshots, settings/status cards, and bounded recovery policy**
 
 Display selected mode, peer, authentication, control/audio subscription, Agent type/version, PCM readiness, codec, transport, queue/drop/jitter metrics, and categorized last error. Do not expose keys or phone numbers.
 
-- [ ] **Step 4: Run all unit suites and both platform builds**
+- [x] **Step 4: Run all unit suites and both platform builds**
 
 ```bash
 ./android/phone-control-app/test.sh
@@ -440,7 +440,7 @@ xcodebuild build -project iOS/AirSIM.xcodeproj -scheme AirSIM \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 ```
 
-- [ ] **Step 5: Commit diagnostics paths**
+- [x] **Step 5: Commit diagnostics paths**
 
 ```bash
 git add iOS/AirSIM iOS/AirSIMTests iOS/AirSIM.xcodeproj/project.pbxproj \
@@ -476,7 +476,7 @@ Restart AVF, change its private address, open a new call, and verify the resolve
 
 Cover background restrictions, screen lock, Bluetooth loss under three seconds, loss beyond three seconds, wrong key, revoked pairing, Relay unavailable, VPN on/off, Wi-Fi off, and user-force-quit limitation messaging.
 
-- [ ] **Step 5: Update documentation with verified behavior and commit**
+- [x] **Step 5: Update documentation with verified behavior and commit**
 
 ```bash
 git add README.md android-standalone/README.md docs/voble-real-device-test-matrix.md \
@@ -484,7 +484,7 @@ git add README.md android-standalone/README.md docs/voble-real-device-test-matri
 git commit -m "docs: document VoBLE setup and device validation"
 ```
 
-- [ ] **Step 6: Review branch scope before push or release**
+- [x] **Step 6: Review branch scope before push or release**
 
 ```bash
 git status --short
