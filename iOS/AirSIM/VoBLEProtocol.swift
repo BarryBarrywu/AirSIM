@@ -261,6 +261,105 @@ struct VoBLEControlEnvelope: Equatable, Sendable {
     }
 }
 
+enum VoBLEMessageType: UInt8, Sendable {
+    case pairing = 1
+    case control = 2
+}
+
+struct VoBLEMessage: Equatable, Sendable {
+    let type: VoBLEMessageType
+    let messageID: UInt16
+    let payload: Data
+}
+
+enum VoBLEMessageFragmenter {
+    static let headerLength = 8
+    static let maximumMessageLength = 4_096
+
+    static func encode(
+        _ message: Data,
+        type: VoBLEMessageType,
+        messageID: UInt16,
+        maximumPacketLength: Int
+    ) throws -> [Data] {
+        guard message.count <= maximumMessageLength else {
+            throw VoBLEProtocolError.frameTooLarge
+        }
+        let capacity = maximumPacketLength - headerLength
+        guard capacity > 0 else { throw VoBLEProtocolError.invalidLength }
+        let count = max(1, (message.count + capacity - 1) / capacity)
+        guard count <= VoBLEAudioPacket.maximumFragmentCount else {
+            throw VoBLEProtocolError.tooManyFragments
+        }
+        return (0..<count).map { index in
+            let lower = index * capacity
+            let upper = min(message.count, lower + capacity)
+            var fragment = Data([
+                0xd4, 0x6b, 1, type.rawValue,
+                UInt8(truncatingIfNeeded: messageID >> 8),
+                UInt8(truncatingIfNeeded: messageID),
+                UInt8(index), UInt8(count),
+            ])
+            if lower < upper { fragment.append(message.subdata(in: lower..<upper)) }
+            return fragment
+        }
+    }
+}
+
+struct VoBLEMessageReassembler: Sendable {
+    private struct Key: Hashable, Sendable {
+        let type: VoBLEMessageType
+        let messageID: UInt16
+    }
+    private struct Partial: Sendable {
+        let firstSeen: Date
+        let count: Int
+        var fragments: [Int: Data]
+    }
+    private var partials: [Key: Partial] = [:]
+
+    mutating func append(_ fragment: Data, now: Date = Date()) throws -> VoBLEMessage? {
+        partials = partials.filter { $0.value.firstSeen >= now.addingTimeInterval(-2) }
+        guard fragment.count >= VoBLEMessageFragmenter.headerLength else {
+            throw VoBLEProtocolError.packetTooSmall
+        }
+        guard fragment[0] == 0xd4, fragment[1] == 0x6b else {
+            throw VoBLEProtocolError.invalidMagic
+        }
+        guard fragment[2] == 1 else { throw VoBLEProtocolError.unsupportedVersion }
+        guard let type = VoBLEMessageType(rawValue: fragment[3]) else {
+            throw VoBLEProtocolError.invalidType
+        }
+        let messageID = (UInt16(fragment[4]) << 8) | UInt16(fragment[5])
+        let index = Int(fragment[6])
+        let count = Int(fragment[7])
+        guard count > 0, count <= VoBLEAudioPacket.maximumFragmentCount,
+              index < count else { throw VoBLEProtocolError.invalidFragment }
+        let key = Key(type: type, messageID: messageID)
+        var partial = partials[key] ?? Partial(
+            firstSeen: now, count: count, fragments: [:])
+        guard partial.count == count else {
+            partials.removeValue(forKey: key)
+            throw VoBLEProtocolError.inconsistentFrame
+        }
+        partial.fragments[index] = fragment.subdata(
+            in: VoBLEMessageFragmenter.headerLength..<fragment.count)
+        partials[key] = partial
+        guard partial.fragments.count == count else { return nil }
+        var payload = Data()
+        for part in 0..<count {
+            guard let value = partial.fragments[part] else { return nil }
+            payload.append(value)
+            guard payload.count <= VoBLEMessageFragmenter.maximumMessageLength else {
+                partials.removeValue(forKey: key)
+                throw VoBLEProtocolError.frameTooLarge
+            }
+        }
+        partials.removeValue(forKey: key)
+        return VoBLEMessage(type: type, messageID: messageID, payload: payload)
+    }
+}
+
 private extension Data {
 
     mutating func appendBigEndian(_ value: UInt16) {

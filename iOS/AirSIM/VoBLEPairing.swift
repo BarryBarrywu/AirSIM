@@ -96,7 +96,7 @@ enum VoBLESessionAuthenticator {
         generation: UInt64
     ) throws -> VoBLESessionKeys {
         guard pairingKey.count == 32, !sessionID.isEmpty, sessionID.count <= Int(UInt16.max),
-              !callID.isEmpty, callID.utf8.count <= Int(UInt16.max) else {
+              callID.utf8.count <= Int(UInt16.max) else {
             throw VoBLEPairingError.invalidKey
         }
         var context = Data()

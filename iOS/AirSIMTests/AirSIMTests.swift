@@ -550,6 +550,21 @@ final class AirSIMTests: XCTestCase {
         var corrupted = encoded
         corrupted[0] = 0
         XCTAssertThrowsError(try VoBLEControlEnvelope.decode(corrupted))
+
+        for maximumPacketLength in [23, 185, 247] {
+            let fragments = try VoBLEMessageFragmenter.encode(
+                encoded, type: .control, messageID: 0x1234,
+                maximumPacketLength: maximumPacketLength)
+            XCTAssertTrue(fragments.allSatisfy { $0.count <= maximumPacketLength })
+            var reassembler = VoBLEMessageReassembler()
+            var message: VoBLEMessage?
+            for fragment in fragments {
+                message = try reassembler.append(
+                    fragment, now: Date(timeIntervalSince1970: 10)) ?? message
+            }
+            XCTAssertEqual(message?.messageID, 0x1234)
+            XCTAssertEqual(message?.payload, encoded)
+        }
     }
 
     func testVoBLEPairingTranscriptAndSessionKeysAreDeterministic() throws {
@@ -593,6 +608,9 @@ final class AirSIMTests: XCTestCase {
         XCTAssertNotEqual(first.control, first.media)
         XCTAssertNotEqual(first.media, first.reconnect)
         XCTAssertNotEqual(first, reconnect)
+        XCTAssertEqual(try VoBLESessionAuthenticator.deriveSessionKeys(
+            pairingKey: android.pairingKey, sessionID: Data(repeating: 5, count: 16),
+            callID: "", generation: 0).control.count, 32)
         let message = Data("authenticated-control".utf8)
         let tag = try VoBLESessionAuthenticator.tag(message: message, key: first.control)
         XCTAssertTrue(VoBLESessionAuthenticator.authenticate(

@@ -190,7 +190,7 @@ public final class VoBLEPairingManager {
             byte[] pairingKey, byte[] sessionId, String callId, long generation)
             throws GeneralSecurityException {
         if (pairingKey == null || pairingKey.length != 32 || sessionId == null
-                || sessionId.length == 0 || callId == null || callId.isEmpty()) {
+                || sessionId.length == 0 || callId == null) {
             throw new GeneralSecurityException("invalid session key inputs");
         }
         ByteArrayOutputStream context = new ByteArrayOutputStream();
@@ -214,6 +214,19 @@ public final class VoBLEPairingManager {
             return tag != null && MessageDigest.isEqual(tag, authenticationTag(message, key));
         } catch (GeneralSecurityException | RuntimeException error) {
             return false;
+        }
+    }
+
+    public byte[] signSessionMessage(
+            String identity, byte[] sessionId, String callId, long generation,
+            byte[] nonce, long timestampMillis, byte[] message) throws GeneralSecurityException {
+        byte[] pairingKey = credentials.load(identity);
+        if (pairingKey == null) throw new GeneralSecurityException("peer is not paired");
+        try {
+            SessionKeys keys = deriveSessionKeys(pairingKey, sessionId, callId, generation);
+            return authenticationTag(authenticationMessage(nonce, timestampMillis, message), keys.control);
+        } finally {
+            Arrays.fill(pairingKey, (byte) 0);
         }
     }
 

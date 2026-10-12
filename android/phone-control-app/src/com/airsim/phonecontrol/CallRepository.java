@@ -137,6 +137,12 @@ public final class CallRepository {
         }
     }
 
+    public static ActionResult executeRemote(
+            String requestId, String action, String callId, String number,
+            TelecomManager telecomManager) {
+        return execute(new AgentCommand(requestId, action, callId, number), telecomManager);
+    }
+
     public static final class ActionResult {
         public final boolean success;
         public final String error;

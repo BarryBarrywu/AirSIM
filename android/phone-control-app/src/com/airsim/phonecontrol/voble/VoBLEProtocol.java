@@ -11,6 +11,10 @@ import java.util.Objects;
 public final class VoBLEProtocol {
     public static final int VERSION = 1;
     public static final int TYPE_AUDIO = 1;
+    public static final int MESSAGE_PAIRING = 1;
+    public static final int MESSAGE_CONTROL = 2;
+    public static final int MESSAGE_HEADER_LENGTH = 8;
+    public static final int MAX_MESSAGE_LENGTH = 4096;
     public static final int CODEC_G711_MULAW = 1;
     public static final int FLAG_DISCONTINUITY = 1 << 3;
     public static final int AUDIO_HEADER_LENGTH = 18;
@@ -66,6 +70,96 @@ public final class VoBLEProtocol {
             int fragmentIndex,
             int fragmentCount,
             int fragmentLength) {}
+
+    public record Message(int type, int messageId, byte[] payload) {
+        public Message { payload = payload.clone(); }
+        @Override public byte[] payload() { return payload.clone(); }
+    }
+
+    public static List<byte[]> encodeMessageFragments(
+            byte[] message, int maximumPacketLength, int type, int messageId) {
+        if (message == null || message.length > MAX_MESSAGE_LENGTH
+                || (type != MESSAGE_PAIRING && type != MESSAGE_CONTROL)
+                || (messageId & ~0xffff) != 0) {
+            throw new IllegalArgumentException("invalid message fragment input");
+        }
+        int capacity = maximumPacketLength - MESSAGE_HEADER_LENGTH;
+        if (capacity <= 0 || capacity > 0xffff) {
+            throw new IllegalArgumentException("packet length cannot hold message header");
+        }
+        int count = Math.max(1, (message.length + capacity - 1) / capacity);
+        if (count > MAX_FRAGMENT_COUNT) throw new IllegalArgumentException("too many fragments");
+        List<byte[]> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            int offset = index * capacity;
+            int length = Math.min(capacity, message.length - offset);
+            byte[] fragment = new byte[MESSAGE_HEADER_LENGTH + length];
+            fragment[0] = (byte) 0xd4;
+            fragment[1] = 0x6b;
+            fragment[2] = VERSION;
+            fragment[3] = (byte) type;
+            fragment[4] = (byte) (messageId >>> 8);
+            fragment[5] = (byte) messageId;
+            fragment[6] = (byte) index;
+            fragment[7] = (byte) count;
+            System.arraycopy(message, offset, fragment, MESSAGE_HEADER_LENGTH, length);
+            result.add(fragment);
+        }
+        return result;
+    }
+
+    public static final class MessageReassembler {
+        private record Key(int type, int messageId) {}
+        private static final class PartialMessage {
+            final long firstSeenMillis;
+            final int fragmentCount;
+            final Map<Integer, byte[]> fragments = new HashMap<>();
+            PartialMessage(long firstSeenMillis, int fragmentCount) {
+                this.firstSeenMillis = firstSeenMillis;
+                this.fragmentCount = fragmentCount;
+            }
+        }
+        private final Map<Key, PartialMessage> partials = new HashMap<>();
+
+        public synchronized Message append(byte[] fragment, long nowMillis) {
+            partials.entrySet().removeIf(entry -> entry.getValue().firstSeenMillis < nowMillis - 2_000L);
+            if (fragment == null || fragment.length < MESSAGE_HEADER_LENGTH
+                    || (fragment[0] & 0xff) != 0xd4 || (fragment[1] & 0xff) != 0x6b
+                    || (fragment[2] & 0xff) != VERSION) {
+                throw new IllegalArgumentException("invalid message fragment");
+            }
+            int type = fragment[3] & 0xff;
+            int messageId = ((fragment[4] & 0xff) << 8) | (fragment[5] & 0xff);
+            int index = fragment[6] & 0xff;
+            int count = fragment[7] & 0xff;
+            if ((type != MESSAGE_PAIRING && type != MESSAGE_CONTROL)
+                    || count == 0 || count > MAX_FRAGMENT_COUNT || index >= count) {
+                throw new IllegalArgumentException("invalid message fragment header");
+            }
+            Key key = new Key(type, messageId);
+            PartialMessage partial = partials.computeIfAbsent(
+                    key, ignored -> new PartialMessage(nowMillis, count));
+            if (partial.fragmentCount != count) {
+                partials.remove(key);
+                throw new IllegalArgumentException("inconsistent message fragments");
+            }
+            partial.fragments.put(index,
+                    Arrays.copyOfRange(fragment, MESSAGE_HEADER_LENGTH, fragment.length));
+            if (partial.fragments.size() != count) return null;
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            for (int part = 0; part < count; part++) {
+                byte[] value = partial.fragments.get(part);
+                if (value == null) return null;
+                output.writeBytes(value);
+                if (output.size() > MAX_MESSAGE_LENGTH) {
+                    partials.remove(key);
+                    throw new IllegalArgumentException("message is too large");
+                }
+            }
+            partials.remove(key);
+            return new Message(type, messageId, output.toByteArray());
+        }
+    }
 
     public record AudioPacket(
             int flags,

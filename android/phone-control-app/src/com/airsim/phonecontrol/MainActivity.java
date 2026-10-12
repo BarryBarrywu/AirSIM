@@ -156,6 +156,10 @@ public final class MainActivity extends Activity {
 				checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED,
 				checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED,
 				Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+						== PackageManager.PERMISSION_GRANTED,
+				Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+						== PackageManager.PERMISSION_GRANTED,
+				Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
 						== PackageManager.PERMISSION_GRANTED);
 		if (missingPermissions.length > 0) {
             requestPermissions(missingPermissions, 101);
@@ -168,6 +172,9 @@ public final class MainActivity extends Activity {
 			int requestCode, String[] permissions, int[] grantResults) {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 		if (requestCode == 101) requestOptionalSMSPermission();
+		if (requestCode == 101 && hasVoBLEPermissions()) {
+			com.airsim.phonecontrol.voble.VoBLEGatewayService.start(this);
+		}
 		if (requestCode == OPTIONAL_SMS_REQUEST) {
 			startSMSInboxBaselineIfAuthorized();
 			continueStartupSetup();
@@ -185,6 +192,12 @@ public final class MainActivity extends Activity {
 		}
 		getPreferences(MODE_PRIVATE).edit().putBoolean(OPTIONAL_SMS_PROMPTED, true).apply();
 		requestPermissions(missing, OPTIONAL_SMS_REQUEST);
+	}
+
+	private boolean hasVoBLEPermissions() {
+		return Build.VERSION.SDK_INT < 31
+				|| (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+				&& checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED);
 	}
 
 	private void startSMSInboxBaselineIfAuthorized() {

@@ -15,10 +15,10 @@ import java.util.List;
 import java.util.Locale;
 
 /** Stable, non-secret metadata used to distinguish paired Android Agent instances. */
-final class AndroidAgentIdentity {
+public final class AndroidAgentIdentity {
     private AndroidAgentIdentity() {}
 
-    static String agentID(Context context) {
+    public static String agentID(Context context) {
         String androidID = Settings.Secure.getString(
                 context.getContentResolver(), Settings.Secure.ANDROID_ID);
         String source = context.getPackageName() + ":" + (androidID == null ? "unknown" : androidID);
@@ -35,7 +35,7 @@ final class AndroidAgentIdentity {
         }
     }
 
-    static String deviceName() {
+    public static String deviceName() {
         String manufacturer = clean(Build.MANUFACTURER);
         String model = clean(Build.MODEL);
         if (manufacturer.isEmpty()) return model;
@@ -45,7 +45,7 @@ final class AndroidAgentIdentity {
         return (manufacturer + " " + model).trim();
     }
 
-    static String phoneNumber(Context context) {
+    public static String phoneNumber(Context context) {
         if (context.checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS)
                 != PackageManager.PERMISSION_GRANTED) return "";
         try {
