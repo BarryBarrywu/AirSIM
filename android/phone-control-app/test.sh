@@ -142,6 +142,8 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/PCMBridgeStatus.java \
 	"$ROOT"/src/com/airsim/phonecontrol/MuteRequestRetrier.java \
 	"$ROOT"/src/com/airsim/phonecontrol/NotificationUpdateGate.java \
+	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEProtocol.java \
+	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEAudioQueue.java \
 	"$ROOT"/test/com/airsim/phonecontrol/CoreTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/NotificationUpdateGateTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java

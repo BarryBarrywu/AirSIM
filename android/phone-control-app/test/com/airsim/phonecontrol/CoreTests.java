@@ -2,6 +2,7 @@ package com.airsim.phonecontrol;
 
 public final class CoreTests {
     public static void main(String[] args) throws Exception {
+		assertVoBLEAudioVectorAndBounds();
 		assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry();
 		assertMutedCallRecoversAfterThreeTransientAudioFailures();
 		assertLiveStatusPollerUpdatesWithoutRebuildingPage();
@@ -601,6 +602,67 @@ public final class CoreTests {
 				new RelayHTTPException(429, "rate limited")));
 		assertEquals(2_000L, RelayRetryPolicy.delayMillis(2,
 				new java.io.IOException("temporary network failure")));
+	}
+
+	private static void assertVoBLEAudioVectorAndBounds() {
+		byte[] tag = new byte[16];
+		java.util.Arrays.fill(tag, (byte) 0xa5);
+		com.airsim.phonecontrol.voble.VoBLEProtocol.AudioPacket packet =
+				new com.airsim.phonecontrol.voble.VoBLEProtocol.AudioPacket(
+						0, com.airsim.phonecontrol.voble.VoBLEProtocol.CODEC_G711_MULAW, 7,
+						0x01020304L, 0x05060708L,
+						new byte[]{0x00, 0x7f, (byte) 0x80, (byte) 0xff}, tag);
+		for (int maximumPacketLength : new int[]{23, 185, 247}) {
+			java.util.List<byte[]> fragments =
+					com.airsim.phonecontrol.voble.VoBLEProtocol.encodeAudioFragments(
+							packet, maximumPacketLength);
+			assertTrue(fragments.stream().allMatch(value -> value.length <= maximumPacketLength));
+			byte[] first = fragments.get(0);
+			assertTrue(java.util.Arrays.equals(
+					new byte[]{1, 2, 3, 4}, java.util.Arrays.copyOfRange(first, 7, 11)));
+			assertTrue(java.util.Arrays.equals(
+					new byte[]{5, 6, 7, 8}, java.util.Arrays.copyOfRange(first, 11, 15)));
+			com.airsim.phonecontrol.voble.VoBLEProtocol.AudioReassembler reassembler =
+					new com.airsim.phonecontrol.voble.VoBLEProtocol.AudioReassembler();
+			com.airsim.phonecontrol.voble.VoBLEProtocol.AudioPacket decoded = null;
+			for (byte[] fragment : fragments) {
+				com.airsim.phonecontrol.voble.VoBLEProtocol.AudioPacket next =
+						reassembler.append(fragment, 10_000L);
+				if (next != null) decoded = next;
+			}
+			assertEquals(packet, decoded);
+		}
+		byte[] expectedVector = new byte[]{
+				(byte) 0xa5, 0x5a, 0x01, 0x01, 0x00, 0x01, 0x07,
+				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+				0x00, 0x01, 0x14, 0x00, 0x7f, (byte) 0x80, (byte) 0xff,
+				(byte) 0xa5, (byte) 0xa5, (byte) 0xa5, (byte) 0xa5,
+				(byte) 0xa5, (byte) 0xa5, (byte) 0xa5, (byte) 0xa5,
+				(byte) 0xa5, (byte) 0xa5, (byte) 0xa5, (byte) 0xa5,
+				(byte) 0xa5, (byte) 0xa5, (byte) 0xa5, (byte) 0xa5};
+		assertTrue(java.util.Arrays.equals(expectedVector,
+				com.airsim.phonecontrol.voble.VoBLEProtocol
+						.encodeAudioFragments(packet, 247).get(0)));
+
+		com.airsim.phonecontrol.voble.VoBLEAudioQueue queue =
+				new com.airsim.phonecontrol.voble.VoBLEAudioQueue(8);
+		for (int sequence = 1; sequence <= 9; sequence++) {
+			queue.offer(sequence, new byte[]{(byte) sequence});
+		}
+		assertEquals(8, queue.size());
+		assertEquals(2L, queue.poll().sequence());
+		assertTrue(queue.consumeDiscontinuity());
+		assertTrue(!queue.consumeDiscontinuity());
+
+		com.airsim.phonecontrol.voble.VoBLEProtocol.ControlEnvelope control =
+				new com.airsim.phonecontrol.voble.VoBLEProtocol.ControlEnvelope(
+						"answer", "call-7", 0x0102030405060708L,
+						new byte[]{1, 2, 3, 4}, new byte[12], new byte[]{6, 7, 8}, new byte[16]);
+		byte[] encodedControl = com.airsim.phonecontrol.voble.VoBLEProtocol.encodeControl(control);
+		assertTrue(java.util.Arrays.equals(
+				new byte[]{1, 2, 3, 4, 5, 6, 7, 8},
+				java.util.Arrays.copyOfRange(encodedControl, 4, 12)));
+		assertEquals(control, com.airsim.phonecontrol.voble.VoBLEProtocol.decodeControl(encodedControl));
 	}
 
 	private static void assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry() {

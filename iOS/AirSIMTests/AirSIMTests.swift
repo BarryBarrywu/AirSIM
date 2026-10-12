@@ -485,6 +485,72 @@ final class AirSIMTests: XCTestCase {
         }
     }
 
+    func testVoBLEAudioVectorUsesBigEndianHeaderAndRoundTripsAtCommonMTUs() throws {
+        let packet = VoBLEAudioPacket(
+            flags: [], codec: .g711MuLaw, streamID: 7,
+            sequence: 0x01020304, sampleTimestamp: 0x05060708,
+            payload: Data([0x00, 0x7f, 0x80, 0xff]),
+            authenticationTag: Data(repeating: 0xa5, count: 16)
+        )
+
+        for maximumPacketLength in [23, 185, 247] {
+            let fragments = try packet.encodedFragments(maximumPacketLength: maximumPacketLength)
+            XCTAssertTrue(fragments.allSatisfy { $0.count <= maximumPacketLength })
+            XCTAssertEqual(Array(fragments[0][7..<11]), [0x01, 0x02, 0x03, 0x04])
+            XCTAssertEqual(Array(fragments[0][11..<15]), [0x05, 0x06, 0x07, 0x08])
+
+            var reassembler = VoBLEAudioReassembler()
+            var decoded: VoBLEAudioPacket?
+            for fragment in fragments {
+                decoded = try reassembler.append(fragment, now: Date(timeIntervalSince1970: 10)) ?? decoded
+            }
+            XCTAssertEqual(decoded, packet)
+        }
+        XCTAssertEqual(
+            try packet.encodedFragments(maximumPacketLength: 247)[0],
+            Data([
+                0xa5, 0x5a, 0x01, 0x01, 0x00, 0x01, 0x07,
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                0x00, 0x01, 0x14, 0x00, 0x7f, 0x80, 0xff,
+            ] + Array(repeating: 0xa5, count: 16))
+        )
+    }
+
+    func testVoBLEReassemblyExpiryMarksNextFrameDiscontinuous() throws {
+        let first = VoBLEAudioPacket(
+            flags: [], codec: .g711MuLaw, streamID: 1, sequence: 1,
+            sampleTimestamp: 0, payload: Data(repeating: 1, count: 160),
+            authenticationTag: Data(repeating: 2, count: 16)
+        )
+        let second = VoBLEAudioPacket(
+            flags: [], codec: .g711MuLaw, streamID: 1, sequence: 2,
+            sampleTimestamp: 160, payload: Data([3]),
+            authenticationTag: Data(repeating: 4, count: 16)
+        )
+        var reassembler = VoBLEAudioReassembler()
+        let incomplete = try first.encodedFragments(maximumPacketLength: 23)
+        _ = try reassembler.append(incomplete[0], now: Date(timeIntervalSince1970: 1))
+        let complete = try second.encodedFragments(maximumPacketLength: 247)
+        let decoded = try reassembler.append(complete[0], now: Date(timeIntervalSince1970: 1.201))
+
+        XCTAssertTrue(decoded?.flags.contains(.discontinuity) == true)
+    }
+
+    func testVoBLEControlEnvelopeRoundTripsAndRejectsBadMagic() throws {
+        let envelope = VoBLEControlEnvelope(
+            command: "answer", callID: "call-7", generation: 0x0102030405060708,
+            sessionID: Data([1, 2, 3, 4]), nonce: Data(repeating: 5, count: 12),
+            ciphertext: Data([6, 7, 8]), authenticationTag: Data(repeating: 9, count: 16)
+        )
+        let encoded = try envelope.encoded()
+        XCTAssertEqual(Array(encoded[4..<12]), [1, 2, 3, 4, 5, 6, 7, 8])
+        XCTAssertEqual(try VoBLEControlEnvelope.decode(encoded), envelope)
+
+        var corrupted = encoded
+        corrupted[0] = 0
+        XCTAssertThrowsError(try VoBLEControlEnvelope.decode(corrupted))
+    }
+
     func testConnectionModePreferenceMigratesLegacyLocalModeAndPersistsBluetooth() {
         let suite = "airsim-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
