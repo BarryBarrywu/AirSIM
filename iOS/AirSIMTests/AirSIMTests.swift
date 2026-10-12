@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import AirSIM
 
@@ -549,6 +550,66 @@ final class AirSIMTests: XCTestCase {
         var corrupted = encoded
         corrupted[0] = 0
         XCTAssertThrowsError(try VoBLEControlEnvelope.decode(corrupted))
+    }
+
+    func testVoBLEPairingTranscriptAndSessionKeysAreDeterministic() throws {
+        let androidPrivate = Data((1...32).map(UInt8.init))
+        let iphonePrivate = Data((33...64).map(UInt8.init))
+        let androidPublic = try Curve25519.KeyAgreement.PrivateKey(
+            rawRepresentation: androidPrivate).publicKey.rawRepresentation
+        let iphonePublic = try Curve25519.KeyAgreement.PrivateKey(
+            rawRepresentation: iphonePrivate).publicKey.rawRepresentation
+        let transcript = VoBLEPairingTranscript(
+            androidIdentity: "samsung-test", androidPublicKey: androidPublic,
+            iphonePublicKey: iphonePublic,
+            androidNonce: Data(repeating: 0x11, count: 32),
+            iphoneNonce: Data(repeating: 0x22, count: 32)
+        )
+        let android = try VoBLESessionAuthenticator.derivePairing(
+            privateKey: androidPrivate, peerPublicKey: iphonePublic, transcript: transcript)
+        let iphone = try VoBLESessionAuthenticator.derivePairing(
+            privateKey: iphonePrivate, peerPublicKey: androidPublic, transcript: transcript)
+        XCTAssertEqual(android, iphone)
+        XCTAssertEqual(android.pairingKey.map { String(format: "%02x", $0) }.joined(),
+                       "41cef6294f3575441997664149bd8a014c8db026ad3a5312410be90f7d76c48a")
+        XCTAssertEqual(android.sas, "922247")
+
+        let modified = VoBLEPairingTranscript(
+            androidIdentity: "samsung-modified", androidPublicKey: androidPublic,
+            iphonePublicKey: iphonePublic,
+            androidNonce: Data(repeating: 0x11, count: 32),
+            iphoneNonce: Data(repeating: 0x22, count: 32)
+        )
+        let modifiedMaterial = try VoBLESessionAuthenticator.derivePairing(
+            privateKey: androidPrivate, peerPublicKey: iphonePublic, transcript: modified)
+        XCTAssertNotEqual(modifiedMaterial.pairingKey, android.pairingKey)
+
+        let first = try VoBLESessionAuthenticator.deriveSessionKeys(
+            pairingKey: android.pairingKey, sessionID: Data(repeating: 3, count: 16),
+            callID: "call-1", generation: 1)
+        let reconnect = try VoBLESessionAuthenticator.deriveSessionKeys(
+            pairingKey: android.pairingKey, sessionID: Data(repeating: 4, count: 16),
+            callID: "call-1", generation: 1)
+        XCTAssertNotEqual(first.control, first.media)
+        XCTAssertNotEqual(first.media, first.reconnect)
+        XCTAssertNotEqual(first, reconnect)
+        let message = Data("authenticated-control".utf8)
+        let tag = try VoBLESessionAuthenticator.tag(message: message, key: first.control)
+        XCTAssertTrue(VoBLESessionAuthenticator.authenticate(
+            message: message, tag: tag, key: first.control))
+        XCTAssertFalse(VoBLESessionAuthenticator.authenticate(
+            message: message, tag: tag, key: Data(repeating: 0, count: 32)))
+    }
+
+    func testVoBLEReplayWindowRejectsDuplicateExpiredAndRevokedPeer() {
+        let now = Date(timeIntervalSince1970: 100)
+        var window = VoBLEReplayWindow(maximumAge: 30, capacity: 4)
+        XCTAssertTrue(window.accept(nonce: Data([1]), timestamp: now, now: now))
+        XCTAssertFalse(window.accept(nonce: Data([1]), timestamp: now, now: now))
+        XCTAssertFalse(window.accept(
+            nonce: Data([2]), timestamp: now.addingTimeInterval(-31), now: now))
+        window.revoke()
+        XCTAssertFalse(window.accept(nonce: Data([3]), timestamp: now, now: now))
     }
 
     func testConnectionModePreferenceMigratesLegacyLocalModeAndPersistsBluetooth() {

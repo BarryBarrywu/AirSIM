@@ -3,6 +3,7 @@ package com.airsim.phonecontrol;
 public final class CoreTests {
     public static void main(String[] args) throws Exception {
 		assertVoBLEAudioVectorAndBounds();
+		assertVoBLEPairingAndReplay();
 		assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry();
 		assertMutedCallRecoversAfterThreeTransientAudioFailures();
 		assertLiveStatusPollerUpdatesWithoutRebuildingPage();
@@ -663,6 +664,86 @@ public final class CoreTests {
 				new byte[]{1, 2, 3, 4, 5, 6, 7, 8},
 				java.util.Arrays.copyOfRange(encodedControl, 4, 12)));
 		assertEquals(control, com.airsim.phonecontrol.voble.VoBLEProtocol.decodeControl(encodedControl));
+	}
+
+	private static void assertVoBLEPairingAndReplay() throws Exception {
+		byte[] androidPrivate = new byte[32];
+		byte[] iphonePrivate = new byte[32];
+		for (int index = 0; index < 32; index++) {
+			androidPrivate[index] = (byte) (index + 1);
+			iphonePrivate[index] = (byte) (index + 33);
+		}
+		byte[] androidPublic = com.airsim.phonecontrol.voble.VoBLEPairingManager
+				.publicKey(androidPrivate);
+		byte[] iphonePublic = com.airsim.phonecontrol.voble.VoBLEPairingManager
+				.publicKey(iphonePrivate);
+		com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript transcript =
+				new com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript(
+						"samsung-test", androidPublic, iphonePublic,
+						filledBytes(32, 0x11), filledBytes(32, 0x22));
+		com.airsim.phonecontrol.voble.VoBLEPairingManager.PairingMaterial android =
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.derivePairing(
+						androidPrivate, iphonePublic, transcript);
+		com.airsim.phonecontrol.voble.VoBLEPairingManager.PairingMaterial iphone =
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.derivePairing(
+						iphonePrivate, androidPublic, transcript);
+		assertTrue(java.util.Arrays.equals(android.pairingKey(), iphone.pairingKey()));
+		assertEquals("41cef6294f3575441997664149bd8a014c8db026ad3a5312410be90f7d76c48a",
+				PairingCrypto.hex(android.pairingKey()));
+		assertEquals("922247", android.sas());
+		com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript modified =
+				new com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript(
+						"samsung-modified", androidPublic, iphonePublic,
+						filledBytes(32, 0x11), filledBytes(32, 0x22));
+		assertTrue(!java.util.Arrays.equals(android.pairingKey(),
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.derivePairing(
+						androidPrivate, iphonePublic, modified).pairingKey()));
+
+		com.airsim.phonecontrol.voble.VoBLEPairingManager.SessionKeys first =
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.deriveSessionKeys(
+						android.pairingKey(), filledBytes(16, 3), "call-1", 1);
+		com.airsim.phonecontrol.voble.VoBLEPairingManager.SessionKeys reconnect =
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.deriveSessionKeys(
+						android.pairingKey(), filledBytes(16, 4), "call-1", 1);
+		assertTrue(!java.util.Arrays.equals(first.control(), first.media()));
+		assertTrue(!java.util.Arrays.equals(first.media(), first.reconnect()));
+		assertTrue(!java.util.Arrays.equals(first.control(), reconnect.control()));
+		byte[] authenticatedMessage = "authenticated-control".getBytes(
+				java.nio.charset.StandardCharsets.UTF_8);
+		byte[] controlTag = com.airsim.phonecontrol.voble.VoBLEPairingManager
+				.authenticationTag(authenticatedMessage, first.control());
+		assertTrue(com.airsim.phonecontrol.voble.VoBLEPairingManager.authenticateTag(
+				authenticatedMessage, controlTag, first.control()));
+		assertTrue(!com.airsim.phonecontrol.voble.VoBLEPairingManager.authenticateTag(
+				authenticatedMessage, controlTag, new byte[32]));
+
+		com.airsim.phonecontrol.voble.VoBLEReplayWindow window =
+				new com.airsim.phonecontrol.voble.VoBLEReplayWindow(30_000L, 4);
+		assertTrue(window.accept(new byte[]{1}, 100_000L, 100_000L));
+		assertTrue(!window.accept(new byte[]{1}, 100_000L, 100_000L));
+		assertTrue(!window.accept(new byte[]{2}, 69_999L, 100_000L));
+		window.revoke();
+		assertTrue(!window.accept(new byte[]{3}, 100_000L, 100_000L));
+
+		java.util.Map<String, String> protectedValues = new java.util.HashMap<>();
+		com.airsim.phonecontrol.voble.VoBLECredentialStore store =
+				new com.airsim.phonecontrol.voble.VoBLECredentialStore(
+						new com.airsim.phonecontrol.voble.VoBLECredentialStore.ProtectedBackend() {
+							@Override public String load(String key) { return protectedValues.get(key); }
+							@Override public void save(String key, String value) { protectedValues.put(key, value); }
+							@Override public void remove(String key) { protectedValues.remove(key); }
+						});
+		store.save("samsung-test", android.pairingKey());
+		com.airsim.phonecontrol.voble.VoBLEPairingManager manager =
+				new com.airsim.phonecontrol.voble.VoBLEPairingManager(store);
+		manager.revoke("samsung-test");
+		assertTrue(store.load("samsung-test") == null);
+	}
+
+	private static byte[] filledBytes(int count, int value) {
+		byte[] result = new byte[count];
+		java.util.Arrays.fill(result, (byte) value);
+		return result;
 	}
 
 	private static void assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry() {

@@ -144,6 +144,9 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/NotificationUpdateGate.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEProtocol.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEAudioQueue.java \
+	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEPairingManager.java \
+	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLECredentialStore.java \
+	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEReplayWindow.java \
 	"$ROOT"/test/com/airsim/phonecontrol/CoreTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/NotificationUpdateGateTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java
