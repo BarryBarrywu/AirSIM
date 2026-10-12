@@ -468,6 +468,37 @@ final class AirSIMTests: XCTestCase {
         ))
     }
 
+    func testExplicitBluetoothModeDisablesUnrelatedLifecycles() {
+        let policy = ConnectionModeRuntimePolicy(mode: .bluetooth)
+
+        XCTAssertTrue(policy.startsBluetooth)
+        XCTAssertFalse(policy.startsVoWLAN)
+        XCTAssertFalse(policy.startsCloud)
+        XCTAssertFalse(policy.allowsCrossModeFallback)
+        XCTAssertTrue(policy.usesCallKit)
+    }
+
+    func testOnlyAutomaticAllowsCrossModeSelection() {
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .automatic).allowsCrossModeFallback)
+        for mode in [AirSIMConnectionMode.vowlan, .bluetooth, .cloud] {
+            XCTAssertFalse(ConnectionModeRuntimePolicy(mode: mode).allowsCrossModeFallback)
+        }
+    }
+
+    func testConnectionModePreferenceMigratesLegacyLocalModeAndPersistsBluetooth() {
+        let suite = "airsim-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set(true, forKey: LocalModePreference.key)
+        XCTAssertEqual(ConnectionModePreference.selected(defaults: defaults), .vowlan)
+
+        ConnectionModePreference.set(.bluetooth, defaults: defaults)
+        XCTAssertEqual(ConnectionModePreference.selected(defaults: defaults), .bluetooth)
+        XCTAssertFalse(LocalModePreference.isEnabled(defaults: defaults))
+        XCTAssertFalse(CloudModePreference.isEnabled(defaults: defaults))
+    }
+
     @MainActor
     func testVoWLANTransportFailureFallsBackOnceToCloud() async throws {
         let local = OutgoingCallServiceProbe(dialError: URLError(.timedOut))

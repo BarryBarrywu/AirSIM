@@ -501,11 +501,9 @@ final class AppModel: ObservableObject {
 
     init(api: AirSIMAPI = AirSIMAPI()) {
         self.api = api
-        if LocalModePreference.isEnabled() {
-            UserDefaults.standard.set(false, forKey: CloudModePreference.key)
-        }
+        let runtimePolicy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
         callKit.handler = self
-        callKit.setEnabled(!LocalModePreference.isEnabled())
+        callKit.setEnabled(runtimePolicy.usesCallKit)
         WatchCallCoordinator.shared.configure(model: self)
         WatchCallCoordinator.shared.start()
         IPhoneCloudCallSession.shared.onAudioStateChange = { [weak self] state in
@@ -572,8 +570,11 @@ final class AppModel: ObservableObject {
         requestMicrophoneOnForegroundIfNeeded()
         startCloudStatusQueryIfNeeded()
         if discoveryWasAlreadyStarted {
-            vowlan.restartBrowsing()
-            Task { await vowlan.probeNow() }
+            let runtimePolicy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
+            if runtimePolicy.startsVoWLAN {
+                vowlan.restartBrowsing()
+                Task { await vowlan.probeNow() }
+            }
         }
         eventStreamSupported = nil
         consecutivePollFailures = 0
@@ -617,7 +618,10 @@ final class AppModel: ObservableObject {
                 isForeground: { self.appIsActive },
                 microphoneIsUndetermined: { self.audio.microphonePermissionIsUndetermined },
                 requestMicrophone: { _ = await self.audio.requestMicrophonePermission() },
-                startDiscovery: { self.vowlan.startBrowsing() },
+                startDiscovery: {
+                    let policy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
+                    if policy.startsVoWLAN { self.vowlan.startBrowsing() }
+                },
                 requestNotifications: { self.incomingNotifier.requestAuthorization() }
             )
             self.initialPermissionTask = nil
@@ -667,25 +671,36 @@ final class AppModel: ObservableObject {
     }
 
     func setLocalModeEnabled(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: LocalModePreference.key)
+        setConnectionMode(enabled ? .vowlan : .automatic)
+    }
+
+    func setConnectionMode(_ mode: AirSIMConnectionMode) {
+        ConnectionModePreference.set(mode)
+        let policy = ConnectionModeRuntimePolicy(mode: mode)
         cloudStatusRefreshTask?.cancel()
         cloudStatusRefreshTask = nil
         cloudStatusRefreshGeneration &+= 1
         lastCloudStatusRefresh = .distantPast
-        if enabled {
-            UserDefaults.standard.set(false, forKey: CloudModePreference.key)
+        if !policy.startsCloud {
             cloudAgentStatus = nil
             cloudAgentDirectory = nil
         }
-        callKit.setEnabled(!enabled)
-        VoIPPushController.shared.setLocalModeEnabled(enabled)
+        callKit.setEnabled(policy.usesCallKit)
+        VoIPPushController.shared.setLocalModeEnabled(!policy.startsCloud)
         WatchCallCoordinator.shared.refreshMediaPolicy()
-        if enabled {
+        if !policy.startsCloud {
             Task { [weak self] in
                 guard let self, let (api, _) = await self.readyVoWLANRoute() else { return }
                 try? await api.setPushCloudEnabled(false)
             }
         }
+        if policy.startsVoWLAN {
+            vowlan.restartBrowsing()
+            Task { await vowlan.probeNow() }
+        } else {
+            vowlan.stopBrowsing()
+        }
+        if policy.startsCloud { startCloudStatusQueryIfNeeded() }
         objectWillChange.send()
         if hasStarted { restartPolling() }
     }

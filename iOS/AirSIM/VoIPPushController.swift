@@ -178,6 +178,11 @@ enum CloudModePreference {
     static let key = "airsim.cloud-audio-relay-enabled"
 
     static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: ConnectionModePreference.key) != nil {
+            return ConnectionModeRuntimePolicy(
+                mode: ConnectionModePreference.selected(defaults: defaults)
+            ).startsCloud
+        }
         guard !LocalModePreference.isEnabled(defaults: defaults) else { return false }
         guard defaults.object(forKey: key) != nil else { return true }
         return defaults.bool(forKey: key)
@@ -188,7 +193,10 @@ enum LocalModePreference {
     static let key = "airsim.local-only-mode-enabled"
 
     static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: key)
+        if defaults.object(forKey: ConnectionModePreference.key) != nil {
+            return ConnectionModePreference.selected(defaults: defaults) == .vowlan
+        }
+        return defaults.bool(forKey: key)
     }
 }
 
@@ -237,14 +245,14 @@ enum RelayHealthValidation {
     }
 }
 
-enum AirSIMConnectionMode: Equatable, Sendable {
+enum ConnectionPresentationMode: Equatable, Sendable {
     case vowlan
     case cloud
     case offline
 }
 
 struct ConnectionModePresentation: Equatable, Sendable {
-    let mode: AirSIMConnectionMode
+    let mode: ConnectionPresentationMode
     let title: String
     let status: String
     let detail: String

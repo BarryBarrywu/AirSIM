@@ -98,21 +98,21 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         IncomingCallNotification.registerCategory()
-        let localModeEnabled = LocalModePreference.isEnabled()
-        CallKitController.shared.setEnabled(!localModeEnabled)
-        if !localModeEnabled, CallKitController.shared.handler == nil {
+        let policy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
+        CallKitController.shared.setEnabled(policy.usesCallKit)
+        if policy.usesCallKit, CallKitController.shared.handler == nil {
             CallKitController.shared.handler = coldLaunchCallHandler
         }
 		// Watch token 与跨设备接听所有权必须在冷启动阶段就可接收，不能等待
 		// SwiftUI 首屏 onAppear（锁屏 PushKit 唤醒时首屏可能永远不出现）。
 		WatchCallCoordinator.shared.start()
-        if !localModeEnabled {
+        if policy.startsCloud {
             VoIPPushController.shared.start()
             application.registerForRemoteNotifications()
         }
 #if DEBUG
-        print(localModeEnabled
-            ? "[AirSIM Local] 已跳过 APNs、PushKit 与 CallKit 注册"
+        print(!policy.startsCloud
+            ? "[AirSIM Local] 已跳过 APNs 与 PushKit 注册"
             : "[AirSIM APNs] 已启动普通通知与 PushKit 注册")
 #endif
         return true
@@ -120,7 +120,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         // 首次授权弹窗可能晚于 didFinishLaunching 返回；回到前台时重新登记是幂等的。
-        guard !LocalModePreference.isEnabled() else { return }
+        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else { return }
         VoIPPushController.shared.start()
         application.registerForRemoteNotifications()
         Task { await VoIPPushController.shared.syncRegistration() }
@@ -130,7 +130,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
-        guard !LocalModePreference.isEnabled() else { return }
+        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else { return }
         VoIPPushController.shared.storeAlertToken(deviceToken)
 #if DEBUG
         print("[AirSIM APNs] 普通通知 token 已更新；字节数=\(deviceToken.count)")
@@ -141,7 +141,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-        guard !LocalModePreference.isEnabled() else { return }
+        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else { return }
         VoIPPushController.shared.clearAlertToken()
 #if DEBUG
         print("[AirSIM APNs] 普通通知 token 注册失败：\(error.localizedDescription)")
@@ -153,7 +153,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        guard !LocalModePreference.isEnabled() else {
+        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else {
             completionHandler(.noData)
             return
         }
@@ -557,7 +557,9 @@ final class IncomingCallNotifier {
             }
 #endif
             Task { @MainActor in
-                guard !LocalModePreference.isEnabled() else { return }
+                guard ConnectionModeRuntimePolicy(
+                    mode: ConnectionModePreference.selected()
+                ).startsCloud else { return }
                 VoIPPushController.shared.start()
                 UIApplication.shared.registerForRemoteNotifications()
             }

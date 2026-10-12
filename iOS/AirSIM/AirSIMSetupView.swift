@@ -4,8 +4,7 @@ import SwiftUI
 struct AirSIMFirstConnectionView: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage("airsim.first-connection-complete") private var completed = false
-    @AppStorage(LocalModePreference.key) private var localModeEnabled = false
-    @AppStorage(CloudModePreference.key) private var cloudModeEnabled = true
+    @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
     @State private var showingPairing = false
 
     var body: some View {
@@ -34,19 +33,19 @@ struct AirSIMFirstConnectionView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
 
-                Toggle(isOn: $localModeEnabled) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Label("仅本地模式", systemImage: "wifi")
-                            .font(.headline)
-                        Text("只使用 VoWLAN，不需要 Relay、PushKit 或 CallKit")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                Picker("连接模式", selection: $connectionModeRaw) {
+                    ForEach(AirSIMConnectionMode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
                     }
                 }
-                .onChange(of: localModeEnabled) { enabled in
-                    if enabled { cloudModeEnabled = false }
-                    model.setLocalModeEnabled(enabled)
+                .pickerStyle(.segmented)
+                .onChange(of: connectionModeRaw) { rawValue in
+                    guard let mode = AirSIMConnectionMode(rawValue: rawValue) else { return }
+                    model.setConnectionMode(mode)
                 }
+                Text(selectedMode.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Spacer()
 
@@ -78,6 +77,10 @@ struct AirSIMFirstConnectionView: View {
             }
         }
     }
+
+    private var selectedMode: AirSIMConnectionMode {
+        AirSIMConnectionMode(rawValue: connectionModeRaw) ?? .automatic
+    }
 }
 
 struct AirSIMSettingsView: View {
@@ -89,8 +92,7 @@ struct AirSIMSettingsView: View {
 
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: AppSettings
-    @AppStorage(LocalModePreference.key) private var localModeEnabled = false
-    @AppStorage(CloudModePreference.key) private var cloudModeEnabled = true
+    @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @State private var relayURL = RelayConfiguration.effectiveURL(
         stored: UserDefaults.standard.string(forKey: "airsim.push-relay-url"),
@@ -106,22 +108,22 @@ struct AirSIMSettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle(isOn: $localModeEnabled) {
-                        Label("仅本地模式", systemImage: "wifi")
+                    Picker("连接模式", selection: $connectionModeRaw) {
+                        ForEach(AirSIMConnectionMode.allCases) { mode in
+                            Label(mode.title, systemImage: modeIcon(mode)).tag(mode.rawValue)
+                        }
                     }
-                    .onChange(of: localModeEnabled) { enabled in
+                    .onChange(of: connectionModeRaw) { rawValue in
+                        guard let mode = AirSIMConnectionMode(rawValue: rawValue) else { return }
                         selfTestTask?.cancel()
                         selfTestPhase = .idle
                         selfTestReport = nil
-                        if enabled { cloudModeEnabled = false }
-                        model.setLocalModeEnabled(enabled)
+                        model.setConnectionMode(mode)
                     }
                 } header: {
                     Text("运行模式")
                 } footer: {
-                    Text(localModeEnabled
-                        ? "仅使用同一 Wi-Fi 或手机热点下的 VoWLAN。不会注册 Relay、APNs、PushKit 或 CallKit。"
-                        : "关闭后可按需启用云端 Relay、PushKit 和 CallKit。")
+                    Text(selectedMode.detail)
                 }
 
                 Section("当前连接") {
@@ -130,11 +132,9 @@ struct AirSIMSettingsView: View {
                     LabeledContent("VoWLAN", value: VoWLANStatusCopy.text(for: model.vowlan.availability))
                     LabeledContent(
                         "云端 Relay",
-                        value: localModeEnabled
-                            ? "本地模式已关闭"
-                            : (!cloudModeEnabled
-                            ? "已关闭"
-                            : (model.cloudAgentStatus?.cloudOnline == true ? "Agent 在线" : "不可达"))
+                        value: runtimePolicy.startsCloud
+                            ? (model.cloudAgentStatus?.cloudOnline == true ? "Agent 在线" : "不可达")
+                            : "当前模式已关闭"
                     )
                     Text(model.connectionModePresentation.detail)
                         .font(.footnote)
@@ -173,29 +173,13 @@ struct AirSIMSettingsView: View {
                 }
 
                 Section {
-                    Toggle(isOn: $cloudModeEnabled) {
-                        Label("远程通话与短信", systemImage: "cloud")
-                    }
-                    .disabled(localModeEnabled)
-                    .onChange(of: cloudModeEnabled) { enabled in
-                        selfTestTask?.cancel()
-                        selfTestPhase = .idle
-                        selfTestReport = nil
-                        Task {
-                            if let (api, _) = await model.readyVoWLANRoute() {
-                                await VoIPPushController.shared.setCloudModeEnabled(enabled, with: api)
-                            } else {
-                                await VoIPPushController.shared.setCloudModeEnabled(enabled)
-                            }
-                            await model.refreshCloudStatusForDiagnostics()
-                        }
-                    }
+                    LabeledContent("远程通话与短信", value: runtimePolicy.startsCloud ? "已启用" : "已关闭")
 
                     TextField("https://relay.example.com", text: $relayURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .disabled(localModeEnabled)
+                        .disabled(!runtimePolicy.startsCloud)
                     Button("保存 Relay 地址") {
                         VoIPPushController.shared.updateRelayURL(relayURL)
                         selfTestTask?.cancel()
@@ -209,7 +193,7 @@ struct AirSIMSettingsView: View {
                         }
                         message = "地址已保存；配对后自动注册。"
                     }
-                    .disabled(localModeEnabled)
+                    .disabled(!runtimePolicy.startsCloud)
                     if let message { Text(message).foregroundStyle(.secondary) }
                 } header: {
                     Text("云端 Relay")
@@ -229,7 +213,7 @@ struct AirSIMSettingsView: View {
                             }
                         }
                     }
-                    .disabled(localModeEnabled || selfTestPhase == .running)
+                    .disabled(!runtimePolicy.startsCloud || selfTestPhase == .running)
 
                     if let report = selfTestReport {
                         ForEach(report.steps) { step in
@@ -254,8 +238,8 @@ struct AirSIMSettingsView: View {
                 } header: {
                     Text("云端模式自检")
                 } footer: {
-                    Text(localModeEnabled
-                        ? "本地模式不运行云端自检。"
+                    Text(!runtimePolicy.startsCloud
+                        ? "当前连接模式不运行云端自检。"
                         : "依次验证本机 Push 凭据、AirSIM Relay 身份、设备注册和 Agent 最近 90 秒心跳；不会拨号或发送短信。")
                 }
 
@@ -270,7 +254,7 @@ struct AirSIMSettingsView: View {
             }
             .navigationTitle("设置")
             .task {
-                if !localModeEnabled {
+                if runtimePolicy.startsCloud {
                     await model.refreshCloudStatusForDiagnostics()
                 }
             }
@@ -295,6 +279,23 @@ struct AirSIMSettingsView: View {
             selfTestReport = report
             selfTestPhase = .completed
             await model.refreshCloudStatusForDiagnostics()
+        }
+    }
+
+    private var selectedMode: AirSIMConnectionMode {
+        AirSIMConnectionMode(rawValue: connectionModeRaw) ?? .automatic
+    }
+
+    private var runtimePolicy: ConnectionModeRuntimePolicy {
+        ConnectionModeRuntimePolicy(mode: selectedMode)
+    }
+
+    private func modeIcon(_ mode: AirSIMConnectionMode) -> String {
+        switch mode {
+        case .vowlan: return "wifi"
+        case .bluetooth: return "wave.3.right"
+        case .cloud: return "cloud"
+        case .automatic: return "arrow.triangle.branch"
         }
     }
 
