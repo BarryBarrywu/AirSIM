@@ -56,17 +56,34 @@ func cloudCommandURL(registration pushRegistration) (string, error) {
 	return relay.String(), nil
 }
 
+func cloudCommandReconnectDelay(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	delay := 3 * time.Second
+	for attempt := 1; attempt < failures && delay < 15*time.Second; attempt++ {
+		delay *= 2
+	}
+	if delay > 15*time.Second {
+		return 15 * time.Second
+	}
+	return delay
+}
+
 func (a *agent) cloudCommandLoop() {
+	failures := 0
 	for {
 		registration, ready := a.push.commandRegistration()
 		if !ready {
+			failures = 0
 			time.Sleep(3 * time.Second)
 			continue
 		}
 		endpoint, err := cloudCommandURL(registration)
 		if err != nil {
 			a.debug.add("cloud-command", "error", "公网命令地址无效", err.Error(), nil)
-			time.Sleep(5 * time.Second)
+			failures++
+			time.Sleep(cloudCommandReconnectDelay(failures))
 			continue
 		}
 		if err := a.syncCloudCommandsOnce(); err != nil {
@@ -77,14 +94,21 @@ func (a *agent) cloudCommandLoop() {
 		if err != nil {
 			cancel()
 			a.debug.add("cloud-command", "error", "连接公网命令通道失败", err.Error(), nil)
-			time.Sleep(3 * time.Second)
+			failures++
+			time.Sleep(cloudCommandReconnectDelay(failures))
 			continue
 		}
+		connectedAt := time.Now()
 		a.debug.add("cloud-command", "event", "公网拨号与短信通道已连接", "", nil)
 		a.serveCloudCommands(ctx, socket)
 		_ = socket.Close()
 		cancel()
-		time.Sleep(time.Second)
+		if time.Since(connectedAt) >= time.Minute {
+			failures = 0
+		} else {
+			failures++
+		}
+		time.Sleep(cloudCommandReconnectDelay(failures))
 	}
 }
 
@@ -206,7 +230,7 @@ func (a *agent) executeCloudCommand(command cloudDeviceCommand) cloudCommandResu
 			if androidAction == "rescue_hangup" {
 				androidAction = "end"
 			}
-			androidResult := a.executeAndroidCallCommand(command.CommandID, androidAction)
+			androidResult := a.executeAndroidCallCommandForID(command.CommandID, androidAction, descriptor.CallID)
 			if !androidResult.Success {
 				result.Status, result.Error = "failed", androidResult.Error
 				a.debug.add("cloud-call-control", "failed", "Android Telecom 命令失败", androidResult.Error, fields)
@@ -264,7 +288,15 @@ func (a *agent) executeAndroidCallCommand(commandID, action string) androidComma
 	return a.executeAndroidCallCommandWithNumber(commandID, action, "")
 }
 
+func (a *agent) executeAndroidCallCommandForID(commandID, action, expectedID string) androidCommandResult {
+	return a.executeAndroidCallCommandWithNumberForID(commandID, action, "", expectedID)
+}
+
 func (a *agent) executeAndroidCallCommandWithNumber(commandID, action, number string) androidCommandResult {
+	return a.executeAndroidCallCommandWithNumberForID(commandID, action, number, "")
+}
+
+func (a *agent) executeAndroidCallCommandWithNumberForID(commandID, action, number, expectedID string) androidCommandResult {
 	switch action {
 	case "answer", "reject", "end", "dtmf":
 	default:
@@ -273,6 +305,10 @@ func (a *agent) executeAndroidCallCommandWithNumber(commandID, action, number st
 	a.mu.RLock()
 	callID := ""
 	if a.calls.Active != nil {
+		if expectedID != "" && a.calls.Active.ID != expectedID {
+			a.mu.RUnlock()
+			return androidCommandResult{ID: commandID, Error: "通话 ID 已失效"}
+		}
 		callID = a.calls.Active.AndroidID
 	}
 	a.mu.RUnlock()

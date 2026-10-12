@@ -25,11 +25,13 @@ public final class StandaloneAgentService extends Service {
     private static final ConcurrentLinkedQueue<String> CALL_EVENTS = new ConcurrentLinkedQueue<>();
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
     private final Set<String> completedCommands = new LinkedHashSet<>();
+    private final NotificationUpdateGate notificationGate = new NotificationUpdateGate();
     private volatile boolean running;
     private StandaloneAgentStore store;
     private StandaloneRelayClient relay;
     private int syncedRegistrationHash;
     private long lastHeartbeat;
+    private long lastCommandPoll;
     private volatile StandaloneWebSocket commandSocket;
     private volatile boolean commandChannelConnected;
 
@@ -65,6 +67,7 @@ public final class StandaloneAgentService extends Service {
         int failures = 0;
         while (running) {
             try {
+                SMSInboxScanner.scanIfDue(this);
                 JSONObject registration = store.registration();
                 if (registration == null || !store.cloudEnabled()) {
                     update(registration == null ? "内置 Agent 在线 · 等待 iPhone 配对" : "内置 Agent 在线 · 云端已关闭");
@@ -75,7 +78,10 @@ public final class StandaloneAgentService extends Service {
                 long now = System.currentTimeMillis();
                 if (now - lastHeartbeat >= 30_000) sendHeartbeat(registration);
                 flushEvents(registration);
-                if (!commandChannelConnected) pollCommands(registration);
+                if (CommandPollingPolicy.shouldPoll(commandChannelConnected, lastCommandPoll, now)) {
+                    lastCommandPoll = now;
+                    pollCommands(registration);
+                }
                 failures = 0;
                 update("内置 Agent 在线 · Relay 已连接");
                 Thread.sleep(2_000);
@@ -87,7 +93,7 @@ public final class StandaloneAgentService extends Service {
                 store.recordError(error.getClass().getSimpleName() + ": " + error.getMessage());
                 BridgeLog.error("standalone_agent_cycle_failed failures=" + failures, error);
                 update("内置 Agent 正在重连 · " + failures);
-                try { Thread.sleep(RetryPolicy.delayMillis(failures - 1)); }
+                try { Thread.sleep(RelayRetryPolicy.delayMillis(failures, error)); }
                 catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
             }
         }
@@ -156,6 +162,7 @@ public final class StandaloneAgentService extends Service {
         int failures = 0;
         while (running) {
             StandaloneWebSocket socket = null;
+            Throwable failure = null;
             try {
                 JSONObject registration = store.registration();
                 if (registration == null || !store.cloudEnabled()) {
@@ -193,6 +200,7 @@ public final class StandaloneAgentService extends Service {
                 return;
             } catch (Exception error) {
                 failures++;
+                failure = error;
                 if (running) BridgeLog.error("standalone_command_channel_failed failures=" + failures, error);
             } finally {
                 commandChannelConnected = false;
@@ -200,7 +208,7 @@ public final class StandaloneAgentService extends Service {
                 if (socket != null) socket.close();
             }
             if (running) {
-                try { Thread.sleep(RetryPolicy.delayMillis(failures - 1)); }
+                try { Thread.sleep(RelayRetryPolicy.delayMillis(failures, failure)); }
                 catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
             }
         }
@@ -239,8 +247,11 @@ public final class StandaloneAgentService extends Service {
     }
 
     private void update(String detail) {
+        long now = System.currentTimeMillis();
+        if (!notificationGate.shouldPublish(detail, now)) return;
         getSystemService(android.app.NotificationManager.class).notify(
                 BridgeNotification.WATCHDOG_ID, BridgeNotification.status(this, detail));
+        notificationGate.published(detail, now);
     }
 
     @Override public void onDestroy() {

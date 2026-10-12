@@ -68,9 +68,13 @@ class MemoryStatusNamespace {
   constructor() {
     this.storage = new MemoryDurableStorage();
     this.registry = new AgentStatusRegistry({ storage: this.storage });
+    this.fetchCount = 0;
   }
   idFromName(name) { return name; }
-  get() { return { fetch: (request, options) => this.registry.fetch(new Request(request, options)) }; }
+  get() { return { fetch: (request, options) => {
+    this.fetchCount += 1;
+    return this.registry.fetch(new Request(request, options));
+  } }; }
 }
 
 class UnavailableStatusNamespace {
@@ -241,6 +245,115 @@ test("healthy status registry keeps heartbeat and dashboard refresh off KV", asy
   assert.equal(response.status, 200);
   assert.equal((await response.json()).metrics.online, 1);
   assert.deepEqual(env.DEVICES.operations, { get: 0, put: 0, delete: 0, list: 0 });
+});
+
+test("heartbeat authenticates and writes with one durable request", async () => {
+  const env = testEnvironment();
+  env.STATUS = new MemoryStatusNamespace();
+  assert.equal((await worker.fetch(post("/v1/devices/register", registration), env)).status, 200);
+  env.STATUS.fetchCount = 0;
+
+  const response = await worker.fetch(post("/v1/events/heartbeat", {
+    event: "agent_heartbeat",
+    device_id: registration.device_id,
+    device_secret: registration.device_secret,
+    agent_id: "samsung-standalone",
+    agent_kind: "standalone",
+    agent_version: "standalone-0.1.0",
+    at_ok: true,
+    cellular_state: "registered",
+  }), env);
+
+  assert.equal(response.status, 202);
+  assert.equal(env.STATUS.fetchCount, 1);
+  const latest = await env.STATUS.storage.get("heartbeat:iphone-air");
+  const agent = await env.STATUS.storage.get("heartbeat:iphone-air:agent:samsung-standalone");
+  assert.equal(latest.agent_id, "samsung-standalone");
+  assert.deepEqual(agent, latest);
+  assert.equal(latest.device_secret, undefined);
+
+  env.STATUS.fetchCount = 0;
+  const denied = await worker.fetch(post("/v1/events/heartbeat", {
+    event: "agent_heartbeat",
+    device_id: registration.device_id,
+    device_secret: "wrong-secret",
+    agent_id: "attacker",
+    at_ok: true,
+    cellular_state: "registered",
+  }), env);
+  assert.equal(denied.status, 401);
+  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(await env.STATUS.storage.get("heartbeat:iphone-air:agent:attacker"), undefined);
+});
+
+test("device status authenticates and reads agents with one durable request", async () => {
+  const env = testEnvironment();
+  env.STATUS = new MemoryStatusNamespace();
+  assert.equal((await worker.fetch(post("/v1/devices/register", registration), env)).status, 200);
+  assert.equal((await worker.fetch(post("/v1/events/heartbeat", {
+    event: "agent_heartbeat", device_id: registration.device_id,
+    device_secret: registration.device_secret, agent_id: "samsung-standalone",
+    at_ok: true, cellular_state: "registered",
+  }), env)).status, 202);
+  env.STATUS.fetchCount = 0;
+
+  const response = await worker.fetch(post("/v1/devices/status", {
+    device_id: registration.device_id, device_secret: registration.device_secret,
+  }), env);
+  const status = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(status.cloud_online, true);
+  assert.equal(status.active_agent_id, "samsung-standalone");
+  assert.equal(status.agents.length, 1);
+
+  env.STATUS.fetchCount = 0;
+  const denied = await worker.fetch(post("/v1/devices/status", {
+    device_id: registration.device_id, device_secret: "wrong-secret",
+  }), env);
+  assert.equal(denied.status, 401);
+  assert.equal(env.STATUS.fetchCount, 1);
+});
+
+test("one-request status still reads a pre-roster legacy heartbeat", async () => {
+  const env = testEnvironment();
+  env.STATUS = new MemoryStatusNamespace();
+  assert.equal((await worker.fetch(post("/v1/devices/register", registration), env)).status, 200);
+  await env.STATUS.storage.put("heartbeat:iphone-air", {
+    received_at_ms: Date.now(), agent_id: "legacy", agent_version: "0.3.42",
+    at_ok: true, cellular_state: "registered",
+  });
+  env.STATUS.fetchCount = 0;
+
+  const response = await worker.fetch(post("/v1/devices/status", {
+    device_id: registration.device_id, device_secret: registration.device_secret,
+  }), env);
+  const status = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(status.cloud_online, true);
+  assert.equal(status.active_agent_id, "legacy");
+  assert.equal(status.agents.length, 1);
+});
+
+test("one-request status falls back to a KV heartbeat during registry migration", async () => {
+  const env = testEnvironment();
+  env.STATUS = new MemoryStatusNamespace();
+  assert.equal((await worker.fetch(post("/v1/devices/register", registration), env)).status, 200);
+  await env.DEVICES.put("heartbeat:iphone-air:agent:legacy", JSON.stringify({
+    received_at_ms: Date.now(), agent_id: "legacy", agent_version: "0.3.41",
+    at_ok: true, cellular_state: "registered",
+  }));
+  env.STATUS.fetchCount = 0;
+
+  const response = await worker.fetch(post("/v1/devices/status", {
+    device_id: registration.device_id, device_secret: registration.device_secret,
+  }), env);
+  const status = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(status.cloud_online, true);
+  assert.equal(status.active_agent_id, "legacy");
 });
 
 test("different devices register and authenticate independently", async () => {
@@ -1269,6 +1382,60 @@ test("wrong device secret is rejected before APNs", async () => {
     sender: "10010", content: "test", timestamp: new Date().toISOString(),
   }), env);
   assert.equal(response.status, 401);
+});
+
+test("delayed incoming SMS is delivered using its relay arrival time", async () => {
+  const env = testEnvironment();
+  await worker.fetch(post("/v1/devices/register", registration), env);
+  const captured = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    captured.push(JSON.parse(options.body));
+    return new Response("", { status: 200 });
+  };
+  try {
+    const before = Date.now();
+    const response = await worker.fetch(post("/v1/events/sms", {
+      event: "incoming_sms", device_id: registration.device_id,
+      device_secret: registration.device_secret, delivery_id: "delayed-sms-1",
+      sender: "10010", content: "迟到的提醒",
+      timestamp: new Date(before - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    }), env);
+    const after = Date.now();
+    assert.equal(response.status, 202);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].delivery_id, "delayed-sms-1");
+    assert.equal(captured[0].content, "迟到的提醒");
+    assert.ok(Date.parse(captured[0].timestamp) >= before);
+    assert.ok(Date.parse(captured[0].timestamp) <= after);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("incoming SMS without an originating address still reaches iPhone", async () => {
+  const env = testEnvironment();
+  await worker.fetch(post("/v1/devices/register", registration), env);
+  const captured = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    captured.push(JSON.parse(options.body));
+    return new Response("", { status: 200 });
+  };
+  try {
+    const response = await worker.fetch(post("/v1/events/sms", {
+      event: "incoming_sms", device_id: registration.device_id,
+      device_secret: registration.device_secret, delivery_id: "senderless-sms-1",
+      sender: "", content: "运营商提醒", timestamp: new Date().toISOString(),
+    }), env);
+    assert.equal(response.status, 202);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].sender, "未知号码");
+    assert.equal(captured[0].aps.alert.title, "未知号码");
+    assert.equal(captured[0].content, "运营商提醒");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("registration is pinned to the signed app bundle", () => {

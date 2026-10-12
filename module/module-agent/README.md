@@ -2,7 +2,7 @@
 
 Agent 运行在三星 Android 的 AVF Linux 环境中，连接三星控制 App、通话音频桥、Cloudflare Relay 与 iPhone/Apple Watch 客户端。
 
-当前 Agent 发布为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包 `0.4.6-1`），配套 Android/iOS 应用发布为 [`v0.9.5`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.5)。维护者 Relay 是 `https://airsim-push.remotepilot.site`；`https://push.remotepilot.site` 仅属于 DJOneHub。
+当前 Agent 发布为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包 `0.4.6-1`），配套 Android/iOS 应用发布为 [`v0.9.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6)。维护者 Relay 是 `https://airsim-push.remotepilot.site`；`https://push.remotepilot.site` 仅属于 DJOneHub。
 
 首次安装、控制令牌配对、`8575` Agent 可达但 `8576` installerd 不可用、以及 Terminal 启动冲突的无损排障步骤，统一见 [AVF 安装指南](../../docs/AVF_INSTALL_GUIDE.md)。`/api/health` 成功不代表安装服务或配对已经就绪。
 
@@ -67,6 +67,8 @@ AIRSIM_SAMSUNG_PCM_ADDRESS=<AVF_PRIVATE_IP>:7580 \
 - 健康状态与能力查询
 
 外部客户端不得直接访问 AVF 内部控制地址。VoWLAN 由三星 App 执行认证、路由白名单和响应大小限制后再转发。
+
+VoWLAN 接听、拒接和挂断请求可带 JSON `call_id`，对应 `/api/calls/status` 的活动通话 `id`。Agent 会拒绝过期或不匹配的 ID，防止旧通知控制新通话；旧客户端未携带该字段时仍按兼容路径处理。
 
 ## 安全与运维
 

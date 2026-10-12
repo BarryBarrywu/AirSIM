@@ -43,6 +43,12 @@ enum CallKitActionCoordinator {
     }
 }
 
+enum CallKitEndActionPolicy {
+    static func shouldForwardToBackend(systemCallWasCurrent: Bool) -> Bool {
+        systemCallWasCurrent
+    }
+}
+
 extension CallKitActionHandling {
     func callKitPrepareAudioSession() throws {}
     func callKitDidReceiveIncoming(_ call: IncomingVoIPCall) {}
@@ -590,12 +596,20 @@ final class CallKitController: NSObject {
 
     private func performEnd(_ action: CXEndCallAction) async {
         let currentHandler = handler
+        // reportCall(ended:) may be followed by a delayed CXEndCallAction after
+        // the authoritative Agent state already cleared this UUID. That action
+        // is cleanup, not a new user hangup whose missing transport needs an alert.
+        let systemCallWasCurrent = currentUUID != nil
         var backendError: Error?
-        do {
-            guard let currentHandler else { throw CallKitBridgeError.handlerUnavailable }
-            try await currentHandler.callKitEnd()
-        } catch {
-            backendError = error
+        if CallKitEndActionPolicy.shouldForwardToBackend(
+            systemCallWasCurrent: systemCallWasCurrent
+        ) {
+            do {
+                guard let currentHandler else { throw CallKitBridgeError.handlerUnavailable }
+                try await currentHandler.callKitEnd()
+            } catch {
+                backendError = error
+            }
         }
 
         // CallKit owns the local system-call lifecycle. A temporarily missing

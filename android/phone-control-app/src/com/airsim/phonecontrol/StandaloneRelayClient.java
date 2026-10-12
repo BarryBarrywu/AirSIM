@@ -45,7 +45,7 @@ final class StandaloneRelayClient {
             throws Exception {
         Response response = post(registration, path, payload, timeoutMillis);
         if (response.status < 200 || response.status >= 300) {
-            throw new IllegalStateException("Relay HTTP " + response.status + ": " + response.body);
+            throw new RelayHTTPException(response.status, response.body);
         }
         return response.body.isBlank() ? new JSONObject() : new JSONObject(response.body);
     }

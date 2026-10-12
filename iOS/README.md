@@ -2,7 +2,7 @@
 
 该目录包含面向三星 Android 电话端的 iPhone、Apple Watch、Live Activity 与共享模型。客户端通过 VoWLAN 直连三星手机，或通过独立 Cloudflare Relay 使用远程通话与短信。
 
-当前应用构建为 `v0.9.5 (78)`，同版本公开 Release 提供 build `78` 的 unsigned IPA；配套 AVF Agent 为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者 `com.eric3u.airsim` 构建使用 `https://airsim-push.remotepilot.site`；自行更换 Bundle ID 后必须使用自己的 Relay 和 APNs 凭据。
+当前应用构建为 `v0.9.6 (79)`，同版本公开 Release 提供 build `79` 的 unsigned IPA；配套 AVF Agent 为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者 `com.eric3u.airsim` 构建使用 `https://airsim-push.remotepilot.site`；自行更换 Bundle ID 后必须使用自己的 Relay 和 APNs 凭据。
 
 ## Xcode 工程
 
@@ -25,13 +25,17 @@ iOS/AirSIM.xcodeproj
 - VoWLAN 服务发现、HMAC 鉴权和健康检查
 - CallKit 拨号、来电、接听、挂断、静音与 DTMF
 - PushKit、通知 APNs 与 ActivityKit
+- 首次进入前台优先申请麦克风权限；完成麦克风授权决策后才启动本地发现和通知授权。若系统暂缓弹窗，下次进入前台会重试，不需要重新配对。
 - Apple Watch 拨号、接听和通话媒体
 - 短信列表、发送、通知和联系人整合
 - VoWLAN 与云端 Relay 传输选择
 - 云端 PCM 使用有界缓冲与 20 毫秒发送节奏，降低突发网络抖动时的卡顿风险。
 - 设置页实时显示当前 VoWLAN / 云端模式与 Agent 心跳状态
+- 云端模式在 App 进入前台时查询一次 Relay 状态；需要走云端拨号时再核对一次，灵动岛显示通话前等待一次状态查询（后台来电也适用）。本地模式不查询 Relay，VoWLAN 失联和后台待机更新不会启动定时云端查询，避免反复消耗请求额度。
 - 四阶段云端自检：本机 Push 凭据、Relay 身份、设备注册、Agent 心跳
 - 本地通话记录、诊断和媒体健康状态
+
+VoWLAN 接听、拒接和挂断请求在已知当前通话时携带 `/api/calls/status` 返回的 `call_id`（JSON 字段 `call_id`）。Standalone 与新版 AVF Agent 会校验它，避免旧来电通知误操作后续通话；未取得通话 ID 时仍可发送兼容旧版 Agent 的空请求。
 
 ### 短信收发与推送
 

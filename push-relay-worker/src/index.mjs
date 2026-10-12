@@ -5,10 +5,14 @@ import {
   dashboardVirtualCall,
   recordDashboardEvent,
 } from "./dashboard.mjs";
+import { constantTimeEqual, sha256Hex } from "./auth-crypto.mjs";
 import {
+  authenticateAndReadAgentHeartbeats,
+  authenticateAndWriteAgentHeartbeat,
   deleteRelayState,
   readAgentHeartbeat,
   readAgentHeartbeats,
+  readAgentHeartbeatsFromKV,
   readDeviceRecord,
   readRelayState,
   writeAgentHeartbeat,
@@ -1236,10 +1240,17 @@ async function receiveSMS(request, env) {
   const timestamp = Date.parse(message.timestamp);
   const now = Date.now();
   if (message.event !== "incoming_sms" || !nonEmpty(message.delivery_id) ||
-      !nonEmpty(message.sender) || !nonEmpty(message.content) || !Number.isFinite(timestamp) ||
-      timestamp > now + 300_000 || timestamp < now - 7 * 24 * 60 * 60 * 1000) {
+      !nonEmpty(message.content) || !Number.isFinite(timestamp) ||
+      timestamp > now + 300_000) {
     return jsonResponse(400, { error: "invalid incoming SMS" });
   }
+  const sender = nonEmpty(message.sender) ? message.sender.trim() : "未知号码";
+  // Android's carrier timestamp can be old when the inbox provider restores a message,
+  // or when an offline Agent flushes its durable queue after a long Relay outage.
+  // Preserve the delivery ID for deduplication, but show the arrival time on iPhone.
+  const deliveryTimestamp = timestamp < now - 7 * 24 * 60 * 60 * 1000
+    ? new Date(now).toISOString()
+    : message.timestamp;
 
   const dedupeKey = `dedupe:sms:${authenticated.device.device_id}:${message.delivery_id}`;
   if (await readRelayState(env, dedupeKey)) {
@@ -1250,18 +1261,18 @@ async function receiveSMS(request, env) {
   const [content, truncated] = truncateCodePoints(message.content, 700);
   const payload = {
     aps: {
-      alert: { title: message.sender, body: content },
+      alert: { title: sender, body: content },
       sound: "default",
-      "thread-id": `airsim-sms-${message.sender}`.slice(0, 64),
+      "thread-id": `airsim-sms-${sender}`.slice(0, 64),
       "content-available": 1,
     },
     event: "incoming_sms",
     delivery_id: message.delivery_id,
-    sender: message.sender,
+    sender,
     content,
     content_truncated: truncated,
     code: stringValue(message.code),
-    timestamp: message.timestamp,
+    timestamp: deliveryTimestamp,
   };
   try {
     await sendAPNs(env, authenticated.device, authenticated.device.alert_token, {
@@ -1290,11 +1301,11 @@ async function receiveSMS(request, env) {
 
 async function receiveAgentHeartbeat(request, env) {
   const heartbeat = await readJSON(request);
-  const authenticated = await authenticate(heartbeat, env);
-  if (authenticated.response) return authenticated.response;
   if (heartbeat.event !== "agent_heartbeat" ||
       !["registered", "searching", "denied", "unregistered"].includes(heartbeat.cellular_state) ||
       typeof heartbeat.at_ok !== "boolean") {
+    const authenticated = await authenticate(heartbeat, env);
+    if (authenticated.response) return authenticated.response;
     return jsonResponse(400, { error: "invalid agent heartbeat" });
   }
   const agentID = stringValue(heartbeat.agent_id) || "legacy";
@@ -1314,16 +1325,30 @@ async function receiveAgentHeartbeat(request, env) {
     ecm_carrier: stringValue(heartbeat.ecm_carrier),
     ...(Number.isFinite(heartbeat.signal_dbm) ? { signal_dbm: heartbeat.signal_dbm } : {}),
   };
+  const directResponse = await authenticateAndWriteAgentHeartbeat(env, heartbeat, agentID, record);
+  if (directResponse) return directResponse;
+  const authenticated = await authenticate(heartbeat, env);
+  if (authenticated.response) return authenticated.response;
   await writeAgentHeartbeat(env, authenticated.device.device_id, agentID, record);
   return jsonResponse(202, { received: true });
 }
 
 async function receiveDeviceStatus(request, env) {
   const query = await readJSON(request);
-  const authenticated = await authenticate(query, env);
-  if (authenticated.response) return authenticated.response;
+  const directResponse = await authenticateAndReadAgentHeartbeats(env, query);
+  if (directResponse && !directResponse.ok) return directResponse;
+  let heartbeats;
+  if (directResponse) {
+    heartbeats = await directResponse.json();
+    if (heartbeats.length === 0) {
+      heartbeats = await readAgentHeartbeatsFromKV(env, query.device_id.trim());
+    }
+  } else {
+    const authenticated = await authenticate(query, env);
+    if (authenticated.response) return authenticated.response;
+    heartbeats = await readAgentHeartbeats(env, authenticated.device.device_id);
+  }
   const now = Date.now();
-  const heartbeats = await readAgentHeartbeats(env, authenticated.device.device_id);
   const agents = heartbeats
     .filter((item) => item && Number.isFinite(item.received_at_ms))
     .sort((left, right) => right.received_at_ms - left.received_at_ms)
@@ -1727,22 +1752,6 @@ async function boundedCollapseID(value) {
   const text = stringValue(value);
   if (encoder.encode(text).byteLength <= 64) return text;
   return `airsim-${(await sha256Hex(text)).slice(0, 57)}`;
-}
-
-async function sha256Hex(value) {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function constantTimeEqual(left, right) {
-  if (typeof left !== "string" || typeof right !== "string") return false;
-  let difference = left.length ^ right.length;
-  const maximum = Math.max(left.length, right.length);
-  for (let index = 0; index < maximum; index += 1) {
-    difference |= (left.charCodeAt(index % Math.max(left.length, 1)) || 0) ^
-      (right.charCodeAt(index % Math.max(right.length, 1)) || 0);
-  }
-  return difference === 0;
 }
 
 function truncateCodePoints(value, maximum) {

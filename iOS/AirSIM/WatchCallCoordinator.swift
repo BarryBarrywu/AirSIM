@@ -243,7 +243,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
                     return
                 }
                 if cancelledWatchDialIDs.contains(requestID) {
-                    try? await api.hangupCall()
+                    try? await api.hangupCall(callID: record.id)
                     replyHandler(["ok": false, "error": "已取消拨号"])
                     return
                 }
@@ -319,7 +319,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         if let active = localWatchCall, active.requestID == requestID {
             Task { @MainActor in
                 do {
-                    try await active.api.hangupCall()
+                    try await active.api.hangupCall(callID: active.callID)
                     if localWatchCall?.callID == active.callID { localWatchCall = nil }
                 } catch {
                     NSLog("[AirSIM Watch Dial] VoWLAN 取消失败：%@", error.localizedDescription)
@@ -368,7 +368,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             }
             localWatchCall = LocalWatchCall(requestID: nil, callID: callID, uuid: uuid, api: api)
             do {
-                try await api.answerCall()
+                try await api.answerCall(callID: current.id)
             } catch {
                 localWatchCall = nil
                 throw error
@@ -406,7 +406,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         localEndInFlight = call.callID
         defer { localEndInFlight = nil }
         do {
-            try await call.api.hangupCall()
+            try await call.api.hangupCall(callID: call.callID)
             if localWatchCall?.callID == call.callID { localWatchCall = nil }
             replyHandler(["ok": true])
         } catch {
@@ -430,7 +430,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
                 replyHandler(["ok": false, "error": "来电已失效"])
                 return
             }
-            _ = try await api.rejectCall()
+            _ = try await api.rejectCall(callID: current.id)
             replyHandler(["ok": true])
         } catch {
             replyHandler(["ok": false, "error": error.localizedDescription])

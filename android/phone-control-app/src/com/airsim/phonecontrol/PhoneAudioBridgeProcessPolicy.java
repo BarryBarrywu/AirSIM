@@ -1,13 +1,17 @@
 package com.airsim.phonecontrol;
 
+import java.io.File;
+
 final class PhoneAudioBridgeProcessPolicy {
     private static final String MAIN_CLASS = "com.airsim.bridge.PhoneAudioBridge";
     private static final String LISTEN_PORT = "7580";
 
     private PhoneAudioBridgeProcessPolicy() {}
 
-    static boolean isStaleBridge(int candidatePid, int ownerPid, String commandLine) {
+    static boolean isStaleBridge(int candidatePid, int ownerPid, String commandLine,
+            String processEnvironment, String packageName) {
         if (candidatePid <= 0 || candidatePid == ownerPid || commandLine == null) return false;
+        if (processEnvironment == null || packageName == null || packageName.isEmpty()) return false;
         String[] arguments = commandLine.split("\0", -1);
         boolean hasMainClass = false;
         boolean hasListenPort = false;
@@ -31,6 +35,12 @@ final class PhoneAudioBridgeProcessPolicy {
                 hasExpectedRoute = true;
             }
         }
-        return hasMainClass && hasListenPort && hasExpectedRoute;
+        if (!hasMainClass || !hasListenPort || !hasExpectedRoute) return false;
+        for (String entry : processEnvironment.split("\0", -1)) {
+            if (!entry.startsWith("CLASSPATH=")) continue;
+            File parent = new File(entry.substring("CLASSPATH=".length())).getParentFile();
+            if (parent != null && parent.getName().startsWith(packageName + "-")) return true;
+        }
+        return false;
     }
 }

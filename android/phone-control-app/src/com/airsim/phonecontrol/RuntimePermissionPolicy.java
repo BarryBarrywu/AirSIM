@@ -7,11 +7,16 @@ final class RuntimePermissionPolicy {
     private static final String CALL_PHONE = "android.permission.CALL_PHONE";
     private static final String SEND_SMS = "android.permission.SEND_SMS";
     private static final String RECEIVE_SMS = "android.permission.RECEIVE_SMS";
+    private static final String READ_SMS = "android.permission.READ_SMS";
     private static final String READ_PHONE_STATE = "android.permission.READ_PHONE_STATE";
     private static final String READ_PHONE_NUMBERS = "android.permission.READ_PHONE_NUMBERS";
     private static final String POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS";
 
     private RuntimePermissionPolicy() {}
+
+    static String[] optionalInboxPermissions(boolean readSMSGranted, boolean alreadyPrompted) {
+        return readSMSGranted || alreadyPrompted ? new String[0] : new String[]{READ_SMS};
+    }
 
     static String[] missingPermissions(
             int sdk, boolean callPhoneGranted, boolean sendSMSGranted,

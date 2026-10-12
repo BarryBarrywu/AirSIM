@@ -123,9 +123,9 @@ final class StandaloneAgentGateway {
             case "/api/push/mode" -> ok(store.setCloudEnabled(
                     input.optBoolean("enabled", false)).toString());
             case "/api/calls/dial" -> command("dial", "", input.optString("number", ""), "");
-            case "/api/calls/answer" -> command("answer", CallRepository.idForAction("answer"), "", "");
-            case "/api/calls/reject" -> command("reject", CallRepository.idForAction("reject"), "", "");
-            case "/api/calls/hangup" -> command("end", CallRepository.idForAction("end"), "", "");
+            case "/api/calls/answer" -> command("answer", localCallTarget("answer", input), "", "");
+            case "/api/calls/reject" -> command("reject", localCallTarget("reject", input), "", "");
+            case "/api/calls/hangup" -> command("end", localCallTarget("end", input), "", "");
             case "/api/calls/dtmf" -> command("dtmf", CallRepository.idForAction("dtmf"), input.optString("digit", ""), "");
             case "/api/sms/send" -> command("send_sms", "", input.optString("phone", ""),
                     input.optString("message", ""));
@@ -177,7 +177,10 @@ final class StandaloneAgentGateway {
                     ? "end" : command.optString("action", "");
             default -> "";
         };
-        String callID = "dial".equals(action) || "send_sms".equals(action) ? "" : CallRepository.idForAction(action);
+        String callID = "call_control".equals(type)
+                ? StandaloneCloudMediaManager.get(context).androidCallIDFor(command.optJSONObject("call"))
+                : "dial".equals(action) || "send_sms".equals(action)
+                    ? "" : CallRepository.idForAction(action);
         AgentCommand local = new AgentCommand(commandID, action, callID,
                 command.optString("number", ""), command.optString("message", ""));
         AgentCommandDispatcher.Result result = execute(local);
@@ -223,6 +226,14 @@ final class StandaloneAgentGateway {
             case "send_sms" -> value.put("sent", true).put("segments", result.segments());
         }
         return ok(value.toString());
+    }
+
+    private String localCallTarget(String action, JSONObject input) {
+        synchronized (callsLock) {
+            return CallRepository.idForPublishedAction(action, input.optString("call_id"),
+                    activeCall == null ? "" : activeCall.optString("id"),
+                    activeCall == null ? "" : activeCall.optString("android_id"));
+        }
     }
 
     private AgentCommandDispatcher.Result execute(AgentCommand command) {

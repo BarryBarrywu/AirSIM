@@ -91,6 +91,7 @@ struct AirSIMSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @AppStorage(LocalModePreference.key) private var localModeEnabled = false
     @AppStorage(CloudModePreference.key) private var cloudModeEnabled = true
+    @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @State private var relayURL = RelayConfiguration.effectiveURL(
         stored: UserDefaults.standard.string(forKey: "airsim.push-relay-url"),
         buildSetting: Bundle.main.object(forInfoDictionaryKey: "AirSIMPushRelayURL") as? String,
@@ -156,6 +157,19 @@ struct AirSIMSettingsView: View {
                         model.vowlan.restartBrowsing()
                         Task { await model.vowlan.probeNow() }
                     }
+                }
+
+                Section {
+                    Toggle(isOn: $liveActivityEnabled) {
+                        Label("显示灵动岛", systemImage: "platter.filled.top.iphone")
+                    }
+                    .onChange(of: liveActivityEnabled) { enabled in
+                        model.setLiveActivityEnabled(enabled)
+                    }
+                } header: {
+                    Text("灵动岛与实时活动")
+                } footer: {
+                    Text("关闭后结束 AirSIM 的灵动岛与锁屏实时活动；通话和短信仍可正常使用。")
                 }
 
                 Section {

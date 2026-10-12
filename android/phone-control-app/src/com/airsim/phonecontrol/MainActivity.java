@@ -53,6 +53,10 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final int ROLE_REQUEST = 100;
     private static final int DEFAULT_APPS_REQUEST = 102;
+    private static final int OPTIONAL_SMS_REQUEST = 103;
+    private static final String OPTIONAL_SMS_PROMPTED = "optional_sms_prompted";
+    private static final java.util.concurrent.ExecutorService SMS_SCAN_WORKER =
+            Executors.newSingleThreadExecutor();
 
     private static final int BG = Color.rgb(8, 14, 20);
     private static final int SURFACE = Color.rgb(17, 28, 39);
@@ -73,6 +77,9 @@ public final class MainActivity extends Activity {
     private LinearLayout bottomBar;
     private final List<TextView> navigationItems = new ArrayList<>();
     private Page currentPage = Page.STATUS;
+    private HealthTile pcmHealthTile;
+    private LiveStatusPoller pcmStatusPoller;
+    private boolean resumed;
 
     private EditText endpoint;
     private EditText token;
@@ -119,6 +126,18 @@ public final class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        pcmStatusPoller = new LiveStatusPoller(() -> {
+            ShizukuBridgeManager bridge = ShizukuBridgeManager.get(this);
+            bridge.refreshBridgeStatus();
+            return bridge.bridgeRunning();
+        }, this::renderPCMStatus, new LiveStatusPoller.Scheduler() {
+            @Override public void postDelayed(Runnable task, long delayMillis) {
+                handler.postDelayed(task, delayMillis);
+            }
+            @Override public void removeCallbacks(Runnable task) {
+                handler.removeCallbacks(task);
+            }
+        }, 1_000);
         configureWindow();
         setContentView(buildShell());
         showPage(Page.STATUS);
@@ -141,14 +160,37 @@ public final class MainActivity extends Activity {
 		if (missingPermissions.length > 0) {
             requestPermissions(missingPermissions, 101);
 		} else {
-			continueStartupSetup();
+			requestOptionalSMSPermission();
 		}
     }
 
 	@Override public void onRequestPermissionsResult(
 			int requestCode, String[] permissions, int[] grantResults) {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-		if (requestCode == 101) continueStartupSetup();
+		if (requestCode == 101) requestOptionalSMSPermission();
+		if (requestCode == OPTIONAL_SMS_REQUEST) {
+			startSMSInboxBaselineIfAuthorized();
+			continueStartupSetup();
+			if (currentPage == Page.SETTINGS) showPage(Page.SETTINGS);
+		}
+	}
+
+	private void requestOptionalSMSPermission() {
+		boolean granted = checkSelfPermission(Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED;
+		boolean prompted = getPreferences(MODE_PRIVATE).getBoolean(OPTIONAL_SMS_PROMPTED, false);
+		String[] missing = RuntimePermissionPolicy.optionalInboxPermissions(granted, prompted);
+		if (missing.length == 0) {
+			continueStartupSetup();
+			return;
+		}
+		getPreferences(MODE_PRIVATE).edit().putBoolean(OPTIONAL_SMS_PROMPTED, true).apply();
+		requestPermissions(missing, OPTIONAL_SMS_REQUEST);
+	}
+
+	private void startSMSInboxBaselineIfAuthorized() {
+		if (checkSelfPermission(Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED) {
+			SMS_SCAN_WORKER.execute(() -> SMSInboxScanner.scanIfDue(getApplicationContext()));
+		}
 	}
 
     private void configureWindow() {
@@ -211,6 +253,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showPage(Page page) {
+        if (pcmStatusPoller != null) pcmStatusPoller.stop();
+        pcmHealthTile = null;
         currentPage = page;
         handler.removeCallbacks(debugRefresh);
         bottomBar.setVisibility(View.VISIBLE);
@@ -227,6 +271,7 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         updateNavigation();
         if (page == Page.DEBUG && realtimeLogging) handler.post(debugRefresh);
+        if (page == Page.STATUS && resumed) pcmStatusPoller.start();
     }
 
     private void updateNavigation() {
@@ -281,29 +326,29 @@ public final class MainActivity extends Activity {
         root.addView(connectionCard, matchWithTop(12));
 
         LinearLayout firstHealthRow = row();
-        LinearLayout agentTile = healthTile(
+        HealthTile agentTile = healthTile(
                 RuntimeMode.agentLabel(this), agentOnline ? "在线" : agentDetail,
                 android.R.drawable.ic_menu_manage, agentOnline);
-        agentTile.setOnClickListener(ignored -> showFeatureDetails(Feature.AGENT));
-        firstHealthRow.addView(agentTile, weightedWithEnd(5));
-        LinearLayout pcmTile = healthTile(
-                "PCM 音频桥", pcmReady() ? "就绪" : "待启动",
-                android.R.drawable.ic_media_play, pcmReady());
-        pcmTile.setOnClickListener(ignored -> showFeatureDetails(Feature.PCM));
-        firstHealthRow.addView(pcmTile, weightedWithStart(5));
+        agentTile.view.setOnClickListener(ignored -> showFeatureDetails(Feature.AGENT));
+        firstHealthRow.addView(agentTile.view, weightedWithEnd(5));
+        pcmHealthTile = healthTile(
+                "PCM 音频桥", pcmBridgeRunning() ? "运行中" : "待启动",
+                android.R.drawable.ic_media_play, pcmBridgeRunning());
+        pcmHealthTile.view.setOnClickListener(ignored -> showFeatureDetails(Feature.PCM));
+        firstHealthRow.addView(pcmHealthTile.view, weightedWithStart(5));
         root.addView(firstHealthRow, matchWithTop(12));
 
         LinearLayout secondHealthRow = row();
-        LinearLayout pushTile = healthTile(
+        HealthTile pushTile = healthTile(
                 "Push / Relay", pushDetail,
                 android.R.drawable.stat_notify_sync, pushConfigured);
-        pushTile.setOnClickListener(ignored -> showFeatureDetails(Feature.PUSH));
-        secondHealthRow.addView(pushTile, weightedWithEnd(5));
-        LinearLayout shizukuTile = healthTile(
+        pushTile.view.setOnClickListener(ignored -> showFeatureDetails(Feature.PUSH));
+        secondHealthRow.addView(pushTile.view, weightedWithEnd(5));
+        HealthTile shizukuTile = healthTile(
                 "Shizuku", shizukuReady() ? "已授权" : "待授权",
                 android.R.drawable.ic_lock_idle_lock, shizukuReady());
-        shizukuTile.setOnClickListener(ignored -> showFeatureDetails(Feature.SHIZUKU));
-        secondHealthRow.addView(shizukuTile, weightedWithStart(5));
+        shizukuTile.view.setOnClickListener(ignored -> showFeatureDetails(Feature.SHIZUKU));
+        secondHealthRow.addView(shizukuTile.view, weightedWithStart(5));
         root.addView(secondHealthRow, matchWithTop(10));
 
         root.addView(modeSelector(), matchWithTop(14));
@@ -455,6 +500,24 @@ public final class MainActivity extends Activity {
         save.setOnClickListener(ignored -> saveConfiguration());
         agentCard.addView(save, matchWithTop(12));
         root.addView(agentCard, matchWithTop(10));
+
+		root.addView(sectionTitle("短信收件箱兜底"), matchWithTop(22));
+		LinearLayout smsCard = card(SURFACE, 22);
+		smsCard.setOrientation(LinearLayout.VERTICAL);
+		smsCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+		boolean inboxGranted = checkSelfPermission(Manifest.permission.READ_SMS)
+				== PackageManager.PERMISSION_GRANTED;
+		smsCard.addView(label(inboxGranted ? "已授权 · 仅扫描新收到的短信"
+				: "未授权 · 继续使用短信广播接收", 14, TEXT, Gravity.START));
+		smsCard.addView(description("可选权限；用于广播未送达时补取新短信，不导入历史短信。"), matchWithTop(6));
+		if (!inboxGranted) {
+			TextView permissionAction = secondaryButton("在系统设置中授权读取短信");
+			permissionAction.setOnClickListener(ignored -> startActivity(new Intent(
+					Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+					Uri.parse("package:" + getPackageName()))));
+			smsCard.addView(permissionAction, matchWithTop(10));
+		}
+		root.addView(smsCard, matchWithTop(10));
 
 		if (!standaloneRuntime) {
 		root.addView(sectionTitle("AVF Linux 首次安装"), matchWithTop(22));
@@ -668,7 +731,19 @@ public final class MainActivity extends Activity {
         return item;
     }
 
-    private LinearLayout healthTile(String title, String value, int iconResource, boolean healthy) {
+    private static final class HealthTile {
+        final LinearLayout view;
+        final ImageView icon;
+        final TextView state;
+
+        HealthTile(LinearLayout view, ImageView icon, TextView state) {
+            this.view = view;
+            this.icon = icon;
+            this.state = state;
+        }
+    }
+
+    private HealthTile healthTile(String title, String value, int iconResource, boolean healthy) {
         LinearLayout tile = card(SURFACE, 18);
         tile.setOrientation(LinearLayout.HORIZONTAL);
         tile.setGravity(Gravity.CENTER_VERTICAL);
@@ -689,7 +764,18 @@ public final class MainActivity extends Activity {
         state.setEllipsize(TextUtils.TruncateAt.END);
         copy.addView(state, matchWithTop(4));
         tile.addView(copy, weighted());
-        return tile;
+        return new HealthTile(tile, icon, state);
+    }
+
+    private void renderPCMStatus(boolean running) {
+        HealthTile tile = pcmHealthTile;
+        if (tile == null || currentPage != Page.STATUS) return;
+        int color = running ? PRIMARY : WARNING;
+        tile.state.setText(running ? "运行中" : "待启动");
+        tile.state.setTextColor(color);
+        tile.icon.setImageTintList(ColorStateList.valueOf(color));
+        tile.icon.setBackground(rounded(running ? Color.rgb(17, 66, 57) : Color.rgb(76, 58, 25),
+                21, Color.TRANSPARENT, 0));
     }
 
     private LinearLayout pageTitle(String title, String badge) {
@@ -792,7 +878,7 @@ public final class MainActivity extends Activity {
             requestDialerRole();
             return;
         }
-        String callId = CallRepository.firstId();
+        String callId = CallRepository.idForAction(action);
         if (callId.isEmpty()) { toast("当前没有可控制的通话"); return; }
         Executors.newSingleThreadExecutor().execute(() -> {
             CallRepository.ActionResult result = CallRepository.execute(
@@ -1044,9 +1130,9 @@ public final class MainActivity extends Activity {
                 String pcmBackend = RuntimeMode.isStandalone(this) ? "本机 PCM 端口 7580" : "AVF PCM 端口 7580";
                 String reason = !shizukuReady() ? "Shizuku 未连接或未授权，PCM 用户服务不可用"
                         : currentVoWLAN.contains("pcm_ready=false") ? pcmBackend + "未响应"
-                        : !pcmReady() ? "VoWLAN PCM 服务尚未完成当前检查：" + currentVoWLAN
+                        : !pcmBridgeRunning() ? "PCM 音频桥进程尚未运行"
                         : "当前检查项满足；仍需实际通话验证双向音频";
-                details = "Shizuku：" + shizuku + "\n桥状态：" + (pcmReady() ? "就绪" : "待启动")
+                details = "Shizuku：" + shizuku + "\n桥状态：" + (pcmBridgeRunning() ? "运行中" : "待启动")
                         + "\n状态原因：" + reason
                         + "\n当前 VoWLAN 检查：" + currentVoWLAN
                         + "\n最近 VoWLAN 检查：" + (latestVoWLAN.isEmpty() ? "无" : latestVoWLAN);
@@ -1421,8 +1507,8 @@ public final class MainActivity extends Activity {
         return value.contains("Shizuku 已连接");
     }
 
-    private boolean pcmReady() {
-        return shizukuReady() && VoWLANGatewayService.currentDiagnosticState().contains("pcm_ready=true");
+    private boolean pcmBridgeRunning() {
+        return ShizukuBridgeManager.get(this).bridgeRunning();
     }
 
     private String latestActivity() {
@@ -1596,7 +1682,16 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        resumed = true;
+        if (currentPage == Page.STATUS && pcmStatusPoller != null) pcmStatusPoller.start();
         refreshShizukuStatus();
+		startSMSInboxBaselineIfAuthorized();
+    }
+
+    @Override protected void onPause() {
+        resumed = false;
+        if (pcmStatusPoller != null) pcmStatusPoller.stop();
+        super.onPause();
     }
 
     @Override public void onBackPressed() {
@@ -1613,6 +1708,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (pcmStatusPoller != null) pcmStatusPoller.stop();
         handler.removeCallbacks(debugRefresh);
         stopPairingServer();
         super.onDestroy();

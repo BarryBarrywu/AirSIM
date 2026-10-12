@@ -43,17 +43,11 @@ public final class VoWLANControlGateway implements Closeable {
         return created.getLocalPort();
     }
 
-    public int localPort() { return server == null ? -1 : server.getLocalPort(); }
+    public int localPort() { return server == null || server.isClosed() ? -1 : server.getLocalPort(); }
 
     private void acceptLoop(ServerSocket active) {
-        while (!active.isClosed()) {
-            try {
-                Socket peer = active.accept();
-                clients.execute(() -> handle(peer));
-            } catch (IOException error) {
-                if (!active.isClosed()) BridgeLog.error("vowlan_control_accept_failed", error);
-            }
-        }
+        VoWLANAcceptLoop.run(active, peer -> clients.execute(() -> handle(peer)),
+                error -> BridgeLog.error("vowlan_control_accept_failed", error));
     }
 
     private void handle(Socket peer) {
@@ -109,11 +103,8 @@ public final class VoWLANControlGateway implements Closeable {
                 responseStatus = forwarded.status();
                 output = forwarded.payload();
                 if (output.isEmpty()) output = "{}";
-                if ("/api/calls/dial".equals(request.path) || "/api/calls/answer".equals(request.path)) {
-                    ownsCall = true;
-                } else if ("/api/calls/hangup".equals(request.path) || "/api/calls/reject".equals(request.path)) {
-                    ownsCall = false;
-                }
+                ownsCall = VoWLANControlPolicy.ownsCallAfterResponse(
+                        request.path, responseStatus, ownsCall);
             }
             respond(peer, responseStatus, output);
             BridgeLog.info("vowlan_control_forwarded method=" + request.method + " path=" + safePath(request.path));

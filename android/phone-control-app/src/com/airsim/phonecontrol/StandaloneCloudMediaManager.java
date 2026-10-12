@@ -49,6 +49,18 @@ final class StandaloneCloudMediaManager implements Closeable {
         catch (Exception error) { BridgeLog.error("standalone_outgoing_media_invalid", error); }
     }
 
+    String androidCallIDFor(JSONObject call) {
+        if (call == null) return "";
+        synchronized (lock) {
+            if (active == null) return "";
+            Descriptor descriptor = active.descriptor;
+            return new CloudCallTarget(descriptor.callID, descriptor.callUUID,
+                    descriptor.generation, descriptor.androidID).resolve(
+                    call.optString("call_id"), call.optString("call_uuid"),
+                    call.optLong("generation", 1));
+        }
+    }
+
     void handleCallEvent(JSONObject registration, JSONObject event, StandaloneRelayClient relay) throws Exception {
         String state = event.optString("state", "");
         String direction = event.optString("direction", "");
@@ -154,7 +166,10 @@ final class StandaloneCloudMediaManager implements Closeable {
                 mediaProtocol = control.optString("media_protocol", "");
                 JSONObject command = new JSONObject().put("command_id",
                                 control.optString("command_id", UUID.randomUUID().toString()))
-                        .put("type", "call_control").put("action", action);
+                        .put("type", "call_control").put("action", action)
+                        .put("call", new JSONObject().put("call_id", descriptor.callID)
+                                .put("call_uuid", descriptor.callUUID)
+                                .put("generation", descriptor.generation));
                 JSONObject result = StandaloneAgentGateway.get(context).executeCloudCommand(command);
                 if (!"completed".equals(result.optString("status"))) {
                     webSocket.writeText(status("action_error", result.optString("error", "Telecom command failed")));
@@ -264,7 +279,7 @@ final class StandaloneCloudMediaManager implements Closeable {
         final String secret;
         final String relayURL;
         final String direction;
-        String androidID;
+        volatile String androidID;
 
         Descriptor(String callID, String callUUID, long generation, String secret,
                    String relayURL, String direction, String androidID) {

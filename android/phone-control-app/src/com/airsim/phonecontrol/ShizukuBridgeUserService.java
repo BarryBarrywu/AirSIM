@@ -136,8 +136,11 @@ public final class ShizukuBridgeUserService extends Binder {
                 String commandLine = new String(
                         Files.readAllBytes(new File(entry, "cmdline").toPath()),
                         StandardCharsets.UTF_8);
+                String processEnvironment = new String(
+                        Files.readAllBytes(new File(entry, "environ").toPath()),
+                        StandardCharsets.UTF_8);
                 if (PhoneAudioBridgeProcessPolicy.isStaleBridge(
-                        candidatePid, ownerPid, commandLine)) {
+                        candidatePid, ownerPid, commandLine, processEnvironment, packageName)) {
                     result.add(candidatePid);
                 }
             } catch (IOException | SecurityException ignored) {

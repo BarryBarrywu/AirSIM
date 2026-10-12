@@ -62,6 +62,8 @@ assert_contains "$ROOT/AndroidManifest.xml" \
   'persistent diagnostics are not initialized at process start'
 assert_contains "$ROOT/AndroidManifest.xml" 'android.permission.RECEIVE_SMS' \
   'incoming SMS permission is missing'
+assert_contains "$ROOT/AndroidManifest.xml" 'android.permission.READ_SMS' \
+  'optional inbox fallback permission is missing'
 assert_contains "$ROOT/AndroidManifest.xml" 'android:name=".IncomingSMSReceiver"' \
   'carrier SMS receiver is missing'
 assert_contains "$ROOT/src/com/airsim/phonecontrol/StandaloneAgentGateway.java" \
@@ -83,6 +85,12 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 "$JAVAC" --release 17 -d "$OUT" \
   "$ROOT"/test/android/content/Context.java \
+  "$ROOT"/test/android/net/Uri.java \
+  "$ROOT"/test/android/os/Looper.java \
+  "$ROOT"/test/android/os/Handler.java \
+  "$ROOT"/test/android/telecom/Call.java \
+  "$ROOT"/test/android/telecom/TelecomManager.java \
+  "$ROOT"/test/android/telecom/VideoProfile.java \
   "$ROOT"/test/com/airsim/phonecontrol/AppConfig.java \
   "$ROOT"/test/com/airsim/phonecontrol/BridgeLog.java \
 	"$ROOT"/test/com/airsim/phonecontrol/RuntimeMode.java \
@@ -92,6 +100,9 @@ mkdir -p "$OUT"
   "$ROOT"/src/com/airsim/phonecontrol/ReleaseAssetSelector.java \
   "$ROOT"/src/com/airsim/phonecontrol/AVFStartupPolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/RuntimePermissionPolicy.java \
+	"$ROOT"/src/com/airsim/phonecontrol/SMSDeliveryIdentity.java \
+	"$ROOT"/src/com/airsim/phonecontrol/SMSRecentDeliveryIDs.java \
+	"$ROOT"/src/com/airsim/phonecontrol/SMSInboxCursor.java \
   "$ROOT"/src/com/airsim/phonecontrol/TelecomStateMapper.java \
 	"$ROOT"/src/com/airsim/phonecontrol/TelecomRolePolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/DialerRoleSetupPolicy.java \
@@ -102,10 +113,15 @@ mkdir -p "$OUT"
   "$ROOT"/src/com/airsim/phonecontrol/WireJson.java \
   "$ROOT"/src/com/airsim/phonecontrol/DebugRedactor.java \
   "$ROOT"/src/com/airsim/phonecontrol/AgentCommand.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CallRepository.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CloudCallTarget.java \
   "$ROOT"/src/com/airsim/phonecontrol/AgentCommandDispatcher.java \
   "$ROOT"/src/com/airsim/phonecontrol/SMSPayloadPolicy.java \
   "$ROOT"/src/com/airsim/phonecontrol/SMSConfirmation.java \
   "$ROOT"/src/com/airsim/phonecontrol/RetryPolicy.java \
+  "$ROOT"/src/com/airsim/phonecontrol/RelayHTTPException.java \
+  "$ROOT"/src/com/airsim/phonecontrol/RelayRetryPolicy.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CommandPollingPolicy.java \
   "$ROOT"/src/com/airsim/phonecontrol/RecoveryPolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/RecoveryLaunchPolicy.java \
   "$ROOT"/src/com/airsim/phonecontrol/CallEventDeduplicator.java \
@@ -114,6 +130,7 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/AVFNetworkPolicy.java \
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANAuth.java \
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANControlPolicy.java \
+	"$ROOT"/src/com/airsim/phonecontrol/VoWLANAcceptLoop.java \
 	"$ROOT"/src/com/airsim/phonecontrol/VoWLANPeerLifecycle.java \
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANReplayCache.java \
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANPCMProtocol.java \
@@ -121,5 +138,13 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/VoWLANNetworkPolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/StandaloneLongPoll.java \
 	"$ROOT"/src/com/airsim/phonecontrol/MainScreenPresentation.java \
-  "$ROOT"/test/com/airsim/phonecontrol/CoreTests.java
+	"$ROOT"/src/com/airsim/phonecontrol/LiveStatusPoller.java \
+	"$ROOT"/src/com/airsim/phonecontrol/PCMBridgeStatus.java \
+	"$ROOT"/src/com/airsim/phonecontrol/MuteRequestRetrier.java \
+	"$ROOT"/src/com/airsim/phonecontrol/NotificationUpdateGate.java \
+	"$ROOT"/test/com/airsim/phonecontrol/CoreTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/NotificationUpdateGateTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CoreTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.NotificationUpdateGateTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.CallRepositoryTests

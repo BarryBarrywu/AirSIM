@@ -51,6 +51,7 @@ public final class AgentWatchdogService extends Service {
         boolean waitingForConfiguration = false;
         while (running) {
             try {
+                SMSInboxScanner.scanIfDue(this);
                 if (!AppConfig.configured(this)) {
                     if (!waitingForConfiguration) BridgeLog.info("watchdog_waiting_for_configuration");
                     waitingForConfiguration = true;

@@ -256,9 +256,9 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
                       ["incoming", "waiting"].contains(state) else { return }
 
                 if actionIdentifier == IncomingCallNotification.answerActionIdentifier {
-                    try await api.answerCall()
+                    try await api.answerCall(callID: callID)
                 } else {
-                    _ = try await api.rejectCall()
+                    _ = try await api.rejectCall(callID: callID)
                 }
             } catch {
                 Self.reportActionFailure(error)
@@ -344,12 +344,13 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
             return
         }
         guard let api = await availableSamsungAPI() else { throw CallKitBridgeError.noReachableTransport }
-        if let call = (try? await api.callStatus())?.active,
+        let call = (try? await api.callStatus())?.active
+        if let call,
            call.direction == "incoming",
            ["incoming", "waiting"].contains(call.state) {
-            _ = try await api.rejectCall()
+            _ = try await api.rejectCall(callID: call.id)
         } else {
-            try await api.hangupCall()
+            try await api.hangupCall(callID: call?.id)
         }
     }
     func callKitSetMuted(_ muted: Bool) async {

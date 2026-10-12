@@ -14,6 +14,7 @@ final class StandaloneSMSStore {
     private static final String FILE = "standalone_sms";
     private static final String RECORDS = "records";
     private static final String REVISION = "revision";
+    private static final String RECENT_IDS = "recent_delivery_ids";
     private static final int MAX_RECORDS = 512;
     private static final Object LOCK = new Object();
     private final SharedPreferences preferences;
@@ -25,6 +26,8 @@ final class StandaloneSMSStore {
     boolean add(JSONObject event, boolean cloudEnabled) throws Exception {
         synchronized (LOCK) {
             String id = event.getString("delivery_id");
+            SMSRecentDeliveryIDs recent = recentIDs();
+            if (recent.contains(id)) return false;
             JSONArray records = records();
             for (int i = 0; i < records.length(); i++) {
                 if (id.equals(records.getJSONObject(i).optString("delivery_id"))) return false;
@@ -32,8 +35,11 @@ final class StandaloneSMSStore {
             JSONObject record = new JSONObject(event.toString())
                     .put("local_ack", false).put("cloud_sent", !cloudEnabled);
             records.put(record);
-            while (records.length() > MAX_RECORDS) records.remove(0);
-            persist(records, true);
+            while (records.length() > MAX_RECORDS) {
+                recent.remember(records.getJSONObject(0).optString("delivery_id"));
+                records.remove(0);
+            }
+            persist(records, recent, true);
             return true;
         }
     }
@@ -82,6 +88,7 @@ final class StandaloneSMSStore {
     private void mutate(Set<String> ids, String flag) throws Exception {
         JSONArray source = records();
         JSONArray updated = new JSONArray();
+        SMSRecentDeliveryIDs recent = recentIDs();
         boolean changed = false;
         for (int i = 0; i < source.length(); i++) {
             JSONObject record = source.getJSONObject(i);
@@ -90,12 +97,20 @@ final class StandaloneSMSStore {
                 changed = true;
             }
             if (!record.optBoolean("local_ack") || !record.optBoolean("cloud_sent")) updated.put(record);
+            else recent.remember(record.optString("delivery_id"));
         }
-        if (changed) persist(updated, "local_ack".equals(flag));
+        if (changed) persist(updated, recent, "local_ack".equals(flag));
     }
 
     private JSONArray records() throws Exception {
         return new JSONArray(preferences.getString(RECORDS, "[]"));
+    }
+
+    private SMSRecentDeliveryIDs recentIDs() throws Exception {
+        JSONArray encoded = new JSONArray(preferences.getString(RECENT_IDS, "[]"));
+        java.util.ArrayList<String> values = new java.util.ArrayList<>();
+        for (int index = 0; index < encoded.length(); index++) values.add(encoded.optString(index));
+        return new SMSRecentDeliveryIDs(values);
     }
 
     private JSONObject publicMessage(JSONObject record) throws Exception {
@@ -105,8 +120,11 @@ final class StandaloneSMSStore {
                 .put("timestamp", record.optString("timestamp"));
     }
 
-    private void persist(JSONArray records, boolean advanceRevision) {
-        SharedPreferences.Editor editor = preferences.edit().putString(RECORDS, records.toString());
+    private void persist(JSONArray records, SMSRecentDeliveryIDs recent, boolean advanceRevision) {
+        JSONArray tombstones = new JSONArray();
+        for (String id : recent.snapshot()) tombstones.put(id);
+        SharedPreferences.Editor editor = preferences.edit().putString(RECORDS, records.toString())
+                .putString(RECENT_IDS, tombstones.toString());
         if (advanceRevision) editor.putLong(REVISION, revision() + 1);
         if (!editor.commit()) throw new IllegalStateException("无法保存接收短信");
     }

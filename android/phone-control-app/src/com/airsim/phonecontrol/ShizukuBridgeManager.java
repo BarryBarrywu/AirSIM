@@ -11,6 +11,7 @@ import android.os.Looper;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
 
@@ -25,6 +26,8 @@ final class ShizukuBridgeManager {
     private final Context app;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final PrivilegedBridgeCoordinator coordinator = new PrivilegedBridgeCoordinator();
+    private final MuteRequestRetrier muteRetrier;
+    private final AtomicBoolean statusRefreshInFlight = new AtomicBoolean();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Object roleLock = new Object();
     private final Shizuku.UserServiceArgs serviceArgs;
@@ -81,6 +84,23 @@ final class ShizukuBridgeManager {
 
     private ShizukuBridgeManager(Context context) {
         app = context.getApplicationContext();
+        muteRetrier = new MuteRequestRetrier(new MuteRequestRetrier.Scheduler() {
+            @Override public void execute(Runnable task) { worker.execute(task); }
+            @Override public void schedule(Runnable task, long delayMillis) {
+                mainHandler.postDelayed(() -> worker.execute(task), delayMillis);
+            }
+        }, coordinator::setLocalOutputMuted, (muted, error) -> {
+            if (error != null) {
+                status = "本机通话静音失败";
+                BridgeLog.error("shizuku_local_output_failed target_muted=" + muted, error);
+            } else if (privilegedClient != null) {
+                status = "Shizuku 已连接 · " + coordinator.lastResult();
+                BridgeLog.info("shizuku_local_output target_muted=" + muted
+                        + " result=" + coordinator.lastResult());
+            } else {
+                BridgeLog.info("shizuku_local_output_queued target_muted=" + muted);
+            }
+        });
         serviceArgs = new Shizuku.UserServiceArgs(new ComponentName(
                 app.getPackageName(), ShizukuBridgeUserService.class.getName()))
                 .daemon(true)
@@ -254,17 +274,7 @@ final class ShizukuBridgeManager {
     }
 
     void setLocalOutputMuted(boolean muted) {
-        worker.execute(() -> {
-            try {
-                coordinator.setLocalOutputMuted(muted);
-                status = "Shizuku 已连接 · " + coordinator.lastResult();
-                BridgeLog.info("shizuku_local_output target_muted=" + muted
-                        + " result=" + coordinator.lastResult());
-            } catch (Exception error) {
-                status = "本机通话静音失败";
-                BridgeLog.error("shizuku_local_output_failed target_muted=" + muted, error);
-            }
-        });
+        muteRetrier.request(muted);
     }
 
     private void bindPrivilegedService() {
@@ -282,6 +292,26 @@ final class ShizukuBridgeManager {
 
     String status() {
         return status;
+    }
+
+    boolean bridgeRunning() {
+        return coordinator.bridgeRunning();
+    }
+
+    void refreshBridgeStatus() {
+        if (privilegedClient == null || !statusRefreshInFlight.compareAndSet(false, true)) return;
+        worker.execute(() -> {
+            try {
+                if (privilegedClient != null) {
+                    status = "Shizuku 已连接 · " + coordinator.refreshStatus();
+                }
+            } catch (Exception error) {
+                status = "Shizuku PCM 状态检查失败";
+                BridgeLog.error("shizuku_pcm_status_refresh_failed", error);
+            } finally {
+                statusRefreshInFlight.set(false);
+            }
+        });
     }
 
     void openShizuku() {

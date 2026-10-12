@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -705,7 +707,11 @@ func (a *agent) answer(response http.ResponseWriter, request *http.Request) {
 	if !requireMethod(response, request, http.MethodPost) {
 		return
 	}
-	if err := a.answerCall(); err != nil {
+	callID, ok := readLocalCallControlID(response, request)
+	if !ok {
+		return
+	}
+	if err := a.answerCallForID(callID); err != nil {
 		writeError(response, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -713,7 +719,15 @@ func (a *agent) answer(response http.ResponseWriter, request *http.Request) {
 }
 
 func (a *agent) answerCall() error {
+	return a.answerCallForID("")
+}
+
+func (a *agent) answerCallForID(expectedID string) error {
 	a.mu.Lock()
+	if expectedID != "" && (a.calls.Active == nil || a.calls.Active.ID != expectedID) {
+		a.mu.Unlock()
+		return errors.New("通话 ID 已失效")
+	}
 	if time.Since(a.calls.LastAnswerAt) < 2*time.Second {
 		a.mu.Unlock()
 		return nil
@@ -725,7 +739,7 @@ func (a *agent) answerCall() error {
 		if err != nil {
 			return fmt.Errorf("create Android Telecom answer command: %w", err)
 		}
-		result := a.executeAndroidCallCommand(commandID, "answer")
+		result := a.executeAndroidCallCommandForID(commandID, "answer", expectedID)
 		if !result.Success {
 			return errors.New(result.Error)
 		}
@@ -744,7 +758,11 @@ func (a *agent) reject(response http.ResponseWriter, request *http.Request) {
 	if !requireMethod(response, request, http.MethodPost) {
 		return
 	}
-	if err := a.rejectCall(); err != nil {
+	callID, ok := readLocalCallControlID(response, request)
+	if !ok {
+		return
+	}
+	if err := a.rejectCallForID(callID); err != nil {
 		writeError(response, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -752,16 +770,23 @@ func (a *agent) reject(response http.ResponseWriter, request *http.Request) {
 }
 
 func (a *agent) rejectCall() error {
+	return a.rejectCallForID("")
+}
+
+func (a *agent) rejectCallForID(expectedID string) error {
 	if a.profile.AndroidTelecom {
 		commandID, err := randomUUID()
 		if err != nil {
 			return fmt.Errorf("create Android Telecom reject command: %w", err)
 		}
-		result := a.executeAndroidCallCommand(commandID, "reject")
+		result := a.executeAndroidCallCommandForID(commandID, "reject", expectedID)
 		if !result.Success {
 			return errors.New(result.Error)
 		}
 		return nil
+	}
+	if err := a.requireActiveCallID(expectedID); err != nil {
+		return err
 	}
 	appendVoiceSystemSnapshot("reject-before")
 	if _, err := a.at.command("AT+CHUP", 5*time.Second); err != nil {
@@ -772,11 +797,43 @@ func (a *agent) rejectCall() error {
 	return nil
 }
 
+func readLocalCallControlID(response http.ResponseWriter, request *http.Request) (string, bool) {
+	var body struct {
+		CallID string `json:"call_id"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, 8*1024))
+	if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeError(response, http.StatusBadRequest, "通话控制请求无效")
+		return "", false
+	}
+	return body.CallID, true
+}
+
+func (a *agent) requireActiveCallID(expectedID string) error {
+	if expectedID == "" {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.calls.Active == nil || a.calls.Active.ID != expectedID {
+		return errors.New("通话 ID 已失效")
+	}
+	return nil
+}
+
 func (a *agent) hangup(response http.ResponseWriter, request *http.Request) {
 	if !requireMethod(response, request, http.MethodPost) {
 		return
 	}
-	if err := a.hangupFlight.Do(a.hangupCall); err != nil {
+	callID, ok := readLocalCallControlID(response, request)
+	if !ok {
+		return
+	}
+	if err := a.requireActiveCallID(callID); err != nil {
+		writeError(response, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := a.hangupFlight.Do(func() error { return a.hangupCallForID(callID) }); err != nil {
 		writeError(response, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -784,16 +841,23 @@ func (a *agent) hangup(response http.ResponseWriter, request *http.Request) {
 }
 
 func (a *agent) hangupCall() error {
+	return a.hangupCallForID("")
+}
+
+func (a *agent) hangupCallForID(expectedID string) error {
 	if a.profile.AndroidTelecom {
 		commandID, err := randomUUID()
 		if err != nil {
 			return fmt.Errorf("create Android Telecom hangup command: %w", err)
 		}
-		result := a.executeAndroidCallCommand(commandID, "end")
+		result := a.executeAndroidCallCommandForID(commandID, "end", expectedID)
 		if !result.Success {
 			return errors.New(result.Error)
 		}
 		return nil
+	}
+	if err := a.requireActiveCallID(expectedID); err != nil {
+		return err
 	}
 	appendVoiceSystemSnapshot("hangup-before")
 	if _, err := a.at.command("ATH", 5*time.Second); err != nil {

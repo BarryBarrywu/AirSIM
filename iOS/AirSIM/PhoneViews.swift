@@ -230,12 +230,6 @@ struct DialPadView: View {
                     cloudModeEnabled: CloudModePreference.isEnabled()
                 )
             }
-            .task {
-                while !Task.isCancelled {
-                    await model.refreshPairedAndroidAgents()
-                    try? await Task.sleep(for: .seconds(15))
-                }
-            }
             .onDisappear(perform: stopRepeatingDelete)
         }
     }

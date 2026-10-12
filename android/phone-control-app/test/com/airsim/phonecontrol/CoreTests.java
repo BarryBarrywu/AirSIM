@@ -2,6 +2,17 @@ package com.airsim.phonecontrol;
 
 public final class CoreTests {
     public static void main(String[] args) throws Exception {
+		assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry();
+		assertMutedCallRecoversAfterThreeTransientAudioFailures();
+		assertLiveStatusPollerUpdatesWithoutRebuildingPage();
+		assertLiveStatusPollerRecoversAfterOneFailedRead();
+		assertLiveStatusPollerRetriesFailedRender();
+		assertPCMBridgeRunningUsesPrivilegedProcessStatus();
+		assertPrivilegedBridgeStatusRefreshTracksProcessExit();
+		assertMuteResultDoesNotHideRunningPCMBridge();
+		assertVoWLANFailedRejectPreservesCallOwnership();
+		assertVoWLANClosedSocketStopsAcceptLoop();
+		assertVoWLANIOExceptionStopsAcceptLoop();
 		assertTrue(invokeIsStaleAudioBridge(
 				11_414, 27_671,
 				String.join("\0", "/system/bin/app_process", "/system/bin",
@@ -22,6 +33,15 @@ public final class CoreTests {
 				String.join("\0", "/system/bin/app_process", "/system/bin",
 						"com.airsim.bridge.PhoneAudioBridge", "--listen-host", "127.0.0.1",
 						"--listen-port", "7581", "")));
+		String bridgeCommand = String.join("\0", "/system/bin/app_process", "/system/bin",
+				"com.airsim.bridge.PhoneAudioBridge", "--listen-host", "127.0.0.1",
+				"--listen-port", "7580", "");
+		assertTrue(!invokeIsStaleAudioBridgeForPackage(11_417, 27_671, bridgeCommand,
+				"CLASSPATH=/data/app/~~x/com.airsim.phonecontrol-y/base.apk\0",
+				"com.airsim.phonecontrol.standalone"));
+		assertTrue(invokeIsStaleAudioBridgeForPackage(11_418, 27_671, bridgeCommand,
+				"CLASSPATH=/data/app/~~x/com.airsim.phonecontrol.standalone-y/base.apk\0",
+				"com.airsim.phonecontrol.standalone"));
 		java.net.Inet4Address loopback = (java.net.Inet4Address) java.net.InetAddress.getByName("127.0.0.1");
 		try (java.net.ServerSocket occupied = new java.net.ServerSocket(0, 1, loopback);
 				java.net.ServerSocket fallback = VoWLANPortBinder.bind(loopback, occupied.getLocalPort(), 2)) {
@@ -64,6 +84,17 @@ public final class CoreTests {
 		assertArrayEquals(new String[0], invokeMissingRuntimePermissions(36, true, true, true));
 		assertArrayEquals(new String[]{"android.permission.RECEIVE_SMS"},
 				RuntimePermissionPolicy.missingPermissions(36, true, true, false, true, true, true));
+		assertArrayEquals(new String[]{"android.permission.READ_SMS"},
+				invokeOptionalInboxPermissions(false, false));
+		assertArrayEquals(new String[0], invokeOptionalInboxPermissions(true, false));
+		assertArrayEquals(new String[0], invokeOptionalInboxPermissions(false, true));
+		String expectedSMSID = "android-sms-56ade2bc830c126252281aee319d5eda590b56518ebcbec623697999554c5b00";
+		assertEquals(expectedSMSID, invokeSMSIdentity("+8613800000000", "验证码 123456", 1_000L));
+		assertTrue(!expectedSMSID.equals(invokeSMSIdentity("+8613800000000", "验证码 123456", 2_000L)));
+		assertEquals(1_000L, invokeProviderTimestamp(1_000L, 1_100L));
+		assertEquals(1_100L, invokeProviderTimestamp(0L, 1_100L));
+		assertRecentSMSIDsRetainBoundedDeliveryHistory();
+		assertInboxCursorBaselinesExistingMessagesAndRetriesFailures();
 
 		java.util.Map<String, String> releaseAssets = new java.util.LinkedHashMap<>();
 		releaseAssets.put("notes.txt", "https://example.test/notes.txt");
@@ -215,6 +246,10 @@ public final class CoreTests {
 				return "bridge_running";
 			}
 
+			@Override public String status() {
+				return "pcm=running";
+			}
+
 			@Override public String setLocalOutputMuted(boolean muted) {
 				privilegedCalls.add("mute=" + muted);
 				return muted ? "muted" : "unmuted";
@@ -273,20 +308,40 @@ public final class CoreTests {
 		SMSConfirmation confirmation = new SMSConfirmation(2);
 		confirmation.record(0, -1);
 		confirmation.record(0, -1);
-		assertTrue(!confirmation.await(1).complete());
+		SMSConfirmation.Outcome partialSMS = confirmation.await(1);
+		assertTrue(!partialSMS.complete());
+		assertEquals(1, invokeConfirmedSMSSegments(partialSMS));
 		confirmation.record(1, -1);
 		assertTrue(confirmation.await(1).success());
+		assertEquals(2, invokeConfirmedSMSSegments(confirmation.await(1)));
 		SMSConfirmation failedConfirmation = new SMSConfirmation(1);
 		failedConfirmation.record(0, 2);
 		assertEquals(2, failedConfirmation.await(1).errorCode());
+		SMSConfirmation failedMultipart = new SMSConfirmation(2);
+		failedMultipart.record(0, 2);
+		SMSConfirmation.Outcome failedEarly = failedMultipart.await(1);
+		assertTrue(failedEarly.complete());
+		assertTrue(!failedEarly.success());
+		assertEquals(2, failedEarly.errorCode());
+		SMSConfirmation cancelledConfirmation = new SMSConfirmation(1);
+		cancelledConfirmation.record(0, 0);
+		assertTrue(!cancelledConfirmation.await(1).success());
 		String smsEvent = WireJson.smsEvent(
 				"event-7", "android-sms-7", "10010", "验证码 \"246810\"", "2026-09-23T10:20:30Z");
 		assertContains(smsEvent, "\"delivery_id\":\"android-sms-7\"");
 		assertContains(smsEvent, "\"content\":\"验证码 \\\"246810\\\"\"");
+		assertContains(WireJson.smsEvent("event-8", "android-sms-8", "  ",
+				"运营商提醒", "2026-10-12T06:00:00Z"), "\"sender\":\"未知号码\"");
 
         assertEquals(1000L, RetryPolicy.delayMillis(0));
         assertEquals(8000L, RetryPolicy.delayMillis(3));
         assertEquals(15000L, RetryPolicy.delayMillis(20));
+		assertRelayServerFailuresBackOffWithoutDelayingTransportRecovery();
+        assertTrue(CommandPollingPolicy.shouldPoll(false, 0, 1_000));
+        assertTrue(!CommandPollingPolicy.shouldPoll(false, 1_000, 10_000));
+        assertTrue(CommandPollingPolicy.shouldPoll(false, 1_000, 16_000));
+        assertTrue(!CommandPollingPolicy.shouldPoll(true, 1_000, 16_000));
+        assertTrue(CommandPollingPolicy.shouldPoll(false, 16_000, 1_000));
         assertTrue(!RecoveryPolicy.shouldAttempt(2, 0, 100_000));
         assertTrue(RecoveryPolicy.shouldAttempt(3, 0, 100_000));
         assertTrue(!RecoveryPolicy.shouldAttempt(8, 90_000, 100_000));
@@ -533,6 +588,77 @@ public final class CoreTests {
         System.out.println("phone-control core tests passed");
     }
 
+	private static void assertRelayServerFailuresBackOffWithoutDelayingTransportRecovery() throws Exception {
+		Throwable serverFailure = new RelayHTTPException(500, "relay internal error");
+		assertEquals(500, RelayHTTPException.fromHandshakeStatusLine(
+				"HTTP/1.1 500 Internal Server Error").statusCode());
+		assertEquals(15_000L, RelayRetryPolicy.delayMillis(1, serverFailure));
+		assertEquals(30_000L, RelayRetryPolicy.delayMillis(2, serverFailure));
+		assertEquals(60_000L, RelayRetryPolicy.delayMillis(3, serverFailure));
+		assertEquals(300_000L, RelayRetryPolicy.delayMillis(7, serverFailure));
+		assertEquals(300_000L, RelayRetryPolicy.delayMillis(100, serverFailure));
+		assertEquals(30_000L, RelayRetryPolicy.delayMillis(2,
+				new RelayHTTPException(429, "rate limited")));
+		assertEquals(2_000L, RelayRetryPolicy.delayMillis(2,
+				new java.io.IOException("temporary network failure")));
+	}
+
+	private static void assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry() {
+		java.util.ArrayDeque<Runnable> immediate = new java.util.ArrayDeque<>();
+		java.util.ArrayDeque<Runnable> delayed = new java.util.ArrayDeque<>();
+		java.util.List<Boolean> attempts = new java.util.ArrayList<>();
+		MuteRequestRetrier retrier = new MuteRequestRetrier(new MuteRequestRetrier.Scheduler() {
+			@Override public void execute(Runnable task) { immediate.add(task); }
+			@Override public void schedule(Runnable task, long delayMillis) { delayed.add(task); }
+		}, muted -> {
+			attempts.add(muted);
+			if (muted && attempts.size() == 1) throw new IllegalStateException("transient binder error");
+		}, (muted, error) -> {});
+		retrier.request(true);
+		immediate.remove().run();
+		assertEquals(java.util.List.of(true), attempts);
+		assertEquals(1, delayed.size());
+		delayed.remove().run();
+		assertEquals(java.util.List.of(true, true), attempts);
+
+		java.util.List<Boolean> superseded = new java.util.ArrayList<>();
+		MuteRequestRetrier second = new MuteRequestRetrier(new MuteRequestRetrier.Scheduler() {
+			@Override public void execute(Runnable task) { immediate.add(task); }
+			@Override public void schedule(Runnable task, long delayMillis) { delayed.add(task); }
+		}, muted -> {
+			superseded.add(muted);
+			if (muted) throw new IllegalStateException("mute failed");
+		}, (muted, error) -> {});
+		second.request(true);
+		immediate.remove().run();
+		second.request(false);
+		immediate.remove().run();
+		delayed.remove().run();
+		assertEquals(java.util.List.of(true, false), superseded);
+	}
+
+	private static void assertMutedCallRecoversAfterThreeTransientAudioFailures() {
+		java.util.ArrayDeque<Runnable> immediate = new java.util.ArrayDeque<>();
+		java.util.ArrayDeque<Runnable> delayed = new java.util.ArrayDeque<>();
+		java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+		java.util.List<String> results = new java.util.ArrayList<>();
+		MuteRequestRetrier retrier = new MuteRequestRetrier(new MuteRequestRetrier.Scheduler() {
+			@Override public void execute(Runnable task) { immediate.add(task); }
+			@Override public void schedule(Runnable task, long delayMillis) { delayed.add(task); }
+		}, muted -> {
+			if (!muted) throw new AssertionError("this test only requests muting");
+			if (calls.incrementAndGet() <= 3) throw new IllegalStateException("temporary Shizuku failure");
+		}, (muted, error) -> results.add(error == null ? "muted" : "failed"));
+		retrier.request(true);
+		immediate.remove().run();
+		delayed.remove().run();
+		delayed.remove().run();
+		assertTrue(!delayed.isEmpty());
+		delayed.remove().run();
+		assertEquals(4, calls.get());
+		assertEquals("muted", results.get(results.size() - 1));
+	}
+
     private static void assertContains(String value, String expected) {
         if (!value.contains(expected)) throw new AssertionError(value + " missing " + expected);
     }
@@ -585,6 +711,283 @@ public final class CoreTests {
 		}
 	}
 
+	private static String[] invokeOptionalInboxPermissions(
+			boolean readSMSGranted, boolean alreadyPrompted) throws Exception {
+		try {
+			return (String[]) RuntimePermissionPolicy.class.getDeclaredMethod(
+					"optionalInboxPermissions", boolean.class, boolean.class)
+					.invoke(null, readSMSGranted, alreadyPrompted);
+		} catch (NoSuchMethodException error) {
+			throw new AssertionError("optional READ_SMS permission policy is missing", error);
+		}
+	}
+
+	private static int invokeConfirmedSMSSegments(SMSConfirmation.Outcome outcome) throws Exception {
+		try {
+			return (int) outcome.getClass().getDeclaredMethod("confirmedSegments").invoke(outcome);
+		} catch (NoSuchMethodException error) {
+			throw new AssertionError("SMS send outcome does not expose confirmed segment count", error);
+		}
+	}
+
+	private static String invokeSMSIdentity(String sender, String body, long timestamp) throws Exception {
+		try {
+			Class<?> identity = Class.forName("com.airsim.phonecontrol.SMSDeliveryIdentity");
+			return (String) identity.getDeclaredMethod("id", String.class, String.class, long.class)
+					.invoke(null, sender, body, timestamp);
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("shared broadcast/inbox SMS delivery identity is missing", error);
+		}
+	}
+
+	private static long invokeProviderTimestamp(long sent, long received) throws Exception {
+		try {
+			Class<?> identity = Class.forName("com.airsim.phonecontrol.SMSDeliveryIdentity");
+			return (long) identity.getDeclaredMethod("providerTimestamp", long.class, long.class)
+					.invoke(null, sent, received);
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("SMS provider timestamp fallback is missing", error);
+		}
+	}
+
+	private static void assertRecentSMSIDsRetainBoundedDeliveryHistory() throws Exception {
+		try {
+			Class<?> type = Class.forName("com.airsim.phonecontrol.SMSRecentDeliveryIDs");
+			Object recent = type.getDeclaredConstructor(java.util.Collection.class)
+					.newInstance(java.util.List.of("first"));
+			java.lang.reflect.Method contains = type.getDeclaredMethod("contains", String.class);
+			java.lang.reflect.Method remember = type.getDeclaredMethod("remember", String.class);
+			assertTrue((boolean) contains.invoke(recent, "first"));
+			for (int index = 0; index < 512; index++) remember.invoke(recent, "later-" + index);
+			assertTrue(!(boolean) contains.invoke(recent, "first"));
+			assertTrue((boolean) contains.invoke(recent, "later-511"));
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("completed SMS delivery history is missing", error);
+		}
+	}
+
+	private static void assertLiveStatusPollerUpdatesWithoutRebuildingPage() throws Exception {
+		try {
+			Class<?> type = Class.forName("com.airsim.phonecontrol.LiveStatusPoller");
+			Class<?> schedulerType = Class.forName("com.airsim.phonecontrol.LiveStatusPoller$Scheduler");
+			java.util.concurrent.atomic.AtomicBoolean ready = new java.util.concurrent.atomic.AtomicBoolean(false);
+			java.util.List<Boolean> rendered = new java.util.ArrayList<>();
+			Runnable[] scheduled = new Runnable[1];
+			Object scheduler = java.lang.reflect.Proxy.newProxyInstance(
+					schedulerType.getClassLoader(), new Class<?>[]{schedulerType},
+					(proxy, method, arguments) -> {
+						if ("postDelayed".equals(method.getName())) scheduled[0] = (Runnable) arguments[0];
+						if ("removeCallbacks".equals(method.getName()) && scheduled[0] == arguments[0]) {
+							scheduled[0] = null;
+						}
+						return null;
+					});
+			Object poller = type.getDeclaredConstructor(
+					java.util.function.BooleanSupplier.class, java.util.function.Consumer.class,
+					schedulerType, long.class)
+					.newInstance((java.util.function.BooleanSupplier) ready::get,
+							(java.util.function.Consumer<Boolean>) rendered::add, scheduler, 1_000L);
+			java.lang.reflect.Method start = type.getDeclaredMethod("start");
+			java.lang.reflect.Method stop = type.getDeclaredMethod("stop");
+			start.invoke(poller);
+			assertEquals(java.util.List.of(false), rendered);
+			assertTrue(scheduled[0] != null);
+			ready.set(true);
+			Runnable oldTick = scheduled[0];
+			oldTick.run();
+			assertEquals(java.util.List.of(false, true), rendered);
+			assertTrue(scheduled[0] != null);
+			stop.invoke(poller);
+			assertTrue(scheduled[0] == null);
+			ready.set(false);
+			oldTick.run();
+			assertEquals(java.util.List.of(false, true), rendered);
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("visible PCM status must refresh while active and stop when hidden", error);
+		}
+	}
+
+	private static void assertLiveStatusPollerRecoversAfterOneFailedRead() {
+		java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+		java.util.List<Boolean> rendered = new java.util.ArrayList<>();
+		Runnable[] scheduled = new Runnable[1];
+		LiveStatusPoller poller = new LiveStatusPoller(() -> {
+			if (reads.getAndIncrement() == 0) throw new IllegalStateException("transient status failure");
+			return true;
+		}, rendered::add, new LiveStatusPoller.Scheduler() {
+			@Override public void postDelayed(Runnable task, long delayMillis) { scheduled[0] = task; }
+			@Override public void removeCallbacks(Runnable task) {
+				if (scheduled[0] == task) scheduled[0] = null;
+			}
+		}, 1_000L);
+		poller.start();
+		assertTrue(scheduled[0] != null);
+		scheduled[0].run();
+		assertEquals(java.util.List.of(true), rendered);
+		poller.stop();
+	}
+
+	private static void assertLiveStatusPollerRetriesFailedRender() {
+		java.util.concurrent.atomic.AtomicInteger renders = new java.util.concurrent.atomic.AtomicInteger();
+		java.util.List<Boolean> rendered = new java.util.ArrayList<>();
+		Runnable[] scheduled = new Runnable[1];
+		LiveStatusPoller poller = new LiveStatusPoller(() -> true, value -> {
+			if (renders.getAndIncrement() == 0) throw new IllegalStateException("view briefly unavailable");
+			rendered.add(value);
+		}, new LiveStatusPoller.Scheduler() {
+			@Override public void postDelayed(Runnable task, long delayMillis) { scheduled[0] = task; }
+			@Override public void removeCallbacks(Runnable task) {
+				if (scheduled[0] == task) scheduled[0] = null;
+			}
+		}, 1_000L);
+		poller.start();
+		assertTrue(scheduled[0] != null);
+		scheduled[0].run();
+		assertEquals(java.util.List.of(true), rendered);
+		poller.stop();
+	}
+
+	private static void assertPCMBridgeRunningUsesPrivilegedProcessStatus() throws Exception {
+		try {
+			Class<?> type = Class.forName("com.airsim.phonecontrol.PCMBridgeStatus");
+			java.lang.reflect.Method running = type.getDeclaredMethod("isRunning", String.class);
+			assertTrue((boolean) running.invoke(null, "uid=2000 pcm=running local_output=normal"));
+			assertTrue(!(boolean) running.invoke(null, "uid=2000 pcm=stopped local_output=normal"));
+			assertTrue(!(boolean) running.invoke(null, "uid=2000 pcm=runningish local_output=normal"));
+			assertTrue(!(boolean) running.invoke(null, (String) null));
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("PCM readiness must use the privileged bridge process status", error);
+		}
+	}
+
+	private static void assertPrivilegedBridgeStatusRefreshTracksProcessExit() throws Exception {
+		try {
+			Class<?> coordinatorType = Class.forName("com.airsim.phonecontrol.PrivilegedBridgeCoordinator");
+			Class<?> transportType = Class.forName(
+					"com.airsim.phonecontrol.PrivilegedBridgeCoordinator$Transport");
+			java.util.concurrent.atomic.AtomicBoolean processAlive = new java.util.concurrent.atomic.AtomicBoolean(true);
+			Object transport = java.lang.reflect.Proxy.newProxyInstance(
+					transportType.getClassLoader(), new Class<?>[]{transportType},
+					(proxy, method, arguments) -> "uid=2000 pcm="
+							+ (processAlive.get() ? "running" : "stopped") + " local_output=normal");
+			Object coordinator = coordinatorType.getDeclaredConstructor().newInstance();
+			coordinatorType.getDeclaredMethod("connect", transportType).invoke(coordinator, transport);
+			java.lang.reflect.Method running = coordinatorType.getDeclaredMethod("bridgeRunning");
+			java.lang.reflect.Method refresh = coordinatorType.getDeclaredMethod("refreshStatus");
+			assertTrue((boolean) running.invoke(coordinator));
+			processAlive.set(false);
+			refresh.invoke(coordinator);
+			assertTrue(!(boolean) running.invoke(coordinator));
+			processAlive.set(true);
+			refresh.invoke(coordinator);
+			assertTrue((boolean) running.invoke(coordinator));
+			coordinatorType.getDeclaredMethod("disconnect").invoke(coordinator);
+			assertTrue(!(boolean) running.invoke(coordinator));
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("privileged PCM process status must refresh after startup", error);
+		}
+	}
+
+	private static void assertMuteResultDoesNotHideRunningPCMBridge() throws Exception {
+		PrivilegedBridgeCoordinator.Transport transport = new PrivilegedBridgeCoordinator.Transport() {
+			@Override public String startBridge() { return "uid=2000 pcm=running local_output=normal"; }
+			@Override public String status() { return "uid=2000 pcm=running local_output=muted"; }
+			@Override public String setLocalOutputMuted(boolean muted) {
+				return "local_output_muted previous_muted=false verified=true";
+			}
+		};
+		PrivilegedBridgeCoordinator connected = new PrivilegedBridgeCoordinator();
+		connected.connect(transport);
+		connected.setLocalOutputMuted(true);
+		assertTrue(connected.bridgeRunning());
+
+		PrivilegedBridgeCoordinator reconnecting = new PrivilegedBridgeCoordinator();
+		reconnecting.setLocalOutputMuted(true);
+		reconnecting.connect(transport);
+		assertTrue(reconnecting.bridgeRunning());
+	}
+
+	private static void assertVoWLANFailedRejectPreservesCallOwnership() {
+		assertTrue(VoWLANControlPolicy.ownsCallAfterResponse(
+				"/api/calls/reject", 502, true));
+		assertTrue(VoWLANControlPolicy.ownsCallAfterResponse(
+				"/api/calls/hangup", 502, true));
+		assertTrue(!VoWLANControlPolicy.ownsCallAfterResponse(
+				"/api/calls/reject", 200, true));
+		assertTrue(VoWLANControlPolicy.ownsCallAfterResponse(
+				"/api/calls/answer", 200, false));
+		assertTrue(!VoWLANControlPolicy.ownsCallAfterResponse(
+				"/api/calls/answer", 502, false));
+	}
+
+	private static void assertVoWLANClosedSocketStopsAcceptLoop() throws Exception {
+		java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+		try (java.net.ServerSocket broken = new java.net.ServerSocket() {
+			@Override public java.net.Socket accept() throws java.io.IOException {
+				if (attempts.incrementAndGet() > 1) {
+					throw new AssertionError("closed VoWLAN listener was retried");
+				}
+				throw new java.net.SocketException("Socket closed");
+			}
+			@Override public boolean isClosed() { return false; }
+		}) {
+			try {
+				Class<?> type = Class.forName("com.airsim.phonecontrol.VoWLANAcceptLoop");
+				java.lang.reflect.Method run = type.getDeclaredMethod("run", java.net.ServerSocket.class,
+						java.util.function.Consumer.class, java.util.function.Consumer.class);
+				run.invoke(null, broken,
+						(java.util.function.Consumer<java.net.Socket>) peer -> {},
+						(java.util.function.Consumer<java.io.IOException>) error -> {});
+				assertEquals(1, attempts.get());
+			} catch (ClassNotFoundException | NoSuchMethodException error) {
+				throw new AssertionError("VoWLAN listener must stop on terminal SocketException", error);
+			}
+		}
+	}
+
+	private static void assertVoWLANIOExceptionStopsAcceptLoop() throws Exception {
+		java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+		try (java.net.ServerSocket broken = new java.net.ServerSocket() {
+			@Override public java.net.Socket accept() throws java.io.IOException {
+				if (attempts.incrementAndGet() > 1) {
+					throw new AssertionError("failed VoWLAN listener was retried without a rebind");
+				}
+				throw new java.io.IOException("listener failure");
+			}
+			@Override public boolean isClosed() { return false; }
+		}) {
+			Class<?> type = Class.forName("com.airsim.phonecontrol.VoWLANAcceptLoop");
+			type.getDeclaredMethod("run", java.net.ServerSocket.class,
+					java.util.function.Consumer.class, java.util.function.Consumer.class)
+					.invoke(null, broken,
+							(java.util.function.Consumer<java.net.Socket>) peer -> {},
+							(java.util.function.Consumer<java.io.IOException>) error -> {});
+			assertEquals(1, attempts.get());
+		}
+	}
+
+	private static void assertInboxCursorBaselinesExistingMessagesAndRetriesFailures() throws Exception {
+		try {
+			Class<?> type = Class.forName("com.airsim.phonecontrol.SMSInboxCursor");
+			Object cursor = type.getDeclaredConstructor(long.class).newInstance(-1L);
+			java.lang.reflect.Method initialized = type.getDeclaredMethod("initialized");
+			java.lang.reflect.Method baseline = type.getDeclaredMethod("baseline", long.class);
+			java.lang.reflect.Method shouldQueue = type.getDeclaredMethod("shouldQueue", long.class);
+			java.lang.reflect.Method processed = type.getDeclaredMethod("processed", long.class);
+			java.lang.reflect.Method value = type.getDeclaredMethod("value");
+			assertTrue(!(boolean) initialized.invoke(cursor));
+			baseline.invoke(cursor, 10L);
+			assertTrue(!(boolean) shouldQueue.invoke(cursor, 10L));
+			assertTrue((boolean) shouldQueue.invoke(cursor, 11L));
+			assertEquals(10L, value.invoke(cursor));
+			processed.invoke(cursor, 11L);
+			assertTrue(!(boolean) shouldQueue.invoke(cursor, 11L));
+			assertTrue((boolean) shouldQueue.invoke(cursor, 12L));
+		} catch (ClassNotFoundException | NoSuchMethodException error) {
+			throw new AssertionError("new-message-only inbox cursor is missing", error);
+		}
+	}
+
 	private static String invokeTelecomAction(Runnable action) throws Exception {
 		try {
 			Class<?> invocation = Class.forName("com.airsim.phonecontrol.TelecomInvocation");
@@ -599,14 +1002,22 @@ public final class CoreTests {
 
 	private static boolean invokeIsStaleAudioBridge(
 			int candidatePid, int ownerPid, String commandLine) throws Exception {
+		return invokeIsStaleAudioBridgeForPackage(candidatePid, ownerPid, commandLine,
+				"CLASSPATH=/data/app/~~x/com.airsim.phonecontrol.standalone-y/base.apk\0",
+				"com.airsim.phonecontrol.standalone");
+	}
+
+	private static boolean invokeIsStaleAudioBridgeForPackage(
+			int candidatePid, int ownerPid, String commandLine,
+			String processEnvironment, String packageName) throws Exception {
 		try {
 			Class<?> policy = Class.forName(
 					"com.airsim.phonecontrol.PhoneAudioBridgeProcessPolicy");
 			return (boolean) policy.getDeclaredMethod(
-					"isStaleBridge", int.class, int.class, String.class)
-					.invoke(null, candidatePid, ownerPid, commandLine);
-		} catch (ClassNotFoundException error) {
-			throw new AssertionError("stale PhoneAudioBridge process policy is missing", error);
+					"isStaleBridge", int.class, int.class, String.class, String.class, String.class)
+					.invoke(null, candidatePid, ownerPid, commandLine, processEnvironment, packageName);
+		} catch (NoSuchMethodException error) {
+			throw new AssertionError("package-scoped stale PCM bridge policy is missing", error);
 		}
 	}
 

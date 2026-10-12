@@ -24,6 +24,7 @@ public final class VoWLANGatewayService extends Service {
     public static final int CONTROL_PORT = 7592;
     public static final int PCM_PORT = 7593;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final NotificationUpdateGate notificationGate = new NotificationUpdateGate();
     private volatile boolean running;
     private VoWLANControlGateway control;
     private VoWLANPCMRelay pcm;
@@ -74,7 +75,8 @@ public final class VoWLANGatewayService extends Service {
                 boolean pcmReady = false;
                 if (hotspot != null && avf != null && paired && AppConfig.configured(this)) {
                     boolean sameRunningGateway = hotspot.getHostAddress().equals(activeHotspot)
-                            && control != null && pcm != null;
+                            && control != null && control.localPort() > 0
+                            && pcm != null && pcm.localPort() > 0;
                     if (sameRunningGateway) {
                         // 不用空 TCP 探针打扰正在使用的单会话 PCM bridge。已启动的 relay
                         // 会在真实客户端连接时完成内部握手并报告精确错误。
@@ -119,7 +121,8 @@ public final class VoWLANGatewayService extends Service {
 
     private synchronized void ensureStarted(Inet4Address hotspot, Inet4Address avf) throws Exception {
         String host = hotspot.getHostAddress();
-        if (host.equals(activeHotspot) && control != null && pcm != null && advertisement != null) return;
+        if (host.equals(activeHotspot) && control != null && control.localPort() > 0
+                && pcm != null && pcm.localPort() > 0 && advertisement != null) return;
         stopGateways();
         VoWLANControlGateway nextControl = new VoWLANControlGateway(this);
         VoWLANPCMRelay nextPCM = new VoWLANPCMRelay(this);
@@ -236,8 +239,11 @@ public final class VoWLANGatewayService extends Service {
     }
 
     private void update(String detail) {
+        long now = System.currentTimeMillis();
+        if (!notificationGate.shouldPublish(detail, now)) return;
         getSystemService(android.app.NotificationManager.class).notify(
                 BridgeNotification.VOWLAN_ID, BridgeNotification.vowlan(this, detail));
+        notificationGate.published(detail, now);
     }
 
     @Override public void onDestroy() {

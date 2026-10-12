@@ -132,6 +132,34 @@ enum LiveActivityVisualPolicy {
     }
 }
 
+enum LiveActivityVisibilityPreference {
+    static let key = "airsim.live-activity-enabled"
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    static func registrationToken(
+        _ storedToken: String,
+        defaults: UserDefaults = .standard
+    ) -> String {
+        isEnabled(defaults: defaults) ? storedToken : ""
+    }
+}
+
+enum IslandActionLayout {
+    static let buttonSide: CGFloat = 44
+    static let buttonSpacing: CGFloat = 8
+
+    static func reservedWidth(for phase: AirSIMCallActivityAttributes.ContentState.Phase) -> CGFloat {
+        switch phase {
+        case .incoming: return buttonSide * 2 + buttonSpacing
+        case .active, .held: return buttonSide
+        case .standby, .cloudStandby, .offline: return 0
+        }
+    }
+}
+
 /// 灵动岛动作使用最小化模块客户端，确保扩展无需启动主 App 也能走 USB ECM 控制通话。
 private enum LiveActivityCallClient {
     enum Action {

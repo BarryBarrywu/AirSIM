@@ -47,11 +47,18 @@ final class SMSCommandExecutor {
             }
 
             SMSConfirmation confirmation = new SMSConfirmation(parts.size());
-            String action = context.getPackageName() + ".SMS_SENT." + UUID.randomUUID();
+            String attemptID = UUID.randomUUID().toString();
+            String trace = attemptID.substring(0, 8);
+            String action = context.getPackageName() + ".SMS_SENT." + attemptID;
+            BridgeLog.info("sms_send_started trace=" + trace + " segments=" + parts.size());
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override public void onReceive(Context ignored, Intent intent) {
                     if (action.equals(intent.getAction())) {
-                        confirmation.record(intent.getIntExtra(SEGMENT_EXTRA, -1), getResultCode());
+                        int segment = intent.getIntExtra(SEGMENT_EXTRA, -1);
+                        int resultCode = getResultCode();
+                        confirmation.record(segment, resultCode);
+                        BridgeLog.info("sms_send_callback trace=" + trace + " segment=" + segment
+                                + " result=" + resultCode);
                     }
                 }
             };
@@ -76,12 +83,16 @@ final class SMSCommandExecutor {
                 }
                 SMSConfirmation.Outcome outcome = confirmation.await(SENT_TIMEOUT_MS);
                 if (!outcome.complete()) {
+                    BridgeLog.info("sms_send_timeout trace=" + trace + " confirmed="
+                            + outcome.confirmedSegments() + " total=" + parts.size());
                     return AgentCommandDispatcher.Result.failure("等待系统短信发送回执超时；请先确认短信是否发出，勿立即重试");
                 }
                 if (!outcome.success()) {
+                    BridgeLog.info("sms_send_rejected trace=" + trace + " result=" + outcome.errorCode());
                     return AgentCommandDispatcher.Result.failure(
                             "系统短信发送失败（代码 " + outcome.errorCode() + "）");
                 }
+                BridgeLog.info("sms_send_confirmed trace=" + trace + " segments=" + parts.size());
                 return AgentCommandDispatcher.Result.success(parts.size());
             } finally {
                 for (PendingIntent intent : sentIntents) intent.cancel();

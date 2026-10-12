@@ -251,6 +251,22 @@ struct VoWLANBrowserLifecycle {
     }
 }
 
+/// A transient VPN route change can invalidate a successful probe without changing
+/// Bonjour's result set. Keep retrying the saved endpoint, but bound retries when
+/// the phone is genuinely offline.
+struct VoWLANRecoveryGate {
+    private var nextAttemptAt = Date.distantPast
+
+    mutating func shouldAttempt(for availability: VoWLANAvailability, at now: Date) -> Bool {
+        guard availability != .unpaired, !availability.isOnlineForDisplay,
+              now >= nextAttemptAt else { return false }
+        nextAttemptAt = now.addingTimeInterval(10)
+        return true
+    }
+
+    mutating func reset() { nextAttemptAt = .distantPast }
+}
+
 @MainActor
 final class VoWLANController: ObservableObject {
     @Published private(set) var availability: VoWLANAvailability =
@@ -268,6 +284,7 @@ final class VoWLANController: ObservableObject {
     private let queue = DispatchQueue(label: "com.example.airsim.vowlan.discovery")
     private var browser: NWBrowser?
     private var browserLifecycle = VoWLANBrowserLifecycle()
+    private var recoveryGate = VoWLANRecoveryGate()
     private var discoveredEndpoint: VoWLANEndpoint?
 
     func startBrowsing() {
@@ -382,6 +399,22 @@ final class VoWLANController: ObservableObject {
     func refreshAfterPairing() async {
         startBrowsing()
         await probeNow()
+    }
+
+    /// Called by the existing local status loop when no verified route remains.
+    /// A VPN disconnect doesn't necessarily emit a new Bonjour result, so a
+    /// failed health probe must not wait for Android to advertise again.
+    func recoverIfNeeded() async {
+        guard VoWLANCredentialStore.load() != nil,
+              recoveryGate.shouldAttempt(for: availability, at: Date()) else { return }
+        let browserWasRunning = browserLifecycle.isRunning
+        startBrowsing()
+        await probeNow()
+        if availability.isOnlineForDisplay {
+            recoveryGate.reset()
+        } else if browserWasRunning {
+            restartBrowsing()
+        }
     }
 
     func probeNow() async {

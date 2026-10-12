@@ -16,7 +16,7 @@ final class PrivilegedBridgeClient implements PrivilegedBridgeCoordinator.Transp
         return transact(PrivilegedBridgeProtocol.TRANSACTION_START_BRIDGE, false, false);
     }
 
-    String status() throws RemoteException {
+    @Override public String status() throws RemoteException {
         return transact(PrivilegedBridgeProtocol.TRANSACTION_STATUS, false, false);
     }
 

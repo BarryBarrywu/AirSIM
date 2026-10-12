@@ -2,6 +2,10 @@ import ActivityKit
 import UIKit
 
 enum LiveActivityCreationPolicy {
+    static func pushType(localModeEnabled: Bool) -> PushType? {
+        localModeEnabled ? nil : .token
+    }
+
     static func shouldCreate(
         appIsActive: Bool,
         moduleOnline: Bool,
@@ -116,12 +120,19 @@ final class LiveActivityController {
     private var lastState: AirSIMCallActivityAttributes.ContentState?
     private let idleStartedAt = Date()
     private var enabled = true
+    private var visibilityRevision = 0
 
     /// 用户关闭开关时立即清理系统活动；重新开启后由下一轮模块状态同步按需创建。
     func setEnabled(_ enabled: Bool) {
         self.enabled = enabled
+        visibilityRevision &+= 1
         if !enabled {
-            Task { @MainActor [weak self] in await self?.stop() }
+            let revision = visibilityRevision
+            Task { @MainActor [weak self] in
+                guard let self, !self.enabled,
+                      self.visibilityRevision == revision else { return }
+                await self.stop()
+            }
         }
     }
 
@@ -141,7 +152,7 @@ final class LiveActivityController {
         resolveExistingActivity()
 #if DEBUG
         let requestedPhase = call != nil ? "call" : (moduleOnline ? "standby" : (cloudOnline ? "cloud_standby" : "offline"))
-        print("[AirSIM LiveActivity] requestedPhase=\(requestedPhase) existingCount=\(Activity<AirSIMCallActivityAttributes>.activities.count) selected=\(activity?.id ?? "none")")
+        print("[AirSIM LiveActivity] requestedPhase=\(requestedPhase) appActive=\(appIsActive) authorized=\(ActivityAuthorizationInfo().areActivitiesEnabled) existingCount=\(Activity<AirSIMCallActivityAttributes>.activities.count) selected=\(activity?.id ?? "none")")
 #endif
 
         if activity == nil {
@@ -172,7 +183,9 @@ final class LiveActivityController {
                         state: initialState,
                         staleDate: nil
                     ),
-                    pushType: .token
+                    pushType: LiveActivityCreationPolicy.pushType(
+                        localModeEnabled: LocalModePreference.isEnabled()
+                    )
                 )
                 if let activity {
                     VoIPPushController.shared.observeLiveActivity(activity)
@@ -182,6 +195,9 @@ final class LiveActivityController {
 #endif
                 lastState = initialState
             } catch {
+#if DEBUG
+                print("[AirSIM LiveActivity] create_failed error=\(String(describing: error))")
+#endif
                 return
             }
         } else if let activity {
@@ -224,8 +240,7 @@ final class LiveActivityController {
     }
 
     func stop() async {
-        resolveExistingActivity()
-        if let activity {
+        for activity in Activity<AirSIMCallActivityAttributes>.activities {
             await activity.end(nil, dismissalPolicy: .immediate)
         }
         activity = nil

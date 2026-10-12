@@ -3,6 +3,7 @@ package com.airsim.phonecontrol;
 final class PrivilegedBridgeCoordinator {
     interface Transport {
         String startBridge() throws Exception;
+        String status() throws Exception;
         String setLocalOutputMuted(boolean muted) throws Exception;
     }
 
@@ -10,16 +11,19 @@ final class PrivilegedBridgeCoordinator {
     private boolean desiredMuted;
     private boolean hasMuteIntent;
     private String lastResult = "disconnected";
+    private String lastBridgeStatus = "disconnected";
 
     synchronized void connect(Transport value) throws Exception {
         transport = value;
-        lastResult = value.startBridge();
+        lastBridgeStatus = value.startBridge();
+        lastResult = lastBridgeStatus;
         if (hasMuteIntent) lastResult = value.setLocalOutputMuted(desiredMuted);
     }
 
     synchronized void disconnect() {
         transport = null;
         lastResult = "disconnected";
+        lastBridgeStatus = "disconnected";
     }
 
     synchronized void setLocalOutputMuted(boolean muted) throws Exception {
@@ -36,5 +40,17 @@ final class PrivilegedBridgeCoordinator {
 
     synchronized String lastResult() {
         return lastResult;
+    }
+
+    synchronized String refreshStatus() throws Exception {
+        if (transport != null) {
+            lastBridgeStatus = transport.status();
+            lastResult = lastBridgeStatus;
+        }
+        return lastResult;
+    }
+
+    synchronized boolean bridgeRunning() {
+        return PCMBridgeStatus.isRunning(lastBridgeStatus);
     }
 }

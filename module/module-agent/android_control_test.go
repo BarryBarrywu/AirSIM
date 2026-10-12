@@ -368,6 +368,84 @@ func TestAndroidProfileRejectUsesTelecomInsteadOfATPort(t *testing.T) {
 	}
 }
 
+func TestLocalRejectDoesNotTargetNewCallWithStaleID(t *testing.T) {
+	a := testAndroidAgent("secret-value")
+	a.calls.Active = &callRecord{
+		ID: "current-call", AndroidID: "telecom-current", Direction: "incoming", State: "incoming",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/calls/reject",
+		strings.NewReader(`{"call_id":"previous-call"}`))
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { a.reject(response, request); close(done) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if command, ok := a.android.next(ctx, 100*time.Millisecond); ok {
+		_ = a.android.complete(androidCommandResult{ID: command.ID, Success: true})
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stale reject did not return")
+	}
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("stale reject status=%d; must not control a different call", response.Code)
+	}
+}
+
+func TestLocalHangupDoesNotTargetNewCallWithStaleID(t *testing.T) {
+	a := testAndroidAgent("secret-value")
+	a.calls.Active = &callRecord{
+		ID: "current-call", AndroidID: "telecom-current", Direction: "outgoing", State: "active",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/calls/hangup",
+		strings.NewReader(`{"call_id":"previous-call"}`))
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { a.hangup(response, request); close(done) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if command, ok := a.android.next(ctx, 100*time.Millisecond); ok {
+		_ = a.android.complete(androidCommandResult{ID: command.ID, Success: true})
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stale hangup did not return")
+	}
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("stale hangup status=%d; must not control a different call", response.Code)
+	}
+}
+
+func TestLocalAnswerDoesNotTargetNewCallWithStaleID(t *testing.T) {
+	a := testAndroidAgent("secret-value")
+	a.calls.Active = &callRecord{
+		ID: "current-call", AndroidID: "telecom-current", Direction: "incoming", State: "incoming",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/calls/answer",
+		strings.NewReader(`{"call_id":"previous-call"}`))
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { a.answer(response, request); close(done) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if command, ok := a.android.next(ctx, 100*time.Millisecond); ok {
+		_ = a.android.complete(androidCommandResult{ID: command.ID, Success: true})
+		a.applyAndroidCallEvent(androidCallEvent{
+			EventID: "new-call-active", CallID: "telecom-current", Direction: "incoming", State: "active",
+		}, time.Now())
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stale answer did not return")
+	}
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("stale answer status=%d; must not control a different call", response.Code)
+	}
+}
+
 func TestAndroidProfileDTMFUsesTelecomInsteadOfATPort(t *testing.T) {
 	a := testAndroidAgent("secret-value")
 	a.calls.Active = &callRecord{
@@ -443,6 +521,71 @@ func TestCloudAnswerUsesAndroidTelecomAndWaitsForResult(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cloud command did not complete after Android reported active")
+	}
+}
+
+func TestCloudRejectDoesNotTargetNewAndroidCall(t *testing.T) {
+	descriptor := cloudCallDescriptor{
+		CallID: "old-call", CallUUID: "d9b59660-05bb-4ea8-9aeb-4505b35c93f9",
+		Generation: 2, Direction: "incoming",
+	}
+	a := testAndroidAgent("secret-value")
+	a.calls.Active = &callRecord{
+		ID: "new-call", AndroidID: "telecom-new", Direction: "incoming", State: "incoming",
+	}
+	a.cloudCallCurrent = &descriptor
+	resultChannel := make(chan cloudCommandResult, 1)
+	go func() {
+		resultChannel <- a.executeCloudCommand(cloudDeviceCommand{
+			CommandID: "9f9dc60b-3a36-4a0a-b87a-63a3ffb27145",
+			Type:      "call_control", Action: "reject", Owner: "iphone",
+			ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+			Call: &cloudCommandCall{
+				CallID: descriptor.CallID, CallUUID: descriptor.CallUUID,
+				Generation: descriptor.Generation, Direction: descriptor.Direction,
+			},
+		})
+	}()
+	type nextCommand struct {
+		command androidCommand
+		ok      bool
+	}
+	commandChannel := make(chan nextCommand, 1)
+	go func() {
+		command, ok := a.android.next(context.Background(), time.Second)
+		commandChannel <- nextCommand{command: command, ok: ok}
+	}()
+	select {
+	case next := <-commandChannel:
+		if !next.ok {
+			t.Fatal("Android command poll ended unexpectedly")
+		}
+		_ = a.android.complete(androidCommandResult{ID: next.command.ID, Success: true})
+		if next.command.CallID == "telecom-new" {
+			t.Fatal("stale cloud reject targeted the new Android call")
+		}
+	case result := <-resultChannel:
+		if result.Status != "failed" {
+			t.Fatalf("stale cloud reject result=%#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale cloud reject did not fail promptly")
+	}
+}
+
+func TestCloudMediaRejectDoesNotTargetNewAndroidCall(t *testing.T) {
+	a := testAndroidAgent("secret-value")
+	a.calls.Active = &callRecord{
+		ID: "new-call", AndroidID: "telecom-new", Direction: "incoming", State: "incoming",
+	}
+	err := a.executeIncomingCloudCallAction(cloudCallAction{
+		CallID: "old-call", CommandID: "cloud-media-reject",
+	}, "reject")
+	if err == nil || !strings.Contains(err.Error(), "通话 ID 已失效") {
+		t.Fatalf("stale media reject should fail without a Telecom command, err=%v", err)
+	}
+	if _, ok := a.android.next(context.Background(), 10*time.Millisecond); ok {
+		t.Fatal("stale media reject dispatched an Android Telecom command")
 	}
 }
 

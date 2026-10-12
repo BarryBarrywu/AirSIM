@@ -2,7 +2,7 @@
 
 该目录包含 AirSIM Android 端的共享实现以及旧 AVF 兼容 Manifest。新安装推荐使用根目录的 [Android Standalone APK](../../android-standalone/README.md)，由同一 APK 内置 Agent；只有兼容旧部署时才使用这里的 AVF 版构建入口。
 
-当前正式应用版本为 [`v0.9.5`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.5)（Android `versionCode 78`）；配套 AVF Agent 当前为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
+当前正式应用版本为 [`v0.9.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6)（Android `versionCode 79`）；配套 AVF Agent 当前为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
 
 ## 主要职责
 
@@ -67,7 +67,7 @@ Release APK 输出到 `android/phone-control-app/build/android/AirSIM-Phone-Brid
    ```
 
 4. 在系统设置中选择 AirSIM 作为默认电话 App。
-   首次启动还应允许「发送短信」权限；若有两张 SIM，请在系统 SIM 卡设置中指定默认短信 SIM。缺少权限或默认短信 SIM 时，Agent 会返回明确错误，不会把短信命令当作通话命令执行。
+   首次启动还应允许「发送短信」权限；「读取短信」是可选的收件箱兜底权限，仅用于扫描授权后新收到的短信，拒绝后仍使用短信广播。若有两张 SIM，请在系统 SIM 卡设置中指定默认短信 SIM。缺少发送权限或默认短信 SIM 时，Agent 会返回明确错误，不会把短信命令当作通话命令执行。
 5. 启动 Shizuku，并在 AirSIM 的 Shizuku 区域完成授权。
 6. 在 Terminal 运行 `sudo airsim-avf-pair`，从当前 AVF 私网确定 Agent 地址，把输出的控制 token 保存到 App。不要把 token 粘贴到日志、截图或仓库。
 7. 确认 Agent、音频桥和 VoWLAN 状态均为就绪。
@@ -84,6 +84,8 @@ AirSIM 会识别小米、Redmi、OPPO、OnePlus、realme、vivo、iQOO 和荣耀
 ## 通话与音频策略
 
 普通来电默认使用 `remote_silent`：三星端保持受控静音，由 iPhone 或 Apple Watch 呈现来电并承载音频。紧急通话始终交回系统预装电话 App。Shizuku 服务以 shell UID 运行音频桥，并在通话结束时恢复先前的系统音量状态。
+
+作为默认电话 App，AirSIM 还提供独立锁屏来电界面和通知接听/拒接/挂断入口；它不展示短信或设置内容。来电通知使用新的高优先级渠道，避免既有低优先级前台服务渠道无法升级的问题。系统若未授予全屏来电权限，会退化为可操作的横幅通知；是否亮屏以及锁屏操作仍需在每种目标机型上实测。
 
 ## 短信发送
 

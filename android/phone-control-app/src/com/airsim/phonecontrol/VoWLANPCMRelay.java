@@ -48,17 +48,11 @@ public final class VoWLANPCMRelay implements Closeable {
         return created.getLocalPort();
     }
 
-    public int localPort() { return server == null ? -1 : server.getLocalPort(); }
+    public int localPort() { return server == null || server.isClosed() ? -1 : server.getLocalPort(); }
 
     private void acceptLoop(ServerSocket active) {
-        while (!active.isClosed()) {
-            try {
-                Socket peer = active.accept();
-                workers.execute(() -> handle(peer));
-            } catch (IOException error) {
-                if (!active.isClosed()) BridgeLog.error("vowlan_pcm_accept_failed", error);
-            }
-        }
+        VoWLANAcceptLoop.run(active, peer -> workers.execute(() -> handle(peer)),
+                error -> BridgeLog.error("vowlan_pcm_accept_failed", error));
     }
 
     private void handle(Socket peer) {

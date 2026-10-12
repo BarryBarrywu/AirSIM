@@ -12,7 +12,7 @@
 | Custom Domain | `https://airsim-push.remotepilot.site` |
 | `ALLOWED_BUNDLE_ID` | `com.eric3u.airsim` |
 | Worker 协议版本 | `/healthz` 报告 `0.2.1` |
-| 配套应用发布 | [`v0.9.5`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.5) |
+| 配套应用发布 | [`v0.9.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6) |
 | 配套 AVF Agent | [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)，Debian 包 `0.4.6-1` |
 | 存储 | AirSIM 专用 `DEVICES` KV 与 `MEDIA`、`STATUS`、`COMMANDS` Durable Objects |
 | Secret | `APNS_P8`、`DASHBOARD_TOKEN` 名称已配置；值不在仓库中 |
@@ -370,6 +370,7 @@ curl --fail-with-body \
 | 注册 `401` | 相同 `device_id` 使用了不同 `device_secret`；不要直接覆盖生产记录 |
 | 来电接口 `409` | 设备还没有 iPhone 或 Watch VoIP token |
 | Dashboard `503` | `DASHBOARD_TOKEN` 尚未配置 |
+| `Exceeded allowed volume of requests in Durable Objects free tier` | Cloudflare 账户当日 Durable Objects 请求额度已用尽；按 `STATUS`、`COMMANDS`、`MEDIA` 分组核对调用量。`/commands/connect` 是失败的入口，不一定是主要耗额来源。免费额度于 00:00 UTC（北京时间 08:00）重置；恢复后仍须排查高频客户端轮询或重连。 |
 | 自定义域名部署失败 | hostname 是否已有冲突 CNAME/Worker route，zone 是否属于当前账户 |
 
 查看实时日志时注意脱敏：

@@ -1,5 +1,13 @@
 import Foundation
 
+struct LocalCallControlBody: Encodable {
+    let callID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case callID = "call_id"
+    }
+}
+
 enum LocalAgentRoute: Equatable, Sendable {
     case moduleLocal
     case vowlan(endpoint: VoWLANEndpoint, credential: VoWLANCredential)
@@ -164,9 +172,15 @@ struct AirSIMAPI: Sendable {
             throw originalError
         }
     }
-    func answerCall() async throws { try await post("api/calls/answer", EmptyBody()) }
-    func rejectCall() async throws -> RejectResponse { try await postDecoded("api/calls/reject", EmptyBody()) }
-    func hangupCall() async throws { try await post("api/calls/hangup", EmptyBody()) }
+    func answerCall(callID: String? = nil) async throws {
+        try await post("api/calls/answer", LocalCallControlBody(callID: callID))
+    }
+    func rejectCall(callID: String? = nil) async throws -> RejectResponse {
+        try await postDecoded("api/calls/reject", LocalCallControlBody(callID: callID))
+    }
+    func hangupCall(callID: String? = nil) async throws {
+        try await post("api/calls/hangup", LocalCallControlBody(callID: callID))
+    }
     func sendDTMF(_ digit: String) async throws { try await post("api/calls/dtmf", ["digit": digit]) }
     func setAudioMuted(_ muted: Bool) async throws { try await post("api/calls/audio/mute", ["muted": muted]) }
     func setCallRecording(_ recording: Bool) async throws -> CallRecordingResponse {

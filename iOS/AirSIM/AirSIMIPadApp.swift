@@ -18,7 +18,7 @@ struct AirSIMIPadApp: App {
                 .onAppear {
                     WatchCallCoordinator.shared.configure(model: model)
                     WatchCallCoordinator.shared.start()
-                    model.start()
+                    model.start(sceneIsActive: scenePhase == .active)
                 }
         }
         .onChange(of: scenePhase) { phase in

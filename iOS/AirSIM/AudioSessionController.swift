@@ -126,6 +126,13 @@ final class AudioSessionController: ObservableObject {
         }
     }
 
+    var microphonePermissionIsUndetermined: Bool {
+        if #available(iOS 17.0, *) {
+            return AVAudioApplication.shared.recordPermission == .undetermined
+        }
+        return AVAudioSession.sharedInstance().recordPermission == .undetermined
+    }
+
     func requestMicrophonePermission() async -> Bool {
         if #available(iOS 17.0, *) {
             return await AVAudioApplication.requestRecordPermission()

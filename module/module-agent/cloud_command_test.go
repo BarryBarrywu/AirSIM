@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+func TestCloudCommandReconnectBackoffCapsFailedAttempts(t *testing.T) {
+	want := []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second, 15 * time.Second, 15 * time.Second}
+	for i, expected := range want {
+		if got := cloudCommandReconnectDelay(i + 1); got != expected {
+			t.Fatalf("failure=%d delay=%s want=%s", i+1, got, expected)
+		}
+	}
+}
+
 func TestHangupConfirmationWaitsForFreshCLCCIdle(t *testing.T) {
 	commands := []string{}
 	responses := []string{

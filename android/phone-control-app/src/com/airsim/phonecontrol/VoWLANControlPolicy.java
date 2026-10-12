@@ -22,4 +22,11 @@ public final class VoWLANControlPolicy {
         if ("POST".equalsIgnoreCase(method)) return POST_ROUTES.contains(path);
         return false;
     }
+
+    static boolean ownsCallAfterResponse(String path, int status, boolean currentlyOwnsCall) {
+        if (status < 200 || status >= 300) return currentlyOwnsCall;
+        if ("/api/calls/dial".equals(path) || "/api/calls/answer".equals(path)) return true;
+        if ("/api/calls/hangup".equals(path) || "/api/calls/reject".equals(path)) return false;
+        return currentlyOwnsCall;
+    }
 }

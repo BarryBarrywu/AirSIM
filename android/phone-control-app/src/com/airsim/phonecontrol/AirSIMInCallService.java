@@ -34,7 +34,6 @@ public final class AirSIMInCallService extends InCallService {
         call.registerCallback(callback);
         AgentWatchdogService.start(this);
         emit(call, call.getState());
-        BridgeNotification.showCallFallback(this, callId, direction(call), AppConfig.mode(this));
     }
 
     @Override
@@ -48,7 +47,7 @@ public final class AirSIMInCallService extends InCallService {
         Call.Callback callback = callbacks.remove(call);
         if (callback != null) call.unregisterCallback(callback);
         CallRepository.remove(call);
-        BridgeNotification.clearCallFallback(this);
+        BridgeNotification.clearCall(this, callId);
         super.onCallRemoved(call);
     }
 
@@ -56,9 +55,10 @@ public final class AirSIMInCallService extends InCallService {
         String wireState = TelecomStateMapper.toWireState(state);
 		callStates.put(call, wireState);
 		updateLocalAudioPolicy();
-		String callId = CallRepository.id(call);
-		String callDirection = direction(call);
-		String callNumber = number(call);
+        String callId = CallRepository.id(call);
+        String callDirection = direction(call);
+        String callNumber = number(call);
+        BridgeNotification.showCall(this, callId, callDirection, AppConfig.mode(this), wireState);
         BridgeLog.debug("telecom_state_changed call_id=" + DebugRedactor.safeIdentifier(callId)
                 + " direction=" + callDirection + " state=" + wireState);
         if (!"unknown".equals(wireState) && deduplicator.shouldSend(callId, callDirection, wireState, callNumber)) {

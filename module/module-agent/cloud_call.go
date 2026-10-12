@@ -582,7 +582,7 @@ func (a *agent) executeIncomingCloudCallAction(control cloudCallAction, action s
 	if commandID == "" {
 		commandID = fmt.Sprintf("cloud-%d", time.Now().UnixNano())
 	}
-	result := a.executeAndroidCallCommand(commandID, action)
+	result := a.executeAndroidCallCommandForID(commandID, action, control.CallID)
 	if result.Success {
 		return nil
 	}

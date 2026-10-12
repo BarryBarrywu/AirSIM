@@ -40,17 +40,35 @@ public final class CallRepository {
         return idForAction("end");
     }
 
+    public static int state(String callId) {
+        Call call = CALLS.get(callId);
+        return call == null ? -1 : call.getState();
+    }
+
     public static String idForAction(String action) {
         int preferred = ("answer".equals(action) || "reject".equals(action))
                 ? Call.STATE_RINGING : Call.STATE_ACTIVE;
         for (Map.Entry<String, Call> entry : CALLS.entrySet()) {
             if (entry.getValue().getState() == preferred) return entry.getKey();
         }
+        if ("answer".equals(action)) return "";
         for (Map.Entry<String, Call> entry : CALLS.entrySet()) {
             int state = entry.getValue().getState();
             if (state != Call.STATE_DISCONNECTED && state != Call.STATE_DISCONNECTING) return entry.getKey();
         }
         return "";
+    }
+
+    static String idForPublishedAction(String action, String requestedID,
+                                       String publishedID, String androidID) {
+        if (requestedID == null || requestedID.isBlank()) return idForAction(action);
+        if (!requestedID.equals(publishedID)) return "";
+        Call call = CALLS.get(androidID);
+        if (call == null) return "";
+        int state = call.getState();
+        if (state == Call.STATE_DISCONNECTED || state == Call.STATE_DISCONNECTING
+                || ("answer".equals(action) && state != Call.STATE_RINGING)) return "";
+        return androidID;
     }
 
     public static void disconnectAll() {

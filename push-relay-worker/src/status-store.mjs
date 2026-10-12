@@ -1,3 +1,5 @@
+import { constantTimeEqual, sha256Hex } from "./auth-crypto.mjs";
+
 const HEARTBEAT_PREFIX = "heartbeat:";
 const DEVICE_PREFIX = "device:";
 const DASHBOARD_EVENT_PREFIX = "dashboard:event:";
@@ -16,6 +18,30 @@ export class AgentStatusRegistry {
     const rateMatch = url.pathname.match(/^\/rate\/([^/]+)$/);
     const deviceMatch = url.pathname.match(/^\/device\/([^/]+)$/);
     const stateMatch = url.pathname.match(/^\/state\/([^/]+)$/);
+
+    if (url.pathname === "/authenticated-heartbeat" && request.method === "POST") {
+      const { device_id: deviceID, device_secret: secret, agent_id: agentID, record } = await request.json();
+      if (!(await this.authorized(deviceID, secret))) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const normalizedDeviceID = deviceID.trim();
+      await this.storage.put(`${HEARTBEAT_PREFIX}${normalizedDeviceID}:agent:${agentID}`, record);
+      await this.storage.put(`${HEARTBEAT_PREFIX}${normalizedDeviceID}`, record);
+      return Response.json({ received: true }, { status: 202 });
+    }
+
+    if (url.pathname === "/authenticated-status" && request.method === "POST") {
+      const { device_id: deviceID, device_secret: secret } = await request.json();
+      if (!(await this.authorized(deviceID, secret))) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const entries = await this.storage.list({
+        prefix: `${HEARTBEAT_PREFIX}${deviceID.trim()}:agent:`,
+      });
+      if (entries.size > 0) return Response.json([...entries.values()]);
+      const legacy = await this.storage.get(`${HEARTBEAT_PREFIX}${deviceID.trim()}`);
+      return Response.json(legacy ? [legacy] : []);
+    }
 
     if (url.pathname === "/events") {
       if (request.method === "POST") {
@@ -131,6 +157,7 @@ export class AgentStatusRegistry {
       if (request.method === "PUT") {
         const record = await request.json();
         await this.storage.put(key, record);
+        await this.storage.put(`${HEARTBEAT_PREFIX}${deviceID}`, record);
         return Response.json({ stored: true }, { status: 202 });
       }
       if (request.method === "GET") {
@@ -157,11 +184,45 @@ export class AgentStatusRegistry {
     }
     return new Response("method not allowed", { status: 405 });
   }
+
+  async authorized(deviceID, secret) {
+    if (typeof deviceID !== "string" || !deviceID.trim() || typeof secret !== "string") return false;
+    const device = await this.storage.get(`${DEVICE_PREFIX}${deviceID.trim()}`);
+    return device && constantTimeEqual(device.secret_hash, await sha256Hex(secret));
+  }
 }
 
 function registryStub(env) {
   if (!env.STATUS) return null;
   return env.STATUS.get(env.STATUS.idFromName(REGISTRY_NAME));
+}
+
+export async function authenticateAndWriteAgentHeartbeat(env, heartbeat, agentID, record) {
+  const stub = registryStub(env);
+  if (!stub) return null;
+  return stub.fetch("https://status.internal/authenticated-heartbeat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      device_id: heartbeat.device_id,
+      device_secret: heartbeat.device_secret,
+      agent_id: agentID,
+      record,
+    }),
+  });
+}
+
+export async function authenticateAndReadAgentHeartbeats(env, query) {
+  const stub = registryStub(env);
+  if (!stub) return null;
+  return stub.fetch("https://status.internal/authenticated-status", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      device_id: query.device_id,
+      device_secret: query.device_secret,
+    }),
+  });
 }
 
 export async function writeAgentHeartbeat(env, deviceID, agentID, record) {
@@ -184,15 +245,11 @@ export async function writeAgentHeartbeat(env, deviceID, agentID, record) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(record),
   };
-  const [response, legacyResponse] = await Promise.all([
-    stub.fetch(
-      `https://status.internal/heartbeat/${encodeURIComponent(deviceID)}/${encodeURIComponent(normalizedAgentID)}`,
-      options,
-    ),
-    stub.fetch(`https://status.internal/heartbeat/${encodeURIComponent(deviceID)}`, options),
-  ]);
+  const response = await stub.fetch(
+    `https://status.internal/heartbeat/${encodeURIComponent(deviceID)}/${encodeURIComponent(normalizedAgentID)}`,
+    options,
+  );
   if (!response.ok) throw new Error(`status registry returned HTTP ${response.status}`);
-  if (!legacyResponse.ok) throw new Error(`status registry returned HTTP ${legacyResponse.status}`);
 }
 
 export async function readAgentHeartbeats(env, deviceID) {
@@ -210,6 +267,20 @@ export async function readAgentHeartbeats(env, deviceID) {
       console.warn("status registry roster read failed; using KV mirrors", safeError(error));
     }
   }
+  const mirrored = await readKVAgentRoster(env, deviceID);
+  if (mirrored.length > 0) return mirrored;
+  const latest = await readAgentHeartbeat(env, deviceID);
+  return latest ? [latest] : [];
+}
+
+export async function readAgentHeartbeatsFromKV(env, deviceID) {
+  const mirrored = await readKVAgentRoster(env, deviceID);
+  if (mirrored.length > 0) return mirrored;
+  const latest = await readKVRecord(env.DEVICES, `${HEARTBEAT_PREFIX}${deviceID}`);
+  return latest ? [latest] : [];
+}
+
+async function readKVAgentRoster(env, deviceID) {
   try {
     const prefix = `${HEARTBEAT_PREFIX}${deviceID}:agent:`;
     const listing = await env.DEVICES.list({ prefix, limit: 100 });
@@ -219,8 +290,7 @@ export async function readAgentHeartbeats(env, deviceID) {
   } catch (error) {
     console.warn("KV heartbeat roster read failed; using latest heartbeat", safeError(error));
   }
-  const latest = await readAgentHeartbeat(env, deviceID);
-  return latest ? [latest] : [];
+  return [];
 }
 
 export async function readAgentHeartbeat(env, deviceID) {

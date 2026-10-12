@@ -68,7 +68,7 @@ final class StandaloneWebSocket implements Closeable {
         String[] lines = headers.split("\r\n");
         if (lines.length == 0 || !lines[0].contains(" 101 ")) {
             socket.close();
-            throw new IOException("WebSocket 握手失败: " + (lines.length == 0 ? "empty" : lines[0]));
+            throw RelayHTTPException.fromHandshakeStatusLine(lines.length == 0 ? null : lines[0]);
         }
         Map<String, String> values = new LinkedHashMap<>();
         for (int index = 1; index < lines.length; index++) {

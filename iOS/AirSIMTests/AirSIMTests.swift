@@ -19,7 +19,257 @@ private actor OutgoingCallServiceProbe: OutgoingCallServicing {
     func recordedActions() -> [String] { actions }
 }
 
+private struct LegacyAgentSMSProbe: LegacyAgentPolling {
+    let pending: Int?
+    let smsStatusAvailable: Bool
+
+    func callStatus() async throws -> CallStatus {
+        CallStatus(active: nil, history: [], polling: true, eventDriven: false,
+                   pollIntervalSeconds: 1, lastPollError: "", revision: nil)
+    }
+
+    func smsStatus() async throws -> SMSStatus {
+        if !smsStatusAvailable { throw URLError(.badServerResponse) }
+        return SMSStatus(autoCleanupME: true, count: pending, lastPollError: nil)
+    }
+}
+
+private struct AgentSMSInboxProbe: AgentSMSInboxServicing {
+    let name: String
+    let inbox: [SMSMessage]
+
+    func messages() async throws -> [SMSMessage] { inbox }
+}
+
 final class AirSIMTests: XCTestCase {
+    @MainActor
+    func testRejectIsNotSilentlyDroppedWhileAnotherActionIsBusy() async {
+        let model = AppModel()
+        model.isBusy = true
+        model.errorMessage = "reject was not attempted"
+
+        await model.reject()
+
+        XCTAssertNotEqual(model.errorMessage, "reject was not attempted")
+    }
+
+    @MainActor
+    func testHangupIsNotSilentlyDroppedWhileAnotherActionIsBusy() async {
+        let model = AppModel()
+        model.isBusy = true
+        model.errorMessage = "hangup was not attempted"
+
+        await model.hangup()
+
+        XCTAssertNotEqual(model.errorMessage, "hangup was not attempted")
+    }
+
+    func testLocalCallControlBodyCarriesCallIdentity() throws {
+        let targeted = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(LocalCallControlBody(callID: "visible-call-7"))
+        ) as? [String: String]
+        XCTAssertEqual(targeted, ["call_id": "visible-call-7"])
+        let legacy = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(LocalCallControlBody(callID: nil))
+        ) as? [String: String]
+        XCTAssertEqual(legacy, [String: String]())
+    }
+
+    func testUnansweredPushRejectRoutesToRelayEvenWithoutPreparedMedia() {
+        XCTAssertEqual(CallKitEndDecision.route(
+            transport: nil, cloudSessionPrepared: false,
+            hasIncomingPush: true, systemCallAnswered: false,
+            activeIncomingRinging: false
+        ), .cloudReject)
+        XCTAssertEqual(CallKitEndDecision.route(
+            transport: .cloud, cloudSessionPrepared: false,
+            hasIncomingPush: true, systemCallAnswered: false,
+            activeIncomingRinging: false
+        ), .cloudReject)
+        XCTAssertEqual(CallKitEndDecision.route(
+            transport: .vowlan, cloudSessionPrepared: false,
+            hasIncomingPush: true, systemCallAnswered: false,
+            activeIncomingRinging: true
+        ), .localReject)
+        XCTAssertEqual(CallKitEndDecision.route(
+            transport: nil, cloudSessionPrepared: false,
+            hasIncomingPush: false, systemCallAnswered: false,
+            activeIncomingRinging: true
+        ), .localReject)
+    }
+
+    func testLateEndCallbackDoesNotReachBackendAfterCallAlreadyEnded() {
+        XCTAssertFalse(CallKitEndActionPolicy.shouldForwardToBackend(
+            systemCallWasCurrent: false
+        ))
+        XCTAssertTrue(CallKitEndActionPolicy.shouldForwardToBackend(
+            systemCallWasCurrent: true
+        ))
+    }
+
+    func testLocalRejectKeepsObservedAgentDuringReconnect() {
+        XCTAssertEqual(LocalCallControlTarget.select(
+            locked: Optional<String>.none,
+            observed: (callID: "call-on-samsung", service: "三星"),
+            fallback: "小米",
+            targetCallID: "call-on-samsung"
+        ), "三星")
+        XCTAssertNil(LocalCallControlTarget.select(
+            locked: Optional<String>.none,
+            observed: (callID: "call-on-samsung", service: "三星"),
+            fallback: "小米",
+            targetCallID: nil
+        ))
+        XCTAssertNil(LocalCallControlTarget.select(
+            locked: Optional<String>.none,
+            observed: (callID: "old-call", service: "三星"),
+            fallback: "小米",
+            targetCallID: "new-call"
+        ))
+    }
+
+    @MainActor
+    func testInitialPermissionsWaitForMicrophoneDecisionBeforeOtherPrompts() async {
+        let coordinator = InitialPermissionCoordinator()
+        var microphoneUndetermined = true
+        var events: [String] = []
+
+        await coordinator.requestIfNeeded(
+            isForeground: { true },
+            microphoneIsUndetermined: { microphoneUndetermined },
+            requestMicrophone: {
+                events.append("microphone")
+                await Task.yield()
+                microphoneUndetermined = false
+            },
+            startDiscovery: { events.append("discovery") },
+            requestNotifications: { events.append("notifications") }
+        )
+
+        XCTAssertEqual(events, ["microphone", "discovery", "notifications"])
+        XCTAssertTrue(coordinator.didStartDiscovery)
+    }
+
+    @MainActor
+    func testInitialPermissionsRetryWhenMicrophonePromptWasDeferred() async {
+        let coordinator = InitialPermissionCoordinator()
+        var microphoneUndetermined = true
+        var requestCount = 0
+        var notifications = 0
+        var discovery = 0
+
+        func request() async {
+            await coordinator.requestIfNeeded(
+                isForeground: { true },
+                microphoneIsUndetermined: { microphoneUndetermined },
+                requestMicrophone: { requestCount += 1 },
+                startDiscovery: { discovery += 1 },
+                requestNotifications: { notifications += 1 }
+            )
+        }
+
+        await request()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(discovery, 0)
+        XCTAssertEqual(notifications, 0)
+
+        microphoneUndetermined = false
+        await request()
+        await request()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(discovery, 1)
+        XCTAssertEqual(notifications, 1)
+    }
+
+    func testRelayRetryDoesNotRepeatSuccessfulAgentRegistration() {
+        XCTAssertFalse(PushRegistrationAttemptPolicy.shouldRegisterAgent(
+            fingerprint: "same-token",
+            route: "samsung",
+            lastFingerprint: "same-token",
+            lastRoute: "samsung"
+        ))
+    }
+
+    func testNewAgentRouteRequiresRegistrationEvenWithSameToken() {
+        XCTAssertTrue(PushRegistrationAttemptPolicy.shouldRegisterAgent(
+            fingerprint: "same-token",
+            route: "new-samsung",
+            lastFingerprint: "same-token",
+            lastRoute: "old-samsung"
+        ))
+    }
+
+    func testRelayQuotaPausesOnlyRelayRegistrationUntilRetryTime() {
+        let now = Date(timeIntervalSince1970: 43_200)
+        let retryAfter = Date(timeIntervalSince1970: 43_500)
+        XCTAssertFalse(PushRegistrationRetryPolicy.shouldAttemptRelay(now: now, retryAfter: retryAfter))
+        XCTAssertTrue(PushRegistrationRetryPolicy.shouldAttemptRelay(now: retryAfter, retryAfter: retryAfter))
+        XCTAssertEqual(PushRegistrationRetryPolicy.quotaRetryDate(now: now), retryAfter)
+        XCTAssertEqual(
+            PushRegistrationRetryPolicy.quotaRetryDate(now: Date(timeIntervalSince1970: 86_280)),
+            Date(timeIntervalSince1970: 86_410)
+        )
+    }
+
+    func testCloudStatusRefreshDoesNotRepeatJustBecauseTimeElapsed() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertFalse(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: false, lastAttempt: .distantPast, appIsForeground: true))
+        XCTAssertTrue(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: true, lastAttempt: .distantPast, appIsForeground: true))
+        XCTAssertFalse(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: true, lastAttempt: .distantPast, appIsForeground: false))
+        XCTAssertTrue(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: true, lastAttempt: .distantPast,
+            appIsForeground: false, beforeLiveActivityCall: true))
+        XCTAssertFalse(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: true, lastAttempt: now.addingTimeInterval(-5), appIsForeground: true))
+        XCTAssertFalse(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: true, lastAttempt: now.addingTimeInterval(-30), appIsForeground: true))
+        XCTAssertFalse(AppRefreshPolicy.shouldQueryCloudStatus(
+            cloudModeEnabled: true, lastAttempt: now.addingTimeInterval(-3_600),
+            appIsForeground: false, beforeLiveActivityCall: true))
+    }
+
+    func testLegacyAgentPollFetchesPendingSMSWithoutEventEndpoint() async throws {
+        let withMessage = try await LegacyAgentPoller.next(
+            LegacyAgentSMSProbe(pending: 1, smsStatusAvailable: true))
+        XCTAssertTrue(withMessage.smsChanged)
+
+        let empty = try await LegacyAgentPoller.next(
+            LegacyAgentSMSProbe(pending: 0, smsStatusAvailable: true))
+        XCTAssertFalse(empty.smsChanged)
+
+        let unavailableStatus = try await LegacyAgentPoller.next(
+            LegacyAgentSMSProbe(pending: nil, smsStatusAvailable: false))
+        XCTAssertTrue(unavailableStatus.smsChanged)
+    }
+
+    func testPendingSMSIsFetchedEvenWhenRevisionWasAlreadyObserved() {
+        XCTAssertTrue(AgentEventPollingPolicy.shouldFetchSMS(
+            pending: 1, eventRevision: 7, observedSMSRevision: 7))
+        XCTAssertTrue(AgentEventPollingPolicy.shouldFetchSMS(
+            pending: 1, eventRevision: 0, observedSMSRevision: 7))
+        XCTAssertFalse(AgentEventPollingPolicy.shouldFetchSMS(
+            pending: 0, eventRevision: 8, observedSMSRevision: 7))
+    }
+
+    func testSMSFetchUsesReportingAgentAfterDiscoverySwitchesPhones() async throws {
+        let samsung = AgentSMSInboxProbe(name: "三星", inbox: [SMSMessage(
+            sender: "10086", content: "来自三星", code: nil,
+            timestamp: Date(timeIntervalSince1970: 1_791_448_212),
+            deliveryID: "samsung-sms-1", direction: .incoming
+        )])
+        let xiaomi = AgentSMSInboxProbe(name: "小米", inbox: [])
+
+        let fetched = try await AgentSMSInboxFetch.fetch(
+            reportingAgent: samsung, discoveredAgent: xiaomi
+        )
+
+        XCTAssertEqual(fetched.messages.map(\.content), ["来自三星"])
+        XCTAssertEqual(fetched.agent.name, "三星")
+    }
+
     func testPCMReconnectCreatesFreshHandshakeForEveryAttempt() throws {
         var generated = 0
         let handshakes = PCMHandshakeSequence {
@@ -311,6 +561,15 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(RelayHealthValidation.accepts(statusCode: 503, data: airSIM))
     }
 
+    func testRelayQuotaResponseExplainsRegistrationFailure() {
+        let response = Data("error code: 1027".utf8)
+        let error = CloudAgentStatusError.relayFailure(statusCode: 429, data: response)
+        guard case .requestLimitExceeded = error else {
+            return XCTFail("Cloudflare 1027 must not be reported as an invalid Relay response")
+        }
+        XCTAssertTrue(error.localizedDescription.contains("额度"))
+    }
+
     func testCurrentModePrefersVoWLANAndReportsCloudFailure() {
         XCTAssertEqual(
             ConnectionModePresentation.make(
@@ -378,6 +637,46 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(state.pairedAgentCount, 2)
         XCTAssertEqual(state.vowlanOnline, true)
         XCTAssertEqual(state.cloudOnline, true)
+    }
+
+    func testHiddenLiveActivityDoesNotRegisterPushToStartToken() {
+        let suiteName = "AirSIMTests.live-activity.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(
+            LiveActivityVisibilityPreference.registrationToken("abc123", defaults: defaults),
+            "abc123"
+        )
+        defaults.set(false, forKey: LiveActivityVisibilityPreference.key)
+        XCTAssertEqual(
+            LiveActivityVisibilityPreference.registrationToken("abc123", defaults: defaults),
+            ""
+        )
+    }
+
+    func testLocalModeLiveActivityDoesNotRequestRemotePushUpdates() {
+        XCTAssertNil(LiveActivityCreationPolicy.pushType(localModeEnabled: true))
+        XCTAssertNotNil(LiveActivityCreationPolicy.pushType(localModeEnabled: false))
+    }
+
+    func testVoWLANRecoveryRetriesAfterTemporaryVPNRouteLoss() {
+        var recovery = VoWLANRecoveryGate()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let unavailable = VoWLANAvailability.unavailable("VPN 路由切换")
+
+        XCTAssertTrue(recovery.shouldAttempt(for: unavailable, at: start))
+        XCTAssertFalse(recovery.shouldAttempt(for: unavailable, at: start.addingTimeInterval(3)))
+        XCTAssertTrue(recovery.shouldAttempt(for: unavailable, at: start.addingTimeInterval(10)))
+        XCTAssertFalse(recovery.shouldAttempt(for: .unpaired, at: start.addingTimeInterval(20)))
+    }
+
+    func testIslandCallActionsReserveOnlyRightSideButtonWidth() {
+        typealias Phase = AirSIMCallActivityAttributes.ContentState.Phase
+        XCTAssertEqual(IslandActionLayout.reservedWidth(for: Phase.incoming), 96)
+        XCTAssertEqual(IslandActionLayout.reservedWidth(for: Phase.active), 44)
+        XCTAssertEqual(IslandActionLayout.reservedWidth(for: Phase.held), 44)
+        XCTAssertEqual(IslandActionLayout.reservedWidth(for: Phase.standby), 0)
     }
 
     func testLiveActivityStateDecodesLegacyPayloadWithoutAgentFields() throws {
