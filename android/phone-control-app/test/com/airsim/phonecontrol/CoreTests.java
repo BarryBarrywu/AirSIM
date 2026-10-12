@@ -713,6 +713,11 @@ public final class CoreTests {
 		assertEquals("41cef6294f3575441997664149bd8a014c8db026ad3a5312410be90f7d76c48a",
 				PairingCrypto.hex(android.pairingKey()));
 		assertEquals("922247", android.sas());
+		assertEquals("a09d46e2afc3444bffc9013831d265c7", PairingCrypto.hex(
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.reconnectTag(
+						android.pairingKey(), transcript)));
+		assertEquals(16, com.airsim.phonecontrol.voble.VoBLEPairingManager.confirmationTag(
+				android.pairingKey(), "challenge-1").length);
 		com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript modified =
 				new com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript(
 						"samsung-modified", androidPublic, iphonePublic,
@@ -760,6 +765,24 @@ public final class CoreTests {
 		store.save("samsung-test", android.pairingKey());
 		com.airsim.phonecontrol.voble.VoBLEPairingManager manager =
 				new com.airsim.phonecontrol.voble.VoBLEPairingManager(store);
+		long now = 1_000_000L;
+		var challenge = manager.begin("samsung-new", now);
+		var preview = manager.preview(
+				challenge.id(), iphonePublic, filledBytes(32, 0x22), now);
+		assertEquals(preview.sas(), manager.confirm(
+				challenge.id(), iphonePublic, filledBytes(32, 0x22), preview.sas(), now).sas());
+		assertTrue(store.load("samsung-new") != null);
+
+		var reconnectChallenge = manager.begin("samsung-new", now + 1);
+		var reconnectTranscript = new com.airsim.phonecontrol.voble.VoBLEPairingManager.Transcript(
+				reconnectChallenge.androidIdentity(), reconnectChallenge.androidPublicKey(),
+				iphonePublic, reconnectChallenge.androidNonce(), filledBytes(32, 0x33));
+		byte[] oldPairingKey = store.load("samsung-new");
+		var reconnected = manager.confirmReconnect(
+				reconnectChallenge.id(), iphonePublic, filledBytes(32, 0x33),
+				com.airsim.phonecontrol.voble.VoBLEPairingManager.reconnectTag(
+						oldPairingKey, reconnectTranscript), now + 1);
+		assertTrue(!java.util.Arrays.equals(oldPairingKey, reconnected.pairingKey()));
 		manager.revoke("samsung-test");
 		assertTrue(store.load("samsung-test") == null);
 	}
@@ -767,9 +790,11 @@ public final class CoreTests {
 	private static void assertVoBLEControlOwnershipAndCallDeduplication() {
 		com.airsim.phonecontrol.voble.VoBLEControlChannel channel =
 				new com.airsim.phonecontrol.voble.VoBLEControlChannel();
+		assertTrue(channel.canAuthenticate("iphone-air"));
 		channel.subscribeControl("iphone-air");
 		assertTrue(!channel.isReady("iphone-air"));
 		assertTrue(channel.authenticate("iphone-air"));
+		assertTrue(!channel.canAuthenticate("iphone-other"));
 		assertTrue(channel.isReady("iphone-air"));
 		channel.subscribeAudio("iphone-air");
 		channel.unsubscribeAudio("iphone-air");

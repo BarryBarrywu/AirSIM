@@ -14,11 +14,15 @@ public final class VoBLEControlChannel {
     private String authenticatedOwner;
 
     public synchronized boolean authenticate(String deviceId) {
-        if (deviceId == null || deviceId.isBlank()) return false;
-        if (authenticatedOwner != null && !authenticatedOwner.equals(deviceId)) return false;
+        if (!canAuthenticate(deviceId)) return false;
         authenticatedOwner = deviceId;
         subscriptions.computeIfAbsent(deviceId, ignored -> new Subscription());
         return true;
+    }
+
+    public synchronized boolean canAuthenticate(String deviceId) {
+        return deviceId != null && !deviceId.isBlank()
+                && (authenticatedOwner == null || authenticatedOwner.equals(deviceId));
     }
 
     public synchronized boolean isReady(String deviceId) {

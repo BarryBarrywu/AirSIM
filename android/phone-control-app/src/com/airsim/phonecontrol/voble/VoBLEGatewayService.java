@@ -135,15 +135,37 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                         .put("android_public", base64(challenge.androidPublicKey()))
                         .put("android_nonce", base64(challenge.androidNonce()))
                         .put("expires_at_ms", challenge.expiresAtMillis());
-            } else if ("confirm".equals(operation)) {
-                VoBLEPairingManager.PairingMaterial material = pairingManager.confirm(
+            } else if ("prepare".equals(operation)) {
+                VoBLEPairingManager.PairingMaterial material = pairingManager.preview(
                         request.getString("challenge_id"),
                         decode(request.getString("iphone_public")),
-                        decode(request.getString("iphone_nonce")),
-                        request.getString("sas"), System.currentTimeMillis());
+                        decode(request.getString("iphone_nonce")), System.currentTimeMillis());
+                response.put("sas", material.sas());
+                showPairingCode(material.sas());
+            } else if ("confirm".equals(operation)) {
+                if (!channel.canAuthenticate(deviceId)) {
+                    throw new SecurityException("another central owns VoBLE");
+                }
+                VoBLEPairingManager.PairingMaterial material;
+                if (request.has("reconnect_tag")) {
+                    material = pairingManager.confirmReconnect(
+                            request.getString("challenge_id"),
+                            decode(request.getString("iphone_public")),
+                            decode(request.getString("iphone_nonce")),
+                            decode(request.getString("reconnect_tag")), System.currentTimeMillis());
+                } else {
+                    material = pairingManager.confirm(
+                            request.getString("challenge_id"),
+                            decode(request.getString("iphone_public")),
+                            decode(request.getString("iphone_nonce")),
+                            request.getString("sas"), System.currentTimeMillis());
+                }
                 if (!channel.authenticate(deviceId)) throw new SecurityException("another central owns VoBLE");
                 peerIdentities.put(deviceId, identity);
-                response.put("ready", true).put("sas", material.sas());
+                response.put("ready", true).put("sas", material.sas())
+                        .put("confirmation_tag", base64(VoBLEPairingManager.confirmationTag(
+                                material.pairingKey(), request.getString("challenge_id"))));
+                showReadyNotification();
             } else {
                 throw new IllegalArgumentException("unsupported pairing operation");
             }
@@ -357,6 +379,26 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(new NotificationChannel(
                 CHANNEL_ID, "AirSIM 蓝牙通话", NotificationManager.IMPORTANCE_LOW));
+    }
+
+    private void showPairingCode(String sas) {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        manager.notify(NOTIFICATION_ID, new Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentTitle("AirSIM 蓝牙配对")
+                .setContentText("安全码 " + sas + " · 请与 iPhone 核对")
+                .setOngoing(true).build());
+    }
+
+    private void showReadyNotification() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        manager.notify(NOTIFICATION_ID, new Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentTitle("AirSIM 蓝牙通话")
+                .setContentText("已连接经过认证的 iPhone")
+                .setOngoing(true).build());
     }
 
     @Override public void onDestroy() {

@@ -130,6 +130,25 @@ enum VoBLESessionAuthenticator {
               expected.count == tag.count else { return false }
         return zip(expected, tag).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
     }
+
+    static func reconnectTag(
+        pairingKey: Data,
+        transcript: VoBLEPairingTranscript
+    ) throws -> Data {
+        try transcript.validate()
+        return try tag(
+            message: Data("\(prefix)reconnect".utf8) + transcript.encoded,
+            key: pairingKey
+        )
+    }
+
+    static func confirmationTag(pairingKey: Data, challengeID: String) throws -> Data {
+        guard !challengeID.isEmpty else { throw VoBLEPairingError.confirmationFailed }
+        return try tag(
+            message: Data("\(prefix)ready\(challengeID)".utf8),
+            key: pairingKey
+        )
+    }
 }
 
 struct VoBLEReplayWindow: Sendable {

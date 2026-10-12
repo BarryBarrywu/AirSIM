@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import UIKit
 
@@ -261,11 +262,14 @@ final class AppModel: ObservableObject {
     let callKit = CallKitController.shared
     let backgroundStandby = BackgroundStandbyController()
     let vowlan = VoWLANController()
+    let voble = VoBLECentralController()
     let incomingNotifier = IncomingCallNotifier()
     let incomingSMSNotifier = IncomingSMSNotifier()
     let liveActivity = LiveActivityController()
 
     private let historyStore = LocalHistoryStore()
+    private lazy var vobleMode = VoBLEModeController(bluetooth: voble)
+    private var cancellables: Set<AnyCancellable> = []
 
     private var pollingTask: Task<Void, Never>?
     private var moduleMetadataTask: Task<Void, Never>?
@@ -542,6 +546,9 @@ final class AppModel: ObservableObject {
         vowlan.onDiscoveredAgentsChange = { [weak self] in
             self?.objectWillChange.send()
         }
+        voble.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     func start(sceneIsActive: Bool) {
@@ -575,6 +582,7 @@ final class AppModel: ObservableObject {
                 vowlan.restartBrowsing()
                 Task { await vowlan.probeNow() }
             }
+            if runtimePolicy.startsBluetooth { voble.start() }
         }
         eventStreamSupported = nil
         consecutivePollFailures = 0
@@ -621,6 +629,7 @@ final class AppModel: ObservableObject {
                 startDiscovery: {
                     let policy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
                     if policy.startsVoWLAN { self.vowlan.startBrowsing() }
+                    if policy.startsBluetooth { self.voble.start() }
                 },
                 requestNotifications: { self.incomingNotifier.requestAuthorization() }
             )
@@ -677,6 +686,7 @@ final class AppModel: ObservableObject {
     func setConnectionMode(_ mode: AirSIMConnectionMode) {
         ConnectionModePreference.set(mode)
         let policy = ConnectionModeRuntimePolicy(mode: mode)
+        _ = vobleMode.activate(mode)
         cloudStatusRefreshTask?.cancel()
         cloudStatusRefreshTask = nil
         cloudStatusRefreshGeneration &+= 1
@@ -745,6 +755,7 @@ final class AppModel: ObservableObject {
         if let samsungAPI = verifiedVoWLANAPI() {
             Task { try? await samsungAPI.setAudioHostEnabled(false) }
         }
+        voble.stop()
     }
 
     private func poll(generation: Int) async {

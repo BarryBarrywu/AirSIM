@@ -617,6 +617,17 @@ final class AirSIMTests: XCTestCase {
             message: message, tag: tag, key: first.control))
         XCTAssertFalse(VoBLESessionAuthenticator.authenticate(
             message: message, tag: tag, key: Data(repeating: 0, count: 32)))
+        let reconnectTag = try VoBLESessionAuthenticator.reconnectTag(
+            pairingKey: android.pairingKey, transcript: transcript)
+        XCTAssertEqual(reconnectTag.count, 16)
+        XCTAssertEqual(reconnectTag.map { String(format: "%02x", $0) }.joined(),
+                       "a09d46e2afc3444bffc9013831d265c7")
+        XCTAssertEqual(reconnectTag, try VoBLESessionAuthenticator.reconnectTag(
+            pairingKey: android.pairingKey, transcript: transcript))
+        XCTAssertNotEqual(reconnectTag, try VoBLESessionAuthenticator.reconnectTag(
+            pairingKey: android.pairingKey, transcript: modified))
+        XCTAssertEqual(try VoBLESessionAuthenticator.confirmationTag(
+            pairingKey: android.pairingKey, challengeID: "challenge-1").count, 16)
     }
 
     func testVoBLEReplayWindowRejectsDuplicateExpiredAndRevokedPeer() {
@@ -628,6 +639,51 @@ final class AirSIMTests: XCTestCase {
             nonce: Data([2]), timestamp: now.addingTimeInterval(-31), now: now))
         window.revoke()
         XCTAssertFalse(window.accept(nonce: Data([3]), timestamp: now, now: now))
+    }
+
+    func testVoBLEConnectionRequiresAuthenticationAndControlSubscription() {
+        var reducer = VoBLEConnectionReducer()
+        reducer.apply(.bluetoothPoweredOn)
+        reducer.apply(.discovered(UUID()))
+        reducer.apply(.connected)
+        reducer.apply(.characteristicsReady)
+        reducer.apply(.controlSubscription(true))
+        XCTAssertNotEqual(reducer.state, .ready)
+
+        reducer.apply(.authenticationFailed("wrong key"))
+        XCTAssertEqual(reducer.state, .failed("wrong key"))
+        reducer.apply(.restored(UUID()))
+        XCTAssertEqual(reducer.state, .connecting)
+        reducer.apply(.characteristicsReady)
+        reducer.apply(.controlSubscription(true))
+        reducer.apply(.authenticated(identity: "samsung-test"))
+        XCTAssertEqual(reducer.state, .ready)
+    }
+
+    func testVoBLEControlLedgerRejectsStaleResponseAndExpiresDeadline() {
+        var ledger = VoBLEControlRequestLedger()
+        let now = Date(timeIntervalSince1970: 100)
+        ledger.begin(requestID: "request-1", generation: 7, deadline: now.addingTimeInterval(1))
+        XCTAssertEqual(ledger.resolve(requestID: "request-1", generation: 6), .stale)
+        XCTAssertEqual(ledger.resolve(requestID: "missing", generation: 7), .missing)
+        XCTAssertEqual(ledger.expire(now: now.addingTimeInterval(1.001)), ["request-1"])
+    }
+
+    @MainActor
+    func testExplicitBluetoothFailureDoesNotStartVoWLANOrCloud() {
+        final class FakeBluetooth: VoBLECentralControlling {
+            var starts = 0
+            var stops = 0
+            func start() { starts += 1 }
+            func stop() { stops += 1 }
+        }
+        let bluetooth = FakeBluetooth()
+        let controller = VoBLEModeController(bluetooth: bluetooth)
+        let actions = controller.activate(.bluetooth)
+        XCTAssertEqual(bluetooth.starts, 1)
+        XCTAssertFalse(actions.startVoWLAN)
+        XCTAssertFalse(actions.startCloud)
+        XCTAssertFalse(controller.shouldFallbackAfterBluetoothFailure)
     }
 
     func testConnectionModePreferenceMigratesLegacyLocalModeAndPersistsBluetooth() {

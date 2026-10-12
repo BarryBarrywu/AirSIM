@@ -19,14 +19,14 @@ struct AirSIMFirstConnectionView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("连接三星手机")
                         .font(.largeTitle.bold())
-                    Text("AirSIM 通过同一 Wi-Fi 或三星热点建立 VoWLAN；离开局域网时可使用独立云端 Relay。")
+                    Text("AirSIM 可通过 VoWLAN、蓝牙或云端 Relay 独立连接 Android 手机。")
                         .foregroundStyle(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 18) {
-                    Label("在三星手机启动 AirSIM 和音频桥", systemImage: "1.circle.fill")
-                    Label("将两台设备连接到同一局域网", systemImage: "2.circle.fill")
-                    Label("输入三星显示的六位配对码", systemImage: "3.circle.fill")
+                    Label("在 Android 手机启动 AirSIM 和音频桥", systemImage: "1.circle.fill")
+                    Label(selectedMode == .bluetooth ? "打开两台设备的蓝牙" : "按所选模式准备网络或蓝牙", systemImage: "2.circle.fill")
+                    Label("核对配对安全码并完成认证", systemImage: "3.circle.fill")
                 }
                 .font(.body.weight(.medium))
                 .padding(20)
@@ -63,10 +63,16 @@ struct AirSIMFirstConnectionView: View {
             .navigationTitle("AirSIM")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingPairing, onDismiss: {
-                if model.vowlan.availability.isOnlineForDisplay { completed = true }
+                if model.vowlan.availability.isOnlineForDisplay || model.voble.state == .ready { completed = true }
             }) {
                 NavigationStack {
-                    SamsungPairingView()
+                    Group {
+                        if selectedMode == .bluetooth {
+                            VoBLEPairingView()
+                        } else {
+                            SamsungPairingView()
+                        }
+                    }
                         .environmentObject(model)
                         .toolbar {
                             ToolbarItem(placement: .confirmationAction) {
@@ -157,6 +163,20 @@ struct AirSIMSettingsView: View {
                         model.vowlan.restartBrowsing()
                         Task { await model.vowlan.probeNow() }
                     }
+                }
+
+                Section("蓝牙连接") {
+                    LabeledContent("VoBLE", value: voBLEStatus)
+                    NavigationLink {
+                        VoBLEPairingView()
+                    } label: {
+                        Label("配对蓝牙 Agent", systemImage: "wave.3.right")
+                    }
+                    Button("重新扫描蓝牙 Agent", systemImage: "arrow.clockwise") {
+                        model.voble.stop()
+                        model.voble.start()
+                    }
+                    .disabled(!runtimePolicy.startsBluetooth)
                 }
 
                 Section {
@@ -288,6 +308,18 @@ struct AirSIMSettingsView: View {
 
     private var runtimePolicy: ConnectionModeRuntimePolicy {
         ConnectionModeRuntimePolicy(mode: selectedMode)
+    }
+
+    private var voBLEStatus: String {
+        switch model.voble.state {
+        case .stopped: return runtimePolicy.startsBluetooth ? "待启动" : "当前模式已关闭"
+        case .bluetoothUnavailable: return "蓝牙不可用"
+        case .scanning: return "正在发现"
+        case .connecting, .connected: return "正在连接"
+        case .authenticating: return "正在认证"
+        case .ready: return "已认证"
+        case .failed(let message): return "失败：\(message)"
+        }
     }
 
     private func modeIcon(_ mode: AirSIMConnectionMode) -> String {

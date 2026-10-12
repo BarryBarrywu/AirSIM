@@ -130,6 +130,11 @@ public final class VoBLEPairingManager {
                     value.challenge.androidIdentity, value.challenge.androidPublicKey,
                     iphonePublicKey, value.challenge.androidNonce, iphoneNonce);
             PairingMaterial material = derivePairing(value.privateKey, iphonePublicKey, transcript);
+            byte[] existing = credentials.load(value.challenge.androidIdentity);
+            if (existing != null) {
+                Arrays.fill(existing, (byte) 0);
+                throw new GeneralSecurityException("peer is already paired; authenticated reconnect required");
+            }
             if (!constantTimeEquals(material.sas, confirmedSas)) {
                 throw new GeneralSecurityException("pairing confirmation failed");
             }
@@ -139,6 +144,68 @@ public final class VoBLEPairingManager {
         } finally {
             Arrays.fill(value.privateKey, (byte) 0);
         }
+    }
+
+    public synchronized PairingMaterial preview(
+            String challengeId, byte[] iphonePublicKey, byte[] iphoneNonce,
+            long nowMillis) throws GeneralSecurityException {
+        Pending value = pending.get(challengeId);
+        if (value == null) throw new GeneralSecurityException("unknown pairing challenge");
+        if (nowMillis > value.challenge.expiresAtMillis) {
+            pending.remove(challengeId);
+            Arrays.fill(value.privateKey, (byte) 0);
+            throw new GeneralSecurityException("pairing challenge expired");
+        }
+        Transcript transcript = new Transcript(
+                value.challenge.androidIdentity, value.challenge.androidPublicKey,
+                iphonePublicKey, value.challenge.androidNonce, iphoneNonce);
+        return derivePairing(value.privateKey, iphonePublicKey, transcript);
+    }
+
+    public synchronized PairingMaterial confirmReconnect(
+            String challengeId, byte[] iphonePublicKey, byte[] iphoneNonce,
+            byte[] reconnectTag, long nowMillis) throws GeneralSecurityException {
+        Pending value = pending.remove(challengeId);
+        if (value == null) throw new GeneralSecurityException("unknown pairing challenge");
+        try {
+            if (nowMillis > value.challenge.expiresAtMillis) {
+                throw new GeneralSecurityException("pairing challenge expired");
+            }
+            Transcript transcript = new Transcript(
+                    value.challenge.androidIdentity, value.challenge.androidPublicKey,
+                    iphonePublicKey, value.challenge.androidNonce, iphoneNonce);
+            byte[] existing = credentials.load(value.challenge.androidIdentity);
+            if (existing == null) throw new GeneralSecurityException("peer is not paired");
+            try {
+                byte[] expected = reconnectTag(existing, transcript);
+                if (reconnectTag == null || !MessageDigest.isEqual(expected, reconnectTag)) {
+                    throw new GeneralSecurityException("reconnect authentication failed");
+                }
+            } finally {
+                Arrays.fill(existing, (byte) 0);
+            }
+            PairingMaterial material = derivePairing(value.privateKey, iphonePublicKey, transcript);
+            credentials.save(value.challenge.androidIdentity, material.pairingKey);
+            replay.put(value.challenge.androidIdentity, new VoBLEReplayWindow(30_000L, 256));
+            return material;
+        } finally {
+            Arrays.fill(value.privateKey, (byte) 0);
+        }
+    }
+
+    public static byte[] reconnectTag(byte[] pairingKey, Transcript transcript)
+            throws GeneralSecurityException {
+        return authenticationTag(
+                concat(concat(PREFIX, utf8("reconnect")), transcript.encoded()), pairingKey);
+    }
+
+    public static byte[] confirmationTag(byte[] pairingKey, String challengeId)
+            throws GeneralSecurityException {
+        if (challengeId == null || challengeId.isEmpty()) {
+            throw new GeneralSecurityException("invalid pairing confirmation");
+        }
+        return authenticationTag(
+                concat(concat(PREFIX, utf8("ready")), utf8(challengeId)), pairingKey);
     }
 
     public synchronized boolean authenticate(
