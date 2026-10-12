@@ -338,6 +338,15 @@ public final class MainActivity extends Activity {
         connectionCard.addView(label(connectionDetail, 13, MUTED, Gravity.START), matchWithTop(5));
         root.addView(connectionCard, matchWithTop(12));
 
+        LinearLayout bluetoothCard = card(SURFACE, 18);
+        bluetoothCard.setOrientation(LinearLayout.VERTICAL);
+        bluetoothCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        bluetoothCard.addView(overline("蓝牙通话（诊断已脱敏）"));
+        bluetoothCard.addView(label(
+                com.airsim.phonecontrol.voble.VoBLEGatewayService.diagnosticsSummary(),
+                14, MUTED, Gravity.START), matchWithTop(5));
+        root.addView(bluetoothCard, matchWithTop(10));
+
         LinearLayout firstHealthRow = row();
         HealthTile agentTile = healthTile(
                 RuntimeMode.agentLabel(this), agentOnline ? "在线" : agentDetail,

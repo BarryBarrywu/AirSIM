@@ -150,6 +150,7 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEControlChannel.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLECallController.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEPCMBackendResolver.java \
+	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEDiagnostics.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEPCMBridgeSession.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEMediaSession.java \
 	"$ROOT"/test/com/airsim/phonecontrol/CoreTests.java \

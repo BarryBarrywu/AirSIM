@@ -329,6 +329,20 @@ final class AppModel: ObservableObject {
         )
     }
 
+    var vobleDiagnostics: VoBLEDiagnosticsSnapshot {
+        VoBLEDiagnosticsSnapshot(
+            selectedMode: ConnectionModePreference.selected().title,
+            connection: String(describing: voble.state),
+            peerAuthenticated: voble.authenticatedIdentity != nil,
+            agentType: "Android VoBLE Agent",
+            pcmReady: vobleMedia.isRunning,
+            codec: "G.711 μ-law / 8 kHz mono",
+            queuedFrames: vobleMedia.queuedFrameCount,
+            droppedFrames: vobleMedia.droppedFrameCount,
+            jitterFrames: vobleMedia.jitterTargetFrames,
+            lastError: .classify(voble.errorMessage ?? vobleAudio.errorMessage))
+    }
+
     var pairedAndroidAgents: [AndroidAgentPresentation] {
         let cloudStatus = cloudAgentDirectory ?? cloudAgentStatus
         let cloudStatusIsFresh = Date().timeIntervalSince(lastCloudStatusRefresh) <= 90

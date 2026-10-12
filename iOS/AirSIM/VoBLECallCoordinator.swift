@@ -99,6 +99,8 @@ final class VoBLECallCoordinator {
     private let audio: VoBLEAudioEngine
     private let defaults: UserDefaults
     private var reducer = VoBLECallLifecycleReducer()
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveringIdentity: VoBLECallIdentity?
     private let generationKey = "airsim.voble.call-generation"
 
     init(
@@ -117,6 +119,7 @@ final class VoBLECallCoordinator {
         }
         central.onReadyToSendAudio = { [weak media] in media?.peripheralIsReadyToSend() }
         central.onDisconnected = { [weak self] in self?.disconnect() }
+        central.onReady = { [weak self] in self?.resumeAfterReconnect() }
     }
 
     var currentIdentity: VoBLECallIdentity? { reducer.current }
@@ -170,13 +173,20 @@ final class VoBLECallCoordinator {
     func setCallKitAudioActive(_ active: Bool) { audio.setCallKitAudioActive(active) }
 
     func disconnect() {
-        guard let identity = reducer.current, reducer.resetIfMatching(identity) else { return }
-        audio.stop()
+        guard let identity = reducer.current, recoveringIdentity == nil else { return }
+        audio.setMediaReady(false)
         media.stop(identity: identity.mediaIdentity)
-        onEnded?(identity)
+        recoveringIdentity = identity
+        recoveryTask?.cancel()
+        recoveryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.failRecovery(identity)
+        }
     }
 
     private func receive(_ event: VoBLEAndroidEvent) {
+        if let recoveringIdentity, event.generation != recoveringIdentity.generation { return }
         defaults.set(Int(max(event.generation, UInt64(max(0, defaults.integer(forKey: generationKey))))),
                      forKey: generationKey)
         switch reducer.apply(event) {
@@ -195,6 +205,24 @@ final class VoBLECallCoordinator {
             media.stop(identity: identity.mediaIdentity)
             onEnded?(identity)
         }
+    }
+
+    private func resumeAfterReconnect() {
+        guard let identity = recoveringIdentity,
+              reducer.current == identity else { return }
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveringIdentity = nil
+        Task { await startMedia(for: identity) }
+    }
+
+    private func failRecovery(_ identity: VoBLECallIdentity) {
+        guard recoveringIdentity == identity else { return }
+        recoveringIdentity = nil
+        recoveryTask = nil
+        guard reducer.resetIfMatching(identity) else { return }
+        audio.stop()
+        onEnded?(identity)
     }
 
     private func startMedia(for identity: VoBLECallIdentity) async {

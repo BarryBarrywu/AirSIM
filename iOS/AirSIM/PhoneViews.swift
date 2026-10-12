@@ -46,8 +46,17 @@ struct DialPadTransportPresentation: Equatable {
     static func make(
         vowlanOnline: Bool,
         moduleLocalReachable: Bool,
-        cloudOnline: Bool
+        cloudOnline: Bool,
+        bluetoothReady: Bool = false
     ) -> DialPadTransportPresentation? {
+        if bluetoothReady {
+            return DialPadTransportPresentation(
+                title: "蓝牙",
+                detail: "拨号及通话音频将通过 VoBLE，不使用 Relay",
+                systemImage: "wave.3.right",
+                transport: .bluetooth
+            )
+        }
         if vowlanOnline {
             return DialPadTransportPresentation(
                 title: "VoWLAN",
@@ -179,7 +188,28 @@ struct DialPadView: View {
                     }
                     .padding(.horizontal, 12)
 
-                    if let currentAgent = model.currentAndroidAgent {
+                    if ConnectionModePreference.selected() == .bluetooth {
+                        HStack(spacing: 10) {
+                            Image(systemName: "wave.3.right")
+                                .foregroundStyle(model.voble.state == .ready ? .green : .orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("VoBLE 蓝牙模式")
+                                    .font(.subheadline.weight(.semibold))
+                                Text(model.voble.state == .ready
+                                     ? "已认证 · 通话不经过 Relay"
+                                     : "等待 Android 蓝牙 Agent")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(model.voble.state == .ready ? "在线" : "连接中")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(model.voble.state == .ready ? .green : .orange)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    } else if let currentAgent = model.currentAndroidAgent {
                         DialPadCurrentAgentCard(
                             agent: currentAgent,
                             agentCount: model.pairedAndroidAgents.count,

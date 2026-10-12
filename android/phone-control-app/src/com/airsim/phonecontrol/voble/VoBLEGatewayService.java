@@ -38,6 +38,12 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     private static final String CHANNEL_ID = "airsim_voble";
     private static final int NOTIFICATION_ID = 4108;
     private static volatile VoBLEGatewayService instance;
+    private static volatile VoBLEDiagnostics.Snapshot diagnostics =
+            VoBLEDiagnostics.idle("Android");
+
+    public static String diagnosticsSummary() {
+        return VoBLEDiagnostics.summary(diagnostics);
+    }
 
     private record SessionContext(
             String deviceId, byte[] sessionId, String callId, long generation) {}
@@ -162,6 +168,10 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 }
                 if (!channel.authenticate(deviceId)) throw new SecurityException("another central owns VoBLE");
                 peerIdentities.put(deviceId, identity);
+                diagnostics = new VoBLEDiagnostics.Snapshot(
+                        RuntimeMode.agentLabel(this), true, false, "G.711-mu/8000/mono",
+                        0, 0, 0, "");
+                publishDiagnostics();
                 response.put("ready", true).put("sas", material.sas())
                         .put("confirmation_tag", base64(VoBLEPairingManager.confirmationTag(
                                 material.pairingKey(), request.getString("challenge_id"))));
@@ -305,6 +315,10 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 next.start(identity, mediaKey);
                 media = next;
                 mediaIdentity = identity;
+                diagnostics = new VoBLEDiagnostics.Snapshot(
+                        RuntimeMode.agentLabel(this), true, true, "G.711-mu/8000/mono",
+                        0, 0, 0, "");
+                publishDiagnostics();
                 return VoBLECallController.Result.success("media_ready");
             } finally {
                 Arrays.fill(mediaKey, (byte) 0);
@@ -322,7 +336,22 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         VoBLEMediaSession active = media;
         media = null;
         mediaIdentity = null;
-        if (active != null) active.close();
+        if (active != null) {
+            VoBLEMediaSession.Stats stats = active.stats();
+            diagnostics = new VoBLEDiagnostics.Snapshot(
+                    RuntimeMode.agentLabel(this), session != null, false,
+                    "G.711-mu/8000/mono", stats.downlinkFrames(), stats.uplinkFrames(),
+                    stats.droppedFrames(), "");
+            publishDiagnostics();
+            active.close();
+        }
+    }
+
+    private void publishDiagnostics() {
+        VoBLEGattServer active = gatt;
+        if (active == null) return;
+        active.updateDiagnostics(new JSONObject(diagnostics.sanitizedFields())
+                .toString().getBytes(StandardCharsets.UTF_8));
     }
 
     private void sendControl(

@@ -678,6 +678,36 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(WatchCallPayload(dictionary: payload.dictionary)?.transport, "bluetooth")
     }
 
+    func testVoBLEDiagnosticsRedactsSecretsAndMedia() {
+        let sanitized = VoBLEDiagnosticsSnapshot.sanitize([
+            "pcm_ready": "true",
+            "phone_number": "+8613800000000",
+            "media_key": "secret",
+            "nonce": "secret",
+            "authentication_tag": "secret",
+            "audio_payload": "secret",
+        ])
+        XCTAssertEqual(sanitized, ["pcm_ready": "true"])
+    }
+
+    func testVoBLERecoveryAcceptsOnlySameGenerationWithinThreeSeconds() {
+        let start = Date(timeIntervalSince1970: 100)
+        let identity = VoBLEMediaSessionIdentity(callID: "call-4", generation: 4)
+        let recovery = VoBLERecoveryPolicy(identity: identity, disconnectedAt: start)
+        XCTAssertTrue(recovery.accepts(identity, at: start.addingTimeInterval(2.9)))
+        XCTAssertFalse(recovery.accepts(
+            .init(callID: "call-4", generation: 5), at: start.addingTimeInterval(1)))
+        XCTAssertFalse(recovery.accepts(identity, at: start.addingTimeInterval(3.1)))
+    }
+
+    func testDialPadCanPresentBluetoothAsIndependentTransport() {
+        let route = DialPadTransportPresentation.make(
+            vowlanOnline: false, moduleLocalReachable: false,
+            cloudOnline: false, bluetoothReady: true)
+        XCTAssertEqual(route?.transport, .bluetooth)
+        XCTAssertEqual(route?.title, "蓝牙")
+    }
+
     func testVoBLEControlEnvelopeRoundTripsAndRejectsBadMagic() throws {
         let envelope = VoBLEControlEnvelope(
             command: "answer", callID: "call-7", generation: 0x0102030405060708,

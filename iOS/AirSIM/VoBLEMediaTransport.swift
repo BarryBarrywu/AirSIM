@@ -216,6 +216,7 @@ final class VoBLEGATTMediaTransport {
     init(writer: any VoBLEMediaWriting) { self.writer = writer }
     var queuedFrameCount: Int { queued.count }
     var isRunning: Bool { identity != nil }
+    var jitterTargetFrames: Int { jitter.targetFrames }
 
     func start(identity: VoBLEMediaSessionIdentity, mediaKey: Data) throws {
         guard !identity.callID.isEmpty, identity.generation > 0, mediaKey.count == 32 else {

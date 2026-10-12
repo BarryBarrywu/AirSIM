@@ -107,6 +107,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     var onAudioDownlinkFragment: ((Data) -> Void)?
     var onReadyToSendAudio: (() -> Void)?
     var onDisconnected: (() -> Void)?
+    var onReady: (() -> Void)?
 
     private struct PairingAttempt {
         let challengeID: String, androidIdentity: String
@@ -286,8 +287,10 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     }
 
     private func apply(_ event: VoBLEConnectionEvent) {
+        let previous = state
         reducer.apply(event); state = reducer.state
         if case let .failed(message) = state { errorMessage = message } else { errorMessage = nil }
+        if state == .ready, previous != .ready { onReady?() }
     }
 
     private func beginPairingIfPossible() {

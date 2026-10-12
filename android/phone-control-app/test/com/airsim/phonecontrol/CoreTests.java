@@ -843,6 +843,22 @@ public final class CoreTests {
 		var avf = com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.resolve(
 				com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.Runtime.AVF, "10.185.5.25");
 		assertEquals("10.185.5.25", avf.getAddress().getHostAddress());
+		var movedAVF = com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.resolve(
+				com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.Runtime.AVF, "10.185.5.31");
+		assertEquals("10.185.5.31", movedAVF.getAddress().getHostAddress());
+		assertEquals("10.185.5.25", avf.getAddress().getHostAddress());
+		var unsafeDiagnostics = new java.util.LinkedHashMap<String, String>();
+		unsafeDiagnostics.put("pcm_ready", "true");
+		unsafeDiagnostics.put("phone_number", "+8613800000000");
+		unsafeDiagnostics.put("media_key", "secret");
+		unsafeDiagnostics.put("nonce", "secret");
+		unsafeDiagnostics.put("audio_payload", "secret");
+		var safeDiagnostics = com.airsim.phonecontrol.voble.VoBLEDiagnostics.sanitize(unsafeDiagnostics);
+		assertEquals(java.util.Map.of("pcm_ready", "true"), safeDiagnostics);
+		var diagnosticSnapshot = new com.airsim.phonecontrol.voble.VoBLEDiagnostics.Snapshot(
+				"Standalone", true, true, "G.711-mu/8000/mono", 4, 3, 2, "");
+		assertTrue(com.airsim.phonecontrol.voble.VoBLEDiagnostics.summary(diagnosticSnapshot)
+				.contains("PCM 运行中"));
 		try {
 			com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.resolve(
 					com.airsim.phonecontrol.voble.VoBLEPCMBackendResolver.Runtime.AVF, "");

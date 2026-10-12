@@ -179,6 +179,22 @@ struct AirSIMSettingsView: View {
                     .disabled(!runtimePolicy.startsBluetooth)
                 }
 
+                if runtimePolicy.startsBluetooth {
+                    Section("蓝牙诊断（已脱敏）") {
+                        let diagnostics = model.vobleDiagnostics
+                        LabeledContent("认证", value: diagnostics.peerAuthenticated ? "通过" : "未完成")
+                        LabeledContent("PCM", value: diagnostics.pcmReady ? "运行中" : "待启动")
+                        LabeledContent("编码", value: diagnostics.codec)
+                        LabeledContent("发送队列", value: "\(diagnostics.queuedFrames) / 8 帧")
+                        LabeledContent("丢帧", value: "\(diagnostics.droppedFrames)")
+                        LabeledContent("抖动缓冲", value: "\(diagnostics.jitterFrames) 帧")
+                        LabeledContent("最近错误", value: diagnostics.lastError.rawValue)
+                        Text("诊断不会显示号码、密钥、nonce、认证标签或音频内容。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section {
                     Toggle(isOn: $liveActivityEnabled) {
                         Label("显示灵动岛", systemImage: "platter.filled.top.iphone")
