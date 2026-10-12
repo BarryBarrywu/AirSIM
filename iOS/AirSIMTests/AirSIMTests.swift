@@ -20,6 +20,22 @@ private actor OutgoingCallServiceProbe: OutgoingCallServicing {
     func recordedActions() -> [String] { actions }
 }
 
+@MainActor
+private final class VoBLEWriterProbe: VoBLEMediaWriting {
+    var canSend: Bool
+    let maximumLength: Int
+    private(set) var writes: [Data] = []
+
+    init(canSend: Bool, maximumLength: Int) {
+        self.canSend = canSend
+        self.maximumLength = maximumLength
+    }
+
+    var canSendWriteWithoutResponse: Bool { canSend }
+    var maximumWriteLength: Int { maximumLength }
+    func writeWithoutResponse(_ data: Data) { writes.append(data) }
+}
+
 private struct LegacyAgentSMSProbe: LegacyAgentPolling {
     let pending: Int?
     let smsStatusAvailable: Bool
@@ -535,6 +551,82 @@ final class AirSIMTests: XCTestCase {
         let decoded = try reassembler.append(complete[0], now: Date(timeIntervalSince1970: 1.201))
 
         XCTAssertTrue(decoded?.flags.contains(.discontinuity) == true)
+    }
+
+    func testVoBLEMediaCipherAndMuLawMatchAndroidVector() throws {
+        let pcm = Data((0..<160).flatMap { value -> [UInt8] in
+            let sample = Int16(truncatingIfNeeded: value * 257 - 20_000)
+            return [UInt8(truncatingIfNeeded: sample), UInt8(truncatingIfNeeded: sample >> 8)]
+        })
+        let encoded = VoBLEMULaw.encode(pcm)
+        XCTAssertEqual(encoded.count, 160)
+        XCTAssertEqual(VoBLEMULaw.decode(encoded).count, 320)
+        let key = Data(0..<32)
+        let sealed = try VoBLEMediaCipher.seal(
+            encoded, key: key, direction: .uplink, streamID: 1,
+            sequence: 7, timestamp: 160)
+        XCTAssertEqual(try VoBLEMediaCipher.open(
+            sealed, key: key, direction: .uplink, streamID: 1,
+            sequence: 7, timestamp: 160), encoded)
+        XCTAssertThrowsError(try VoBLEMediaCipher.open(
+            sealed, key: key, direction: .downlink, streamID: 1,
+            sequence: 7, timestamp: 160))
+    }
+
+    func testVoBLEJitterRejectsReplayAndConcealsGap() {
+        var jitter = VoBLEJitterBuffer(targetFrames: 3)
+        for sequence in [UInt32(10), 11, 13] {
+            XCTAssertTrue(jitter.insert(sequence: sequence,
+                pcm: Data(repeating: UInt8(sequence), count: 320)))
+        }
+        XCTAssertFalse(jitter.insert(sequence: 11, pcm: Data(repeating: 0, count: 320)))
+        XCTAssertEqual(jitter.dequeue()?.sequence, 10)
+        XCTAssertEqual(jitter.dequeue()?.sequence, 11)
+        let concealed = jitter.dequeue()
+        XCTAssertEqual(concealed?.sequence, 12)
+        XCTAssertTrue(concealed?.concealed == true)
+        XCTAssertEqual(jitter.dequeue()?.sequence, 13)
+    }
+
+    func testVoBLEJitterAdaptsWithinThreeToEightFrames() {
+        var jitter = VoBLEJitterBuffer(targetFrames: 4)
+        for _ in 0..<10 { jitter.noteDiscontinuity() }
+        XCTAssertEqual(jitter.targetFrames, 8)
+
+        for sequence in 0..<60 {
+            XCTAssertTrue(jitter.insert(sequence: UInt32(sequence), pcm: Data(repeating: 0, count: 320)))
+            _ = jitter.dequeue()
+        }
+        XCTAssertEqual(jitter.targetFrames, 7)
+    }
+
+    @MainActor
+    func testVoBLETransportBackpressureBoundsEightFramesAndRejectsStaleCall() throws {
+        let writer = VoBLEWriterProbe(canSend: false, maximumLength: 185)
+        let transport = VoBLEGATTMediaTransport(writer: writer)
+        try transport.start(identity: .init(callID: "call-a", generation: 4),
+                            mediaKey: Data(repeating: 7, count: 32))
+        for _ in 0..<10 { transport.enqueueCapturedPCM(Data(repeating: 1, count: 320)) }
+        XCTAssertEqual(transport.queuedFrameCount, 8)
+        XCTAssertEqual(transport.droppedFrameCount, 2)
+        XCTAssertTrue(writer.writes.isEmpty)
+        writer.canSend = true
+        transport.peripheralIsReadyToSend()
+        XCTAssertFalse(writer.writes.isEmpty)
+        transport.stop(identity: .init(callID: "other", generation: 4))
+        XCTAssertTrue(transport.isRunning)
+        transport.stop(identity: .init(callID: "call-a", generation: 4))
+        XCTAssertFalse(transport.isRunning)
+    }
+
+    func testVoBLEAudioGateRequiresMediaAndCallKit() {
+        var gate = VoBLEAudioStartGate()
+        gate.mediaReady = true
+        XCTAssertFalse(gate.canStart)
+        gate.callKitAudioActive = true
+        XCTAssertTrue(gate.canStart)
+        gate.mediaReady = false
+        XCTAssertFalse(gate.canStart)
     }
 
     func testVoBLEControlEnvelopeRoundTripsAndRejectsBadMagic() throws {

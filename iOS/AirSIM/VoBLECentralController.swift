@@ -88,7 +88,7 @@ enum VoBLECentralError: LocalizedError, Equatable {
 }
 
 @MainActor
-final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralControlling {
+final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralControlling, VoBLEMediaWriting {
     static let serviceUUID = CBUUID(string: "7e57a000-7a17-4d9f-9a3c-41a17b1e0001")
     static let capabilityUUID = CBUUID(string: "7e57a001-7a17-4d9f-9a3c-41a17b1e0001")
     static let pairingUUID = CBUUID(string: "7e57a002-7a17-4d9f-9a3c-41a17b1e0001")
@@ -104,6 +104,8 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     @Published private(set) var authenticatedIdentity: String?
     @Published private(set) var errorMessage: String?
     var onEvent: ((VoBLEAndroidEvent) -> Void)?
+    var onAudioDownlinkFragment: ((Data) -> Void)?
+    var onReadyToSendAudio: (() -> Void)?
 
     private struct PairingAttempt {
         let challengeID: String, androidIdentity: String
@@ -226,6 +228,28 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    func mediaKey(callID: String, generation: UInt64) throws -> Data {
+        guard state == .ready, let peer = activePeer, !sessionID.isEmpty else {
+            throw VoBLECentralError.notReady
+        }
+        return try VoBLESessionAuthenticator.deriveSessionKeys(
+            pairingKey: peer.pairingKey, sessionID: sessionID,
+            callID: callID, generation: generation).media
+    }
+
+    var canSendWriteWithoutResponse: Bool {
+        peripheral?.canSendWriteWithoutResponse == true && audioUplink != nil
+    }
+
+    var maximumWriteLength: Int {
+        peripheral?.maximumWriteValueLength(for: .withoutResponse) ?? 20
+    }
+
+    func writeWithoutResponse(_ data: Data) {
+        guard let peripheral, let audioUplink else { return }
+        peripheral.writeValue(data, for: audioUplink, type: .withoutResponse)
     }
 
     private func restoreOrScan() {
@@ -514,6 +538,8 @@ extension VoBLECentralController: CBPeripheralDelegate {
                 guard message.type == .pairing else { throw VoBLECentralError.invalidResponse }; handlePairingMessage(message.payload)
             } else if characteristic.uuid == Self.controlTXUUID, let message = try controlReassembler.append(value) {
                 guard message.type == .control else { throw VoBLECentralError.invalidResponse }; handleControlMessage(message.payload)
+            } else if characteristic.uuid == Self.audioDownlinkUUID {
+                onAudioDownlinkFragment?(value)
             }
         } catch { errorMessage = error.localizedDescription }
     }
@@ -523,5 +549,8 @@ extension VoBLECentralController: CBPeripheralDelegate {
         writeBatches[0].index += 1
         if writeBatches[0].index >= writeBatches[0].fragments.count { writeBatches.removeFirst() }
         writeNext()
+    }
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        onReadyToSendAudio?()
     }
 }
