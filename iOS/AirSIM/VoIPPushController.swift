@@ -112,6 +112,25 @@ struct IncomingVoIPCall: Equatable, Sendable {
         requestedMediaTransport = mediaTransport
     }
 
+    init(
+        bluetoothCallID: String,
+        uuid: UUID,
+        generation: UInt64,
+        number: String?
+    ) {
+        callID = bluetoothCallID
+        self.uuid = uuid
+        self.generation = max(1, generation)
+        self.number = number
+        callerName = nil
+        expiresAt = Date().addingTimeInterval(5 * 60 * 60)
+        isVirtual = false
+        isOutgoing = false
+        ttsText = nil
+        authenticatedMediaURL = nil
+        requestedMediaTransport = .legacyPCM
+    }
+
     func matches(backendID: String?, uuid: UUID?) -> Bool {
         backendID == callID || uuid == self.uuid
     }
@@ -159,6 +178,7 @@ struct IncomingVoIPCall: Equatable, Sendable {
 
 enum CallTransport: Equatable, Sendable {
     case vowlan
+    case bluetooth
     case moduleLocal
     case cloud
 }

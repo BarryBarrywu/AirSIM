@@ -277,9 +277,15 @@ final class VoBLEGATTMediaTransport {
 
     private func drain() {
         while writer.canSendWriteWithoutResponse, !queued.isEmpty {
-            guard !queued[0].fragments.isEmpty else { queued.removeFirst(); continue }
-            writer.writeWithoutResponse(queued[0].fragments.removeFirst())
-            if queued[0].fragments.isEmpty { queued.removeFirst() }
+            var frame = queued.removeFirst()
+            while writer.canSendWriteWithoutResponse, !frame.fragments.isEmpty {
+                let fragment = frame.fragments.removeFirst()
+                writer.writeWithoutResponse(fragment)
+            }
+            if !frame.fragments.isEmpty {
+                queued.insert(frame, at: 0)
+                return
+            }
         }
     }
 }

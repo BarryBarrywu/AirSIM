@@ -629,6 +629,55 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(gate.canStart)
     }
 
+    func testVoBLEOutgoingAdoptsAndroidCallIDAndStartsMediaOnce() {
+        var lifecycle = VoBLECallLifecycleReducer()
+        let pending = lifecycle.beginOutgoing(
+            callID: "pending", generation: 4, number: "10086")
+        XCTAssertEqual(pending.direction, "outgoing")
+
+        let event = VoBLEAndroidEvent(
+            callID: "android-call", generation: 4, direction: "outgoing",
+            state: "active", number: "10086")
+        guard case let .active(active, startMedia) = lifecycle.apply(event) else {
+            return XCTFail("expected active")
+        }
+        XCTAssertEqual(active.callID, "android-call")
+        XCTAssertEqual(active.uuid, pending.uuid)
+        XCTAssertTrue(startMedia)
+        guard case let .active(repeated, repeatedStart) = lifecycle.apply(event) else {
+            return XCTFail("expected repeated active")
+        }
+        XCTAssertEqual(repeated, active)
+        XCTAssertFalse(repeatedStart)
+    }
+
+    func testVoBLEMatchingEndCleansUpOnceAndStaleEndIsIgnored() {
+        var lifecycle = VoBLECallLifecycleReducer()
+        _ = lifecycle.apply(VoBLEAndroidEvent(
+            callID: "call-7", generation: 7, direction: "incoming",
+            state: "incoming", number: "123"))
+        XCTAssertEqual(lifecycle.current?.callID, "call-7")
+
+        XCTAssertEqual(lifecycle.apply(VoBLEAndroidEvent(
+            callID: "old", generation: 6, direction: "incoming",
+            state: "ended", number: "")), .ignored)
+        let end = VoBLEAndroidEvent(
+            callID: "call-7", generation: 7, direction: "incoming",
+            state: "ended", number: "")
+        guard case .ended = lifecycle.apply(end) else { return XCTFail("expected ended") }
+        XCTAssertNil(lifecycle.current)
+        XCTAssertEqual(lifecycle.apply(end), .ignored)
+    }
+
+    func testWatchPayloadCarriesBluetoothTransport() {
+        let payload = WatchCallPayload(
+            callID: "ble-call", callUUID: UUID(), phase: .active,
+            number: "10010", callerName: nil, transport: "bluetooth",
+            updatedAt: Date(timeIntervalSince1970: 42))
+        XCTAssertEqual(payload.dictionary["transport"] as? String, "bluetooth")
+        XCTAssertEqual(WatchCallPayload(dictionary: payload.dictionary)?.transport, "bluetooth")
+    }
+
     func testVoBLEControlEnvelopeRoundTripsAndRejectsBadMagic() throws {
         let envelope = VoBLEControlEnvelope(
             command: "answer", callID: "call-7", generation: 0x0102030405060708,

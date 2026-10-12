@@ -269,6 +269,10 @@ final class AppModel: ObservableObject {
 
     private let historyStore = LocalHistoryStore()
     private lazy var vobleMode = VoBLEModeController(bluetooth: voble)
+    private lazy var vobleMedia = VoBLEGATTMediaTransport(writer: voble)
+    private lazy var vobleAudio = VoBLEAudioEngine(transport: vobleMedia)
+    private lazy var vobleCalls = VoBLECallCoordinator(
+        central: voble, media: vobleMedia, audio: vobleAudio)
     private var cancellables: Set<AnyCancellable> = []
 
     private var pollingTask: Task<Void, Never>?
@@ -549,6 +553,89 @@ final class AppModel: ObservableObject {
         voble.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        configureVoBLECallCoordinator()
+    }
+
+    private func configureVoBLECallCoordinator() {
+        vobleCalls.onIncoming = { [weak self] call in
+            guard let self else { return }
+            self.currentCallTransport = .bluetooth
+            self.lockedCallTransport = LockedCallTransport(
+                transport: .bluetooth, generation: call.generation)
+            self.callKit.reportIncomingPush(call) { [weak self] error in
+                if let error { self?.errorMessage = "蓝牙来电启动失败：\(error.localizedDescription)" }
+            }
+            WatchCallCoordinator.shared.publishIncoming(call, transport: "bluetooth")
+        }
+        vobleCalls.onState = { [weak self] identity, state in
+            self?.applyVoBLEState(identity: identity, state: state)
+        }
+        vobleCalls.onEnded = { [weak self] identity in
+            self?.finishVoBLECall(identity)
+        }
+        vobleCalls.onError = { [weak self] message in self?.errorMessage = message }
+    }
+
+    private func applyVoBLEState(identity: VoBLECallIdentity, state: CallLifecycleState) {
+        currentCallTransport = .bluetooth
+        lockedCallTransport = LockedCallTransport(
+            transport: .bluetooth, generation: identity.generation)
+        let record = CallRecord(
+            id: identity.callID, index: 0, direction: identity.direction,
+            state: state.callRecordState, number: identity.number,
+            startedAt: Date(), updatedAt: Date(), endedAt: nil, missed: false)
+        remoteCall = record
+        _ = applyCallLifecycle(CallLifecycleEvent(
+            callID: identity.callID, callUUID: identity.uuid,
+            generation: identity.generation, state: state, source: .agent,
+            timestamp: Date(), traceID: "voble-\(identity.generation)-\(state.rawValue)",
+            failure: nil))
+        callKit.synchronize(
+            call: record, previous: nil,
+            callerName: identity.number.map { contacts.displayName(for: $0) })
+        if state == .active { callKit.reportCurrentOutgoingConnected() }
+        WatchCallCoordinator.shared.publish(
+            call: record, previous: nil,
+            callerName: identity.number.map { contacts.displayName(for: $0) },
+            transport: "bluetooth")
+        refreshVoBLELiveActivity(record)
+    }
+
+    private func finishVoBLECall(_ identity: VoBLECallIdentity) {
+        guard callLifecycleSnapshot.callID == identity.callID,
+              callLifecycleSnapshot.generation == identity.generation else { return }
+        let previous = remoteCall ?? CallRecord(
+            id: identity.callID, index: 0, direction: identity.direction,
+            state: callLifecycleSnapshot.state.callRecordState, number: identity.number,
+            startedAt: Date(), updatedAt: Date(), endedAt: Date(), missed: false)
+        let ended = CallRecord(
+            id: previous.id, index: previous.index, direction: previous.direction,
+            state: "ended", number: previous.number, startedAt: previous.startedAt,
+            updatedAt: Date(), endedAt: Date(), missed: previous.missed)
+        _ = applyCallLifecycle(CallLifecycleEvent(
+            callID: identity.callID, callUUID: identity.uuid,
+            generation: identity.generation, state: .ended, source: .agent,
+            timestamp: Date(), traceID: "voble-\(identity.generation)-ended", failure: nil))
+        remoteCall = nil
+        callKit.synchronize(call: nil, previous: ended, callerName: nil)
+        WatchCallCoordinator.shared.publish(
+            call: nil, previous: ended, callerName: nil, transport: "bluetooth")
+        refreshVoBLELiveActivity(nil)
+        clearLockedTransport()
+        backgroundStandby.resumeAfterCall()
+    }
+
+    private func refreshVoBLELiveActivity(_ call: CallRecord?) {
+        Task { [weak self] in
+            guard let self else { return }
+            await self.liveActivity.update(
+                call: call,
+                callerName: call?.number.map { self.contacts.displayName(for: $0) },
+                moduleOnline: self.voble.state == .ready,
+                cloudOnline: false,
+                transport: call == nil ? nil : .bluetooth,
+                radio: nil, agent: nil, appIsActive: self.appIsActive)
+        }
     }
 
     func start(sceneIsActive: Bool) {
@@ -759,6 +846,14 @@ final class AppModel: ObservableObject {
     }
 
     private func poll(generation: Int) async {
+        if ConnectionModePreference.selected() == .bluetooth {
+            let ready = voble.state == .ready
+            isOnline = ready
+            isReconnecting = !ready
+            connectionMessage = ready ? "蓝牙 Agent 已连接" : "正在连接蓝牙 Agent"
+            consecutivePollFailures = 0
+            return
+        }
         do {
             let result = try await nextAgentEvent()
             let status = result.call
@@ -1110,6 +1205,7 @@ final class AppModel: ObservableObject {
     private var liveActivityTransport: AirSIMCallActivityAttributes.ContentState.Transport? {
         switch currentCallTransport {
         case .vowlan: return .vowlan
+        case .bluetooth: return .bluetooth
         case .cloud: return .cloud
         case .moduleLocal: return .moduleLocal
         case nil: break
@@ -2084,6 +2180,19 @@ extension AppModel: CallKitActionHandling {
         backgroundStandby.suspendForCall()
         do {
             let vowlanRoute = await readyVoWLANRoute()
+            let selectedMode = ConnectionModePreference.selected()
+            if selectedMode == .bluetooth
+                || (selectedMode == .automatic && vowlanRoute == nil && vobleCalls.isReady) {
+                guard vobleCalls.isReady else { throw VoBLECentralError.notReady }
+                let identity = try await vobleCalls.startOutgoing(number: number)
+                currentCallTransport = .bluetooth
+                lockedCallTransport = LockedCallTransport(
+                    transport: .bluetooth, generation: identity.generation)
+                pendingOutgoingCall = CallRecord(
+                    id: identity.callID, index: 0, direction: "outgoing", state: "dialing",
+                    number: number, startedAt: Date(), updatedAt: Date(), endedAt: nil, missed: false)
+                return
+            }
             let cloudModeEnabled = CloudModePreference.isEnabled()
             let routeResult = try await OutgoingCallRouteCoordinator.start(
                 number: number,
@@ -2139,6 +2248,11 @@ extension AppModel: CallKitActionHandling {
         applyCurrentCallIntent(.connecting, source: origin == .app ? .app : .callKit)
         if origin == .system { _ = IncomingCallPresentationRequest.consume() }
         do {
+            if currentCallTransport == .bluetooth || vobleCalls.currentIdentity != nil {
+                try await vobleCalls.answer()
+                currentCallTransport = .bluetooth
+                return
+            }
             let pushedCall = callKit.currentIncomingPush
             if let pushedCall, pushedCall.isVirtual {
                 try VirtualCallTTSController.shared.prepare(pushedCall)
@@ -2165,6 +2279,12 @@ extension AppModel: CallKitActionHandling {
                 lockLocalTransport(.vowlan, api: vowlanAPI, pcmRoute: pcmRoute)
             case .moduleLocal:
                 throw CallKitBridgeError.noReachableTransport
+            case .bluetooth:
+                guard vobleCalls.currentIdentity != nil else {
+                    throw CallKitBridgeError.noReachableTransport
+                }
+                try await vobleCalls.answer()
+                currentCallTransport = .bluetooth
             case .cloud:
                 guard let pushedCall else { throw CallKitBridgeError.noReachableTransport }
                 try await IPhoneCloudCallSession.shared.answer(pushedCall)
@@ -2203,6 +2323,7 @@ extension AppModel: CallKitActionHandling {
     func callKitEnd() async throws {
         beginCallTransitionProtection()
         audio.stopCallTone()
+        let wasRinging = callLifecycleSnapshot.state == .ringing
         let pushedCall = callKit.currentIncomingPush
         let endRoute = CallKitEndDecision.route(
             transport: currentCallTransport,
@@ -2213,6 +2334,10 @@ extension AppModel: CallKitActionHandling {
                 && ["incoming", "waiting"].contains(activeCall?.state ?? "")
         )
         applyCurrentCallIntent(.ending, source: .callKit)
+        if currentCallTransport == .bluetooth || vobleCalls.currentIdentity != nil {
+            try await vobleCalls.end(rejectIfRinging: wasRinging)
+            return
+        }
         if VirtualCallTTSController.shared.isPrepared || callKit.currentIncomingPush?.isVirtual == true {
             VirtualCallTTSController.shared.stop()
             clearLockedTransport()
@@ -2266,6 +2391,11 @@ extension AppModel: CallKitActionHandling {
         }
         audio.setMuted(muted)
         IPhoneCloudCallSession.shared.setMuted(muted)
+        if currentCallTransport == .bluetooth {
+            vobleCalls.setMuted(muted)
+            errorMessage = nil
+            return
+        }
         // CallKit 的静音动作直接作用于本地 PCM 编码器；模块 AT+CMUT 失败不应影响双向音频。
         if currentCallTransport != .cloud {
             if let localAPI = reachableLocalAPI {
@@ -2277,6 +2407,10 @@ extension AppModel: CallKitActionHandling {
 
     func callKitPlayDTMF(_ digits: String) async throws {
         if VirtualCallTTSController.shared.isPrepared { return }
+        if currentCallTransport == .bluetooth {
+            try await vobleCalls.sendDTMF(digits)
+            return
+        }
         for digit in digits where "0123456789*#".contains(digit) {
             if currentCallTransport == .cloud {
                 try await VoIPPushController.shared.sendCloudDTMF(String(digit))
@@ -2294,6 +2428,10 @@ extension AppModel: CallKitActionHandling {
             VirtualCallTTSController.shared.start()
             return
         }
+        if currentCallTransport == .bluetooth || vobleCalls.currentIdentity != nil {
+            vobleCalls.setCallKitAudioActive(true)
+            return
+        }
         await startCallAudioIfReady()
     }
 
@@ -2301,6 +2439,11 @@ extension AppModel: CallKitActionHandling {
         beginCallTransitionProtection()
         if VirtualCallTTSController.shared.isPrepared {
             VirtualCallTTSController.shared.stop()
+            backgroundStandby.resumeAfterCall()
+            return
+        }
+        if currentCallTransport == .bluetooth || vobleCalls.currentIdentity != nil {
+            vobleCalls.setCallKitAudioActive(false)
             backgroundStandby.resumeAfterCall()
             return
         }
@@ -2315,6 +2458,9 @@ extension AppModel: CallKitActionHandling {
 
     func callKitProviderDidReset() async {
         beginCallTransitionProtection()
+        if vobleCalls.currentIdentity != nil {
+            vobleCalls.setCallKitAudioActive(false)
+        }
         // CXProvider reset 只代表系统通话界面失效，绝不等于用户挂断真实模块通话。
         // 清理本地音频后交给下一轮状态同步按 App 内通话模式自动恢复。
         let wasVirtual = VirtualCallTTSController.shared.isPrepared
@@ -2360,6 +2506,9 @@ extension AppModel: CallKitActionHandling {
         // 远端挂断、系统通话页挂断以及 Provider 主动结束都会走这里。
         // Agent 已拥有唯一的通话结束媒体清理权；App 不再重复关闭 Audio Host。
         beginCallTransitionProtection()
+        if vobleCalls.currentIdentity != nil {
+            vobleCalls.setCallKitAudioActive(false)
+        }
         // CallKit 本地 UI 已结束不等于模块已挂机；最终 ended/failed 只能由 Agent/Relay 回执推进。
         applyCurrentCallIntent(.ending, source: .callKit)
         remoteCall = nil

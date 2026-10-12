@@ -106,6 +106,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     var onEvent: ((VoBLEAndroidEvent) -> Void)?
     var onAudioDownlinkFragment: ((Data) -> Void)?
     var onReadyToSendAudio: (() -> Void)?
+    var onDisconnected: (() -> Void)?
 
     private struct PairingAttempt {
         let challengeID: String, androidIdentity: String
@@ -165,6 +166,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
         enabled = false; attemptedStoredRestore = false; central?.stopScan()
         if let peripheral { central?.cancelPeripheralConnection(peripheral) }
         failPending(with: VoBLECentralError.disconnected)
+        onDisconnected?()
         resetConnection(); apply(.stopped)
     }
 
@@ -493,6 +495,7 @@ extension VoBLECentralController: CBCentralManagerDelegate {
     }
     private func handleDisconnect(error: Error?, isReconnecting: Bool) {
         failPending(with: VoBLECentralError.disconnected); resetConnection()
+        onDisconnected?()
         attemptedStoredRestore = false
         apply(.disconnected(error?.localizedDescription)); if enabled, !isReconnecting { restoreOrScan() }
     }

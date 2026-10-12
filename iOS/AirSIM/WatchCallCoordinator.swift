@@ -50,7 +50,10 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
     }
 
     @MainActor
-    func publish(call: CallRecord?, previous: CallRecord?, callerName: String?) {
+    func publish(
+        call: CallRecord?, previous: CallRecord?, callerName: String?,
+        transport: String? = nil
+    ) {
         start()
         let phase: WatchCallPhase
         if let call {
@@ -69,13 +72,17 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             phase: phase,
             number: identityCall?.number,
             callerName: callerName,
+            transport: transport,
             updatedAt: identityCall?.updatedAt ?? Date()
         )
         publish(payload)
     }
 
     @MainActor
-    func publishIncoming(_ call: IncomingVoIPCall, callerName: String? = nil) {
+    func publishIncoming(
+        _ call: IncomingVoIPCall, callerName: String? = nil,
+        transport: String? = nil
+    ) {
         start()
         publish(WatchCallPayload(
             callID: call.callID,
@@ -83,6 +90,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             phase: .incoming,
             number: call.number,
             callerName: callerName ?? call.callerName,
+            transport: transport,
             updatedAt: Date()
         ))
     }
@@ -98,7 +106,8 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
            lastPayload.callUUID == payload.callUUID,
            lastPayload.phase == payload.phase,
            lastPayload.number == payload.number,
-           lastPayload.callerName == payload.callerName {
+           lastPayload.callerName == payload.callerName,
+           lastPayload.transport == payload.transport {
             return
         }
         lastPayload = payload

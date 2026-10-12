@@ -55,6 +55,7 @@
 		A10000000000000000000037 /* VoBLEPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000037 /* VoBLEPairingView.swift */; };
 		A10000000000000000000038 /* VoBLEMediaTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000038 /* VoBLEMediaTransport.swift */; };
 		A10000000000000000000039 /* VoBLEAudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000039 /* VoBLEAudioEngine.swift */; };
+		A10000000000000000000040 /* VoBLECallCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000040 /* VoBLECallCoordinator.swift */; };
 		A1000000000000000000002B /* CallLifecycleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000002B /* CallLifecycleStore.swift */; };
 		A30000000000000000000001 /* AirSIMTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001 /* AirSIMTests.swift */; };
 /* End PBXBuildFile section */
@@ -159,6 +160,7 @@
 		B10000000000000000000037 /* VoBLEPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoBLEPairingView.swift; sourceTree = "<group>"; };
 		B10000000000000000000038 /* VoBLEMediaTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoBLEMediaTransport.swift; sourceTree = "<group>"; };
 		B10000000000000000000039 /* VoBLEAudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoBLEAudioEngine.swift; sourceTree = "<group>"; };
+		B10000000000000000000040 /* VoBLECallCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoBLECallCoordinator.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* AirSIMTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirSIMTests.swift; sourceTree = "<group>"; };
 		B30000000000000000000002 /* AirSIMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AirSIMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -241,6 +243,7 @@
 				B10000000000000000000037 /* VoBLEPairingView.swift */,
 				B10000000000000000000038 /* VoBLEMediaTransport.swift */,
 				B10000000000000000000039 /* VoBLEAudioEngine.swift */,
+				B10000000000000000000040 /* VoBLECallCoordinator.swift */,
 				B1000000000000000000001D /* WatchCallCoordinator.swift */,
 				B10000000000000000000008 /* RootView.swift */,
 				B10000000000000000000009 /* PhoneViews.swift */,
@@ -493,6 +496,7 @@
 				A10000000000000000000037 /* VoBLEPairingView.swift in Sources */,
 				A10000000000000000000038 /* VoBLEMediaTransport.swift in Sources */,
 				A10000000000000000000039 /* VoBLEAudioEngine.swift in Sources */,
+				A10000000000000000000040 /* VoBLECallCoordinator.swift in Sources */,
 				A1000000000000000000001B /* WatchCallCoordinator.swift in Sources */,
 				A1000000000000000000001C /* WatchCallPayload.swift in Sources */,
 				A10000000000000000000017 /* LocalHistoryStore.swift in Sources */,

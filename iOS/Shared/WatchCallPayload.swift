@@ -14,6 +14,7 @@ struct WatchCallPayload: Equatable, Sendable {
     let phase: WatchCallPhase
     let number: String?
     let callerName: String?
+    let transport: String?
     let updatedAt: Date
 
     var dictionary: [String: Any] {
@@ -26,6 +27,7 @@ struct WatchCallPayload: Equatable, Sendable {
         ]
         if let number, !number.isEmpty { value["number"] = number }
         if let callerName, !callerName.isEmpty { value["caller_name"] = callerName }
+        if let transport, !transport.isEmpty { value["transport"] = transport }
         return value
     }
 
@@ -35,6 +37,7 @@ struct WatchCallPayload: Equatable, Sendable {
         phase: WatchCallPhase,
         number: String?,
         callerName: String?,
+        transport: String? = nil,
         updatedAt: Date
     ) {
         self.callID = callID
@@ -42,6 +45,7 @@ struct WatchCallPayload: Equatable, Sendable {
         self.phase = phase
         self.number = number
         self.callerName = callerName
+        self.transport = transport
         self.updatedAt = updatedAt
     }
 
@@ -58,6 +62,7 @@ struct WatchCallPayload: Equatable, Sendable {
             phase: phase,
             number: dictionary["number"] as? String,
             callerName: dictionary["caller_name"] as? String,
+            transport: dictionary["transport"] as? String,
             updatedAt: Date(timeIntervalSince1970: updatedAt)
         )
     }
