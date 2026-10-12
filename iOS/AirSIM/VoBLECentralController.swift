@@ -464,7 +464,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     }
 }
 
-extension VoBLECentralController: CBCentralManagerDelegate {
+extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard enabled else { return }; central.state == .poweredOn ? restoreOrScan() : apply(.bluetoothUnavailable)
     }
@@ -504,7 +504,7 @@ extension VoBLECentralController: CBCentralManagerDelegate {
     }
 }
 
-extension VoBLECentralController: CBPeripheralDelegate {
+extension VoBLECentralController: @preconcurrency CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error { apply(.authenticationFailed(error.localizedDescription)); return }
         guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
