@@ -144,6 +144,14 @@
 
 ## 已知边界
 
+### 2026-10-14 Apps v0.9.7 发布核验
+
+- 从源码提交 `8bce6ac` 构建，Android/iOS 版本统一为 `0.9.7 (80)`；独立 Linux Agent 保持 `0.4.6`。不新增 workflow，不合并 main。
+- iOS 92 项 XCTest、Android 共享/Standalone 全套、47 项 PCM 桥检查、Go Agent/installer、AVF Debian 打包测试、Relay 46 项及语法检查全部通过。
+- AVF 与 Standalone Release APK 验签通过、`debuggable=false`，证书 SHA-256 与 v0.9.6 一致。两套 iPhoneOS Release archive 成功，正式主 App、Watch 与 Live Activity 嵌套签名验证通过；App Store 分发时由 Xcode 再重签。
+- 本次公开 IPA 是无签名/无描述文件的 Release 构建，未复用 Debug 诊断包。正式 TestFlight 上传状态以 Xcode 返回为准，不把 Archive 成功称为上传或审核通过。
+- 本轮未新增真实运营商通话或删除用户配对数据；此前真机结果与待验收边界继续保留。
+
 - VoBLE 是独立模式，不是 VoWLAN 的依赖；一次通话建立后不会在 VoBLE、VoWLAN 和 Relay 之间无提示漂移。
 - BLE 只承载 AirSIM 控制和音频，不实现 Android 到 iPhone 的 Bluetooth PAN 网络共享。
 - 音频为 G.711 μ-law 8 kHz 单声道，控制和媒体均以 AES-256-GCM 认证；PCM 只在内存中处理。
