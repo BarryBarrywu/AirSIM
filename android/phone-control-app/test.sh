@@ -112,6 +112,9 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/PhoneAudioBridgeProcessPolicy.java \
   "$ROOT"/src/com/airsim/phonecontrol/WireJson.java \
   "$ROOT"/src/com/airsim/phonecontrol/DebugRedactor.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CrashReportFormatter.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CrashReportStore.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CrashReportSharePayload.java \
   "$ROOT"/src/com/airsim/phonecontrol/AgentCommand.java \
   "$ROOT"/src/com/airsim/phonecontrol/CallRepository.java \
   "$ROOT"/src/com/airsim/phonecontrol/CloudCallTarget.java \

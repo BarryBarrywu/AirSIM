@@ -2,6 +2,8 @@ package com.airsim.phonecontrol;
 
 public final class CoreTests {
     public static void main(String[] args) throws Exception {
+		assertCrashReportIsSanitizedBoundedAndPersisted();
+		assertCrashSharePayloadRequiresAReportAndSanitizesRecentLogs();
 		assertVoBLEAudioVectorAndBounds();
 		assertVoBLEPairingAndReplay();
 		assertVoBLEControlOwnershipAndCallDeduplication();
@@ -1369,6 +1371,47 @@ public final class CoreTests {
 		} catch (ClassNotFoundException | NoSuchMethodException error) {
 			throw new AssertionError("new-message-only inbox cursor is missing", error);
 		}
+	}
+
+	private static void assertCrashReportIsSanitizedBoundedAndPersisted() throws Exception {
+		String repeated = "x".repeat(80_000);
+		RuntimeException crash = new RuntimeException(
+				"number=+8613800000000 token=super-secret-value " + repeated);
+		String report = CrashReportFormatter.format(
+				"0.9.6", "com.airsim.phonecontrol.standalone",
+				"samsung", "SM-F766U", 35, "main", crash);
+		assertContains(report, "AirSIM Android Crash Report");
+		assertContains(report, "RuntimeException");
+		assertContains(report, "[truncated]");
+		assertTrue(report.length() <= CrashReportFormatter.MAX_REPORT_CHARS);
+		assertTrue(!report.contains("+8613800000000"));
+		assertTrue(!report.contains("super-secret-value"));
+
+		java.nio.file.Path directory = java.nio.file.Files.createTempDirectory("airsim-crash-test");
+		try {
+			CrashReportStore.write(directory.toFile(), report);
+			assertTrue(CrashReportStore.hasReport(directory.toFile()));
+			assertEquals(report, CrashReportStore.read(directory.toFile()));
+			CrashReportStore.clear(directory.toFile());
+			assertTrue(!CrashReportStore.hasReport(directory.toFile()));
+			assertEquals("", CrashReportStore.read(directory.toFile()));
+		} finally {
+			java.nio.file.Files.walk(directory)
+					.sorted(java.util.Comparator.reverseOrder())
+					.forEach(path -> { try { java.nio.file.Files.deleteIfExists(path); } catch (Exception ignored) {} });
+		}
+	}
+
+	private static void assertCrashSharePayloadRequiresAReportAndSanitizesRecentLogs() {
+		assertEquals("", CrashReportSharePayload.compose("", "debug line"));
+		String payload = CrashReportSharePayload.compose(
+				"AirSIM Android Crash Report\nRuntimeException: failure",
+				"number=+8613800000000 token=private-value " + "d".repeat(80_000));
+		assertContains(payload, "AirSIM Android Crash Report");
+		assertContains(payload, "Recent sanitized debug log");
+		assertTrue(payload.length() <= CrashReportSharePayload.MAX_SHARE_CHARS);
+		assertTrue(!payload.contains("+8613800000000"));
+		assertTrue(!payload.contains("private-value"));
 	}
 
 	private static String invokeTelecomAction(Runnable action) throws Exception {

@@ -109,6 +109,7 @@ public final class MainActivity extends Activity {
 	private boolean cloudRelayConfigured;
 	private String cloudLastError = "";
 	private boolean avfStartupPromptShown;
+	private boolean crashPromptShown;
 
     private PairingServer pairingServer;
     private CountDownTimer pairingCountdown;
@@ -166,6 +167,7 @@ public final class MainActivity extends Activity {
 		} else {
 			requestOptionalSMSPermission();
 		}
+		handler.postDelayed(this::maybeShowCrashReportPrompt, 1_500);
     }
 
 	@Override public void onRequestPermissionsResult(
@@ -444,6 +446,31 @@ public final class MainActivity extends Activity {
     private View debugPage() {
         LinearLayout root = pageRoot();
         root.addView(pageTitle("Debug 诊断", null));
+		if (CrashReportStore.hasReport(getFilesDir())) {
+			LinearLayout crashCard = card(Color.rgb(57, 31, 36), 22);
+			crashCard.setOrientation(LinearLayout.VERTICAL);
+			crashCard.setPadding(dp(16), dp(15), dp(16), dp(15));
+			TextView title = label("检测到上次闪退", 16, DANGER, Gravity.START);
+			title.setTypeface(Typeface.DEFAULT_BOLD);
+			crashCard.addView(title);
+			crashCard.addView(label("报告已脱敏并保存在本机，只有点击发送后才会离开设备。",
+					12, MUTED, Gravity.START), matchWithTop(4));
+			LinearLayout crashActions = row();
+			TextView send = secondaryButton("发送闪退报告");
+			send.setTextColor(PRIMARY);
+			send.setOnClickListener(ignored -> shareCrashReport());
+			TextView remove = secondaryButton("删除报告");
+			remove.setTextColor(DANGER);
+			remove.setOnClickListener(ignored -> {
+				CrashReportStore.clear(getFilesDir());
+				toast("闪退报告已删除");
+				showPage(Page.DEBUG);
+			});
+			crashActions.addView(send, weightedWithEnd(5));
+			crashActions.addView(remove, weightedWithStart(5));
+			crashCard.addView(crashActions, matchWithTop(12));
+			root.addView(crashCard, matchWithTop(12));
+		}
         root.addView(debugFilters(), matchWithTop(14));
 
         LinearLayout logCard = card(SURFACE, 22);
@@ -1465,6 +1492,32 @@ public final class MainActivity extends Activity {
         share.putExtra(Intent.EXTRA_TEXT, BridgeLog.read());
         startActivity(Intent.createChooser(share, "导出诊断"));
     }
+
+	private void shareCrashReport() {
+		String payload = CrashReportSharePayload.compose(
+				CrashReportStore.read(getFilesDir()), BridgeLog.read());
+		if (payload.isBlank()) {
+			toast("暂无闪退报告");
+			return;
+		}
+		Intent share = new Intent(Intent.ACTION_SEND);
+		share.setType("text/plain");
+		share.putExtra(Intent.EXTRA_SUBJECT, "AirSIM Android 闪退报告");
+		share.putExtra(Intent.EXTRA_TEXT, payload);
+		startActivity(Intent.createChooser(share, "发送闪退报告"));
+	}
+
+	private void maybeShowCrashReportPrompt() {
+		if (crashPromptShown || isFinishing() || !CrashReportStore.hasReport(getFilesDir())) return;
+		crashPromptShown = true;
+		new AlertDialog.Builder(this)
+				.setTitle("检测到上次闪退")
+				.setMessage("AirSIM 已在本机保存脱敏报告。不会自动上传，是否现在发送给开发者？")
+				.setPositiveButton("发送", (ignored, which) -> shareCrashReport())
+				.setNeutralButton("查看", (ignored, which) -> showPage(Page.DEBUG))
+				.setNegativeButton("稍后", null)
+				.show();
+	}
 
     private void saveConfiguration() {
         try {
