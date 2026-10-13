@@ -38,7 +38,7 @@ public final class CallRepositoryTests {
                     "relay-call-7", "d9b59660-05bb-4ea8-9aeb-4505b35c93f9", 3);
             assertEquals(targetID, selected);
             CallRepository.ActionResult result = CallRepository.execute(
-                    new AgentCommand("command-7", "reject", selected, ""), null);
+                    null, new AgentCommand("command-7", "reject", selected, ""));
             assertTrue(result.success);
             assertEquals(Integer.toString(Call.STATE_DISCONNECTED), Integer.toString(target.getState()));
             assertEquals(Integer.toString(Call.STATE_RINGING), Integer.toString(other.getState()));
@@ -62,7 +62,7 @@ public final class CallRepositoryTests {
                     "reject", "visible-target", "visible-target", targetID);
             assertEquals(targetID, selected);
             assertTrue(CallRepository.execute(
-                    new AgentCommand("local-reject", "reject", selected, ""), null).success);
+                    null, new AgentCommand("local-reject", "reject", selected, "")).success);
             assertEquals(Integer.toString(Call.STATE_DISCONNECTED), Integer.toString(target.getState()));
             assertEquals(Integer.toString(Call.STATE_RINGING), Integer.toString(other.getState()));
             assertEquals("", CallRepository.idForPublishedAction(

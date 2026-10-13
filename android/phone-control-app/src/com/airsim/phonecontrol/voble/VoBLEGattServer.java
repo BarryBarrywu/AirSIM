@@ -114,6 +114,14 @@ public final class VoBLEGattServer implements AutoCloseable {
     }
 
     @SuppressLint("MissingPermission")
+    public synchronized void disconnectPeer(String deviceId) {
+        BluetoothDevice device = devices.get(deviceId);
+        if (server != null && device != null && hasBluetoothPermissions()) {
+            server.cancelConnection(device);
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     public boolean indicateControl(String deviceId, byte[] value) {
         return channel.isControlSubscribed(deviceId)
                 && enqueueMessage(deviceId, controlTx, value, VoBLEProtocol.MESSAGE_CONTROL, true);

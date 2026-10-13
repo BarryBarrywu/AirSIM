@@ -2,6 +2,8 @@ import SwiftUI
 
 struct VoBLEPairingView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var showingUnpairConfirmation = false
+    @State private var unpairing = false
 
     var body: some View {
         List {
@@ -75,8 +77,14 @@ struct VoBLEPairingView: View {
                     model.voble.start()
                 }
                 if model.voble.authenticatedIdentity != nil {
-                    Button("撤销当前蓝牙配对", systemImage: "trash", role: .destructive) {
-                        model.voble.revokeCurrentPeer()
+                    Button("取消 VoBLE 配对", systemImage: "trash", role: .destructive) {
+                        showingUnpairConfirmation = true
+                    }
+                    .disabled(unpairing)
+                } else if model.voble.recoverableIdentity != nil,
+                          case .failed = model.voble.state {
+                    Button("清除本机旧凭据并重新扫描", systemImage: "arrow.counterclockwise") {
+                        model.voble.clearLocalCredentialAndRetry()
                     }
                 }
             }
@@ -84,6 +92,22 @@ struct VoBLEPairingView: View {
         .navigationTitle("蓝牙 Agent")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { model.voble.start() }
+        .confirmationDialog(
+            "同时删除 iPhone 与 Android 上的 VoBLE 凭据？",
+            isPresented: $showingUnpairConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("取消配对", role: .destructive) {
+                unpairing = true
+                Task {
+                    defer { unpairing = false }
+                    try? await model.voble.unpairCurrentPeer()
+                }
+            }
+            Button("保留配对", role: .cancel) {}
+        } message: {
+            Text("取消后需要重新核对六位安全码。VoWLAN 与云端配置不会受到影响。")
+        }
     }
 
     private var stateTitle: String {

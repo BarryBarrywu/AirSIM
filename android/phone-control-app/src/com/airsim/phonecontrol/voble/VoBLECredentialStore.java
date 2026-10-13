@@ -43,6 +43,13 @@ public final class VoBLECredentialStore {
         return value;
     }
 
+    public boolean hasCredential(String identity) {
+        byte[] value = load(identity);
+        if (value == null) return false;
+        Arrays.fill(value, (byte) 0);
+        return true;
+    }
+
     public void revoke(String identity) {
         backend.remove(PREFIX + identity);
     }

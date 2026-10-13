@@ -32,6 +32,8 @@ AirSIM Android Standalone APK
 
 Shizuku 仍是采集和注入系统通话音频所需的权限桥。Standalone 不能绕过 Android/OEM 的安全边界，也不能替代系统紧急呼叫能力。
 
+启动时，在系统权限请求结束后检查 Shizuku：未安装显示官方下载安装地址（`https://shizuku.rikka.app/zh-hans/download/`）和「下载 Shizuku」按钮；已安装但未运行提供「打开 Shizuku」；已运行但未授权提供「授权」。已就绪不提示，每次启动最多提示一次，从下载页或 Shizuku 返回不重复弹窗；可选「稍后」继续进入 App，但未就绪的通话音频桥仍无法工作。不会静默下载安装或绕过系统授权。
+
 ## 构建与测试
 
 需要 JDK 17、Android SDK Platform 35、Build Tools 35 和 Python 3。构建脚本默认读取 `ANDROID_SDK_ROOT`；未设置时使用 Homebrew Android command-line tools 路径。
@@ -64,12 +66,20 @@ AIRSIM_ANDROID_KEY_PASSWORD='从 Secret Store 注入' \
 
 1. 安装 APK，并启动 Shizuku；无线调试重启后通常需要重新启动 Shizuku。
 2. 打开 AirSIM Standalone，授予电话、短信和通知权限，并按页面提示设为默认电话 App。可选择授权「读取短信」作为收件箱兜底：首次授权只记录当前收件箱位置，之后仅扫描新短信；拒绝时仍通过短信广播接收。部分安装来源可能因 Android 受限权限策略无法授予此权限。
-   `读取手机状态/号码` 权限用于把 SIM 号码显示在 iPhone 的已配对 Agent 列表；运营商未写入本机号码或拒绝权限时，iPhone 会显示“号码未提供”，不影响拨号。
+   `读取手机状态/号码` 权限用于把 SIM 号码显示在 iPhone 的已配对 Agent 列表；运营商未写入本机号码或拒绝号码权限时，iPhone 会显示“号码未提供”。指定默认通话卡需要电话状态权限。
 3. 小米 HyperOS 无法弹出默认电话选择页时，先在 Shizuku 中授权 AirSIM，再让 App 自动执行系统角色设置；无需手动运行 ADB 命令。
 4. 在 Android 页面填写自己的 Relay 地址、设备标识与配对资料；使用自己的 Apple Bundle ID 时，Relay 的 `ALLOWED_BUNDLE_ID` 和 APNs topic 必须一致。
 5. iPhone 与 Android 在同一热点或局域网时优先验证 VoWLAN；随后再验证 Relay 远程模式。
 
+### 默认通话卡（双卡 / 多卡）
+
+在 Android AirSIM「设置 → 默认通话卡」中选择「跟随系统默认」或一张已启用的 SIM/eSIM。卡槽与运营商由系统提供；号码仅在已授权且运营商提供时显示。选项本地保存，重启或覆盖安装后保留。BLE、VoWLAN、Relay 和 Android 本机拨号均使用此设置，无需联网选卡。
+
+AirSIM 使用系统 Telecom 的 `EXTRA_PHONE_ACCOUNT_HANDLE` 指定卡，不修改系统默认通话卡，也不修改默认短信卡。每次拨号重新检查账户；指定卡被停用、移除或电话状态权限被撤销时，明确报错，不自动改用其他卡。紧急呼叫仍由系统的安全路由决定，不保证使用此选项。
+
 ### 配置 VoBLE 蓝牙模式
+
+设备名与号码在认证后的 `device_info` 命令、VoWLAN 健康检查和 Standalone Relay 心跳中实时读取。号码对应当前默认通话卡；换卡、停用卡或号码不可读时不回填首次配对保存的旧号。iPhone 新版设置页可删除某一配对设备的本机记录；在线蓝牙删除会尝试撤销双方凭据，离线删除后若 Android 仍保存旧认证，可在本 APK 的「VoBLE 认证配置」中清除后重新配对。
 
 VoBLE 是设置中的独立模式，不要求先建立 VoWLAN，也不会改变已有 VoWLAN/Relay 配置：
 
@@ -79,6 +89,10 @@ VoBLE 是设置中的独立模式，不要求先建立 VoWLAN，也不会改变�
 4. 配对完成后先做一通拨出和一通呼入，分别检查接听、拒接、挂断、静音、扬声器和 DTMF，再检查双向音频。
 
 蓝牙模式通过 BLE GATT 传送控制与 G.711 μ-law 8 kHz 单声道音频，帧使用 AES-256-GCM 认证加密。它不使用 Relay、PushKit 或云端注册参数，也不提供 Bluetooth PAN 网络共享；iPhone 的互联网连接需要单独配置。Android PCM 桥、默认电话角色和系统 Telecom 仍是必需条件。三秒内的短暂断链只恢复同一 `call_id`/generation，超过三秒会结束本次媒体会话，防止旧包进入下一通电话。
+
+VoBLE 拨号时，iPhone 创建的临时 `call_id` 与 Android Telecom 随后发布的权威 `call_id` 属于同一个 generation；Android 只替换 ID，不推进 generation。这样媒体启动、DTMF 与挂断不会被误判为上一通电话的 `call_mismatch`。
+
+设置页的“VoBLE 认证配置”会显示蓝牙权限、凭据与当前会话状态。正常取消配对由 iPhone 通过已认证控制通道发起，并同时删除两端凭据；若一端重装后出现 `already paired`、`peer is not paired` 或重连认证失败，可在 Android 该页面本地清除旧凭据，再在 iPhone 清除本机旧凭据并重新核对六位安全码。清除操作不会修改 VoWLAN 或 Relay 配置。
 
 iOS 被用户强制退出后不保证后台 BLE 来电唤醒；重新打开 AirSIM 后会恢复扫描。Apple Watch 由 iPhone 的 CallKit/WatchConnectivity 镜像来电与控制状态，不直接连接 Android BLE，音频能否切到手表取决于 iPhone/watchOS 的系统路由。
 

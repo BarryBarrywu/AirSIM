@@ -44,20 +44,19 @@ struct DialPadTransportPresentation: Equatable {
     let transport: CallTransport
 
     static func make(
+        mode: AirSIMConnectionMode = .automatic,
         vowlanOnline: Bool,
         moduleLocalReachable: Bool,
         cloudOnline: Bool,
         bluetoothReady: Bool = false
     ) -> DialPadTransportPresentation? {
-        if bluetoothReady {
-            return DialPadTransportPresentation(
-                title: "蓝牙",
-                detail: "拨号及通话音频将通过 VoBLE，不使用 Relay",
-                systemImage: "wave.3.right",
-                transport: .bluetooth
-            )
-        }
-        if vowlanOnline {
+        let selected = DialRouteSelector.preferred(
+            mode: mode,
+            vowlanReady: vowlanOnline,
+            bluetoothReady: bluetoothReady,
+            cloudReady: cloudOnline
+        )
+        if selected == .vowlan {
             return DialPadTransportPresentation(
                 title: "VoWLAN",
                 detail: "拨号及通话音频将通过同一 Wi-Fi 或三星热点",
@@ -65,15 +64,15 @@ struct DialPadTransportPresentation: Equatable {
                 transport: .vowlan
             )
         }
-        if moduleLocalReachable {
+        if selected == .bluetooth {
             return DialPadTransportPresentation(
-                title: "模块本地",
-                detail: "拨号及通话音频将通过模块本地链路",
-                systemImage: "cable.connector",
-                transport: .moduleLocal
+                title: "蓝牙",
+                detail: "拨号及通话音频将通过 VoBLE，不使用 Relay",
+                systemImage: "wave.3.right",
+                transport: .bluetooth
             )
         }
-        if cloudOnline {
+        if selected == .cloud {
             return DialPadTransportPresentation(
                 title: "云端",
                 detail: "拨号及通话音频将通过云端 Relay",
@@ -188,7 +187,15 @@ struct DialPadView: View {
                     }
                     .padding(.horizontal, 12)
 
-                    if ConnectionModePreference.selected() == .bluetooth {
+                    if let currentAgent = model.currentAndroidAgent {
+                        DialPadCurrentAgentCard(
+                            agent: currentAgent,
+                            agentCount: model.pairedAndroidAgents.count,
+                            cloudModeEnabled: CloudModePreference.isEnabled()
+                        ) {
+                            pairedAgentListPresentation = PairedAgentListPresentation()
+                        }
+                    } else if ConnectionModePreference.selected() == .bluetooth {
                         HStack(spacing: 10) {
                             Image(systemName: "wave.3.right")
                                 .foregroundStyle(model.voble.state == .ready ? .green : .orange)
@@ -209,14 +216,6 @@ struct DialPadView: View {
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    } else if let currentAgent = model.currentAndroidAgent {
-                        DialPadCurrentAgentCard(
-                            agent: currentAgent,
-                            agentCount: model.pairedAndroidAgents.count,
-                            cloudModeEnabled: CloudModePreference.isEnabled()
-                        ) {
-                            pairedAgentListPresentation = PairedAgentListPresentation()
-                        }
                     } else if !model.pairedAndroidAgents.isEmpty {
                         Button {
                             pairedAgentListPresentation = PairedAgentListPresentation()
@@ -257,7 +256,10 @@ struct DialPadView: View {
             .sheet(item: $pairedAgentListPresentation) { _ in
                 PairedAndroidAgentsView(
                     agents: model.pairedAndroidAgents,
-                    cloudModeEnabled: CloudModePreference.isEnabled()
+                    cloudModeEnabled: CloudModePreference.isEnabled(),
+                    selectAgent: { agentID in
+                        model.bindAndroidAgent(agentID)
+                    }
                 )
             }
             .onDisappear(perform: stopRepeatingDelete)
@@ -454,6 +456,7 @@ private struct DialPadCurrentAgentCard: View {
 
             HStack(spacing: 8) {
                 AgentTransportPill(title: "VoWLAN", online: agent.vowlanOnline, enabled: true)
+                AgentTransportPill(title: "VoBLE", online: agent.bluetoothOnline, enabled: true)
                 AgentTransportPill(title: "云端", online: agent.cloudOnline, enabled: cloudModeEnabled)
                 Spacer(minLength: 0)
                 Text(agent.agentKindTitle)
@@ -495,11 +498,15 @@ private struct PairedAndroidAgentsView: View {
     @Environment(\.dismiss) private var dismiss
     let agents: [AndroidAgentPresentation]
     let cloudModeEnabled: Bool
+    let selectAgent: (String) -> Void
 
     var body: some View {
         NavigationStack {
             List(agents) { agent in
-                VStack(alignment: .leading, spacing: 9) {
+                Button {
+                    selectAgent(agent.id)
+                } label: {
+                    VStack(alignment: .leading, spacing: 9) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(agent.deviceName)
@@ -509,22 +516,23 @@ private struct PairedAndroidAgentsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if agent.isCurrent {
-                            Label("当前", systemImage: "checkmark.circle.fill")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.green)
-                        }
+                            Image(systemName: agent.isCurrent ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                                .foregroundStyle(agent.isCurrent ? .green : .secondary)
                     }
                     HStack(spacing: 8) {
                         AgentTransportPill(title: "VoWLAN", online: agent.vowlanOnline, enabled: true)
+                        AgentTransportPill(title: "VoBLE", online: agent.bluetoothOnline, enabled: true)
                         AgentTransportPill(title: "云端", online: agent.cloudOnline, enabled: cloudModeEnabled)
                         Spacer()
                         Text(agent.agentKindTitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    }
+                    .padding(.vertical, 5)
                 }
-                .padding(.vertical, 5)
+                .buttonStyle(.plain)
             }
             .overlay {
                 if agents.isEmpty {
@@ -618,6 +626,11 @@ struct RecentsView: View {
                                 PhoneListMetrics.separatorLeading
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    model.deleteCallHistory(ids: [call.id])
+                                } label: {
+                                    Label(L10n.t("删除"), systemImage: "trash")
+                                }
                                 if let number = call.number {
                                     Button { onMessage(number) } label: {
                                         Label(L10n.t("短信"), systemImage: "message.fill")
@@ -695,6 +708,16 @@ struct RecentsView: View {
                 onMessage(number)
             } label: {
                 Label(L10n.t("发短信"), systemImage: "message.fill")
+                    .frame(maxWidth: .infinity, minHeight: 32)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+
+            Button(role: .destructive) {
+                dismissCallDetails()
+                model.deleteCallHistory(ids: [call.id])
+            } label: {
+                Label(L10n.t("删除通话记录"), systemImage: "trash")
                     .frame(maxWidth: .infinity, minHeight: 32)
             }
             .buttonStyle(.bordered)

@@ -66,6 +66,21 @@ public final class VoBLEControlChannel {
         if (owns(deviceId)) authenticatedOwner = null;
     }
 
+    /** Revokes the authenticated central without trusting any other connected central. */
+    public synchronized boolean revokeOwner(String deviceId) {
+        if (!owns(deviceId)) return false;
+        subscriptions.remove(deviceId);
+        authenticatedOwner = null;
+        return true;
+    }
+
+    public boolean revokeOwnerAndDisconnect(String deviceId, Runnable disconnectTransport) {
+        if (!revokeOwner(deviceId)) return false;
+        // Do not hold the channel monitor while invoking the Bluetooth stack.
+        disconnectTransport.run();
+        return true;
+    }
+
     private Subscription state(String deviceId) {
         if (deviceId == null || deviceId.isBlank()) {
             throw new IllegalArgumentException("Bluetooth device identity is required");

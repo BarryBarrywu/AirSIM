@@ -9,7 +9,6 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
-import android.telecom.TelecomManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -76,7 +75,7 @@ public final class AgentWatchdogService extends Service {
                             command, dialerRoleHeld,
                             call -> {
                                 CallRepository.ActionResult telecom = CallRepository.execute(
-                                        call, getSystemService(TelecomManager.class));
+                                        AgentWatchdogService.this, call);
                                 return new AgentCommandDispatcher.Result(
                                         telecom.success, telecom.error, 0);
                             },

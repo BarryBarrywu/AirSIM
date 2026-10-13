@@ -21,6 +21,7 @@ struct LiveActivityAgentSnapshot: Equatable {
     let agentKind: String?
     let pairedAgentCount: Int
     let vowlanOnline: Bool
+    let bluetoothOnline: Bool
     let cloudOnline: Bool
 
     init(agent: AndroidAgentPresentation?, pairedAgentCount: Int) {
@@ -29,6 +30,7 @@ struct LiveActivityAgentSnapshot: Equatable {
         agentKind = agent?.agentKind
         self.pairedAgentCount = pairedAgentCount
         vowlanOnline = agent?.vowlanOnline == true
+        bluetoothOnline = agent?.bluetoothOnline == true
         cloudOnline = agent?.cloudOnline == true
     }
 }
@@ -60,6 +62,7 @@ enum LiveActivityStateBuilder {
                 agentKind: agent?.agentKind,
                 pairedAgentCount: agent?.pairedAgentCount,
                 vowlanOnline: agent?.vowlanOnline,
+                bluetoothOnline: agent?.bluetoothOnline,
                 cloudOnline: agent?.cloudOnline
             )
         }
@@ -83,6 +86,7 @@ enum LiveActivityStateBuilder {
                 agentKind: agent?.agentKind,
                 pairedAgentCount: agent?.pairedAgentCount,
                 vowlanOnline: agent?.vowlanOnline,
+                bluetoothOnline: agent?.bluetoothOnline,
                 cloudOnline: agent?.cloudOnline
             )
         }
@@ -108,6 +112,7 @@ enum LiveActivityStateBuilder {
             agentKind: agent?.agentKind,
             pairedAgentCount: agent?.pairedAgentCount,
             vowlanOnline: agent?.vowlanOnline,
+            bluetoothOnline: agent?.bluetoothOnline,
             cloudOnline: agent?.cloudOnline
         )
     }

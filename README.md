@@ -4,7 +4,7 @@
 [![iOS](https://img.shields.io/badge/iOS-16.3%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![watchOS](https://img.shields.io/badge/watchOS-10%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![Android AVF](https://img.shields.io/badge/Android%20AVF-Linux%20arm64-FCC624?logo=linux&logoColor=black)](module/packaging/README.md)
-[![Apps release](https://img.shields.io/badge/Apps-v0.9.6-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6)
+[![Apps release](https://img.shields.io/badge/Apps-v0.9.7-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7)
 [![AVF Agent release](https://img.shields.io/badge/AVF%20Agent-v0.4.6-0F766E)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)
 [![Cloudflare Relay](https://img.shields.io/badge/Relay-airsim--push.remotepilot.site-F38020?logo=cloudflare&logoColor=white)](https://airsim-push.remotepilot.site/healthz)
 [![Project status](https://img.shields.io/badge/status-active%20development-1f6feb)](#项目状态)
@@ -92,14 +92,14 @@ VoBLE 是与 VoWLAN、云端 Relay 并列的模式选项，不是现有 Wi-Fi �
 
 | 组件 | 当前版本或地址 |
 | --- | --- |
-| Android AVF / Standalone APK、iPhone / Apple Watch App | [`v0.9.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6) |
+| Android AVF / Standalone APK、iPhone / Apple Watch App | [`v0.9.7`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7) |
 | Android AVF Linux Agent | [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包版本 `0.4.6-1`） |
 | AirSIM Relay | `0.2.1` · [`https://airsim-push.remotepilot.site`](https://airsim-push.remotepilot.site/healthz) |
 | DJOneHub Relay | `https://push.remotepilot.site`（独立服务，AirSIM 不得使用） |
 
 ### 应用发布包
 
-[AirSIM Apps v0.9.6](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6) 新增 Android Standalone 本地/云端完整编排、可操作锁屏来电页和短信读取兜底；iPhone 增加多 Agent 状态、本地模式、网络恢复与新版实时活动，并修复通话结束后的延迟 CallKit 回调误报。Release 同时提供 AVF Bridge APK、Standalone APK 与 unsigned IPA；正式 iOS build `79` 另行提交 TestFlight。摘要、安装和重签步骤见 [v0.9.6 发布说明](docs/releases/0.9.6.md)。
+[AirSIM Apps v0.9.7](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7) 引入独立 VoBLE 蓝牙模式、可用拨号路由优先级、配对设备管理与当前 SIM 身份刷新；修复蓝牙通话音频、重连和挂断竞态，并增加 Android 默认通话卡、闪退报告分享及 Shizuku 启动引导。Release 同时提供 AVF Bridge APK、Standalone APK 与 unsigned IPA；正式 iOS build `80` 另行上传 TestFlight。摘要、验收边界、安装和重签步骤见 [v0.9.7 发布说明](docs/releases/0.9.7.md)。
 
 ### 1. 准备开发环境
 

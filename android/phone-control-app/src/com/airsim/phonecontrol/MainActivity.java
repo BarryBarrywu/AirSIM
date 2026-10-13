@@ -54,6 +54,9 @@ public final class MainActivity extends Activity {
     private static final int ROLE_REQUEST = 100;
     private static final int DEFAULT_APPS_REQUEST = 102;
     private static final int OPTIONAL_SMS_REQUEST = 103;
+    private static final int CALL_ACCOUNT_PERMISSION_REQUEST = 104;
+    private static final int SHIZUKU_SETUP_REQUEST = 105;
+    private static final String SHIZUKU_STARTUP_CHECKED = "shizuku_startup_checked";
     private static final String OPTIONAL_SMS_PROMPTED = "optional_sms_prompted";
     private static final java.util.concurrent.ExecutorService SMS_SCAN_WORKER =
             Executors.newSingleThreadExecutor();
@@ -91,6 +94,11 @@ public final class MainActivity extends Activity {
     private TextView pairingStatus;
     private TextView pairingCodeView;
     private TextView pairingCountdownView;
+    private TextView voBLEAuthenticationStatusView;
+    private TextView voBLEPairingCodeView;
+    private TextView voBLEDiagnosticsView;
+    private TextView voBLEClearCredentialButton;
+    private boolean voBLEAuthenticationVisible;
     private LinearLayout debugRows;
     private String lastRenderedDebugLog;
     private String lastRenderedDebugFilter;
@@ -110,6 +118,14 @@ public final class MainActivity extends Activity {
 	private String cloudLastError = "";
 	private boolean avfStartupPromptShown;
 	private boolean crashPromptShown;
+    private ShizukuStartupPolicy shizukuStartupPolicy;
+    private boolean startupSetupPending;
+    private boolean startupSetupInFlight;
+    private boolean startupSetupCompleted;
+    private AlertDialog shizukuStartupDialog;
+    private final Runnable startupSetup = () -> {
+        if (startupSetupPending) continueStartupSetup();
+    };
 
     private PairingServer pairingServer;
     private CountDownTimer pairingCountdown;
@@ -124,9 +140,18 @@ public final class MainActivity extends Activity {
             }
         }
     };
+    private final Runnable voBLEAuthenticationRefresh = new Runnable() {
+        @Override public void run() {
+            if (!voBLEAuthenticationVisible) return;
+            renderVoBLEAuthenticationStatus();
+            handler.postDelayed(this, 500);
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        shizukuStartupPolicy = new ShizukuStartupPolicy(
+                state != null && state.getBoolean(SHIZUKU_STARTUP_CHECKED, false));
         pcmStatusPoller = new LiveStatusPoller(() -> {
             ShizukuBridgeManager bridge = ShizukuBridgeManager.get(this);
             bridge.refreshBridgeStatus();
@@ -167,7 +192,6 @@ public final class MainActivity extends Activity {
 		} else {
 			requestOptionalSMSPermission();
 		}
-		handler.postDelayed(this::maybeShowCrashReportPrompt, 1_500);
     }
 
 	@Override public void onRequestPermissionsResult(
@@ -181,6 +205,9 @@ public final class MainActivity extends Activity {
 			startSMSInboxBaselineIfAuthorized();
 			continueStartupSetup();
 			if (currentPage == Page.SETTINGS) showPage(Page.SETTINGS);
+		}
+		if (requestCode == CALL_ACCOUNT_PERMISSION_REQUEST && currentPage == Page.SETTINGS) {
+			showPage(Page.SETTINGS);
 		}
 	}
 
@@ -269,6 +296,12 @@ public final class MainActivity extends Activity {
 
     private void showPage(Page page) {
         if (pcmStatusPoller != null) pcmStatusPoller.stop();
+        voBLEAuthenticationVisible = false;
+        handler.removeCallbacks(voBLEAuthenticationRefresh);
+        voBLEAuthenticationStatusView = null;
+        voBLEPairingCodeView = null;
+        voBLEDiagnosticsView = null;
+        voBLEClearCredentialButton = null;
         pcmHealthTile = null;
         currentPage = page;
         handler.removeCallbacks(debugRefresh);
@@ -550,6 +583,49 @@ public final class MainActivity extends Activity {
         agentCard.addView(save, matchWithTop(12));
         root.addView(agentCard, matchWithTop(10));
 
+        root.addView(sectionTitle("默认通话卡"), matchWithTop(22));
+        LinearLayout callAccountCard = card(SURFACE, 22);
+        callAccountCard.setOrientation(LinearLayout.VERTICAL);
+        callAccountCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        DefaultCallAccount.Snapshot accounts = DefaultCallAccount.snapshot(this);
+        String accountKey = DefaultCallAccount.selectedKey(this);
+        boolean available = accountKey.isEmpty() || accounts.accounts().stream()
+                .anyMatch(account -> account.key().equals(accountKey));
+        callAccountCard.addView(label(DefaultCallAccount.selectedLabel(this)
+                + (available ? "" : " · 当前不可用"), 14, available ? TEXT : WARNING, Gravity.START));
+        callAccountCard.addView(description("用于 AirSIM 蓝牙、VoWLAN 与云端拨号，不改变系统通话卡或短信卡。"
+                + "指定卡关闭或移除时会停止拨号，请重新选择。"), matchWithTop(6));
+        if (!accounts.error().isEmpty()) {
+            callAccountCard.addView(description(accounts.error()), matchWithTop(6));
+        } else if (accounts.accounts().isEmpty()) {
+            callAccountCard.addView(description("没有已启用的蜂窝通话卡"), matchWithTop(6));
+        }
+        TextView chooseAccount = secondaryButton("选择默认通话卡");
+        chooseAccount.setOnClickListener(ignored -> chooseDefaultCallAccount());
+        callAccountCard.addView(chooseAccount, matchWithTop(10));
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            TextView grantAccountPermission = secondaryButton("授权读取通话卡");
+            grantAccountPermission.setOnClickListener(ignored -> requestPermissions(
+                    new String[] {Manifest.permission.READ_PHONE_STATE}, CALL_ACCOUNT_PERMISSION_REQUEST));
+            callAccountCard.addView(grantAccountPermission, matchWithTop(10));
+        }
+        root.addView(callAccountCard, matchWithTop(10));
+
+        root.addView(sectionTitle("VoBLE 蓝牙认证"), matchWithTop(22));
+        LinearLayout voBLECard = card(SURFACE, 22);
+        voBLECard.setOrientation(LinearLayout.VERTICAL);
+        voBLECard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        boolean voBLEPaired = com.airsim.phonecontrol.voble.VoBLEGatewayService
+                .hasStoredCredential(this);
+        voBLECard.addView(label(voBLEPaired ? "已保存 iPhone 认证凭据" : "尚未保存认证凭据",
+                14, voBLEPaired ? PRIMARY : MUTED, Gravity.START));
+        voBLECard.addView(description("管理六位安全码认证、旧凭据恢复与双端取消配对。"),
+                matchWithTop(6));
+        TextView configureVoBLE = secondaryButton("打开 VoBLE 认证配置");
+        configureVoBLE.setOnClickListener(ignored -> openVoBLEAuthenticationPage());
+        voBLECard.addView(configureVoBLE, matchWithTop(10));
+        root.addView(voBLECard, matchWithTop(10));
+
 		root.addView(sectionTitle("短信收件箱兜底"), matchWithTop(22));
 		LinearLayout smsCard = card(SURFACE, 22);
 		smsCard.setOrientation(LinearLayout.VERTICAL);
@@ -666,11 +742,134 @@ public final class MainActivity extends Activity {
 
     private void openPairingPage() {
         handler.removeCallbacks(debugRefresh);
+        voBLEAuthenticationVisible = false;
+        handler.removeCallbacks(voBLEAuthenticationRefresh);
         bottomBar.setVisibility(View.GONE);
         contentHost.removeAllViews();
         contentHost.addView(pairingPage(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         startPairing();
+    }
+
+    private void openVoBLEAuthenticationPage() {
+        handler.removeCallbacks(debugRefresh);
+        handler.removeCallbacks(voBLEAuthenticationRefresh);
+        voBLEAuthenticationVisible = true;
+        bottomBar.setVisibility(View.GONE);
+        contentHost.removeAllViews();
+        contentHost.addView(voBLEAuthenticationPage(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        handler.post(voBLEAuthenticationRefresh);
+    }
+
+    private View voBLEAuthenticationPage() {
+        LinearLayout root = pageRoot();
+        TextView back = label("‹", 40, TEXT, Gravity.START);
+        back.setContentDescription("返回设置");
+        back.setOnClickListener(ignored -> {
+            bottomBar.setVisibility(View.VISIBLE);
+            showPage(Page.SETTINGS);
+        });
+        root.addView(back, new LinearLayout.LayoutParams(dp(56), dp(52)));
+
+        TextView title = label("VoBLE 认证", 30, TEXT, Gravity.START);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        root.addView(title, matchWithTop(8));
+        root.addView(description("蓝牙是独立连接模式；认证凭据不会影响 VoWLAN 或云端 Relay。"),
+                matchWithTop(6));
+
+        boolean permissions = hasVoBLEPermissions();
+        boolean paired = com.airsim.phonecontrol.voble.VoBLEGatewayService
+                .hasStoredCredential(this);
+        LinearLayout statusCard = card(SURFACE, 22);
+        statusCard.setOrientation(LinearLayout.VERTICAL);
+        statusCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        statusCard.addView(overline("认证状态"));
+        voBLEAuthenticationStatusView = label(
+                MainScreenPresentation.voBLEAuthenticationStatus(
+                        paired,
+                        com.airsim.phonecontrol.voble.VoBLEGatewayService.isAuthenticated(),
+                        com.airsim.phonecontrol.voble.VoBLEGatewayService.pendingPairingCode()),
+                19, paired ? PRIMARY : WARNING, Gravity.START);
+        statusCard.addView(voBLEAuthenticationStatusView, matchWithTop(7));
+        statusCard.addView(label(permissions ? "蓝牙权限：已授权" : "蓝牙权限：需要授权",
+                13, permissions ? MUTED : WARNING, Gravity.START), matchWithTop(7));
+        voBLEDiagnosticsView = label(
+                com.airsim.phonecontrol.voble.VoBLEGatewayService.diagnosticsSummary(),
+                13, MUTED, Gravity.START);
+        statusCard.addView(voBLEDiagnosticsView, matchWithTop(7));
+        statusCard.addView(overline("六位安全码"), matchWithTop(18));
+        voBLEPairingCodeView = label(
+                MainScreenPresentation.voBLEPairingCode(
+                        com.airsim.phonecontrol.voble.VoBLEGatewayService.pendingPairingCode()),
+                28, MUTED, Gravity.CENTER);
+        voBLEPairingCodeView.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+        statusCard.addView(voBLEPairingCodeView, matchWithTop(8));
+        root.addView(statusCard, matchWithTop(18));
+
+        LinearLayout flowCard = card(SURFACE, 22);
+        flowCard.setOrientation(LinearLayout.VERTICAL);
+        flowCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        flowCard.addView(overline("认证流程"));
+        flowCard.addView(label("1. iPhone 扫描并连接此 Android Agent\n"
+                        + "2. 两端核对同一组六位安全码\n"
+                        + "3. 确认后保存应用层密钥并开放拨号与 PCM 音频",
+                14, TEXT, Gravity.START), matchWithTop(8));
+        flowCard.addView(description("如果 iPhone 显示 already paired 或认证失败，表示两端旧密钥不一致。"
+                + "请在此页清除旧凭据，再回到 iPhone 重新配对。"), matchWithTop(10));
+        root.addView(flowCard, matchWithTop(12));
+
+        TextView restart = secondaryButton("重启 VoBLE 服务");
+        restart.setOnClickListener(ignored -> {
+            com.airsim.phonecontrol.voble.VoBLEGatewayService.start(this);
+            toast("VoBLE 服务已启动");
+            openVoBLEAuthenticationPage();
+        });
+        root.addView(restart, matchWithTop(16));
+
+        voBLEClearCredentialButton = secondaryButton("清除 VoBLE 配对凭据");
+        voBLEClearCredentialButton.setTextColor(paired ? DANGER : MUTED);
+        voBLEClearCredentialButton.setEnabled(paired);
+        voBLEClearCredentialButton.setOnClickListener(ignored -> new AlertDialog.Builder(this)
+                .setTitle("清除旧的 VoBLE 配对？")
+                .setMessage("仅删除蓝牙认证密钥并结束当前 VoBLE 会话；不会清除 VoWLAN、Relay 或通话记录。")
+                .setPositiveButton("清除并重新配对", (dialog, which) -> {
+                    com.airsim.phonecontrol.voble.VoBLEGatewayService.clearStoredCredential(this);
+                    handler.postDelayed(() -> {
+                        toast("VoBLE 旧凭据已清除");
+                        openVoBLEAuthenticationPage();
+                    }, 150);
+                })
+                .setNegativeButton("取消", null)
+                .show());
+        root.addView(voBLEClearCredentialButton, matchWithTop(10));
+        return scroll(root);
+    }
+
+    private void renderVoBLEAuthenticationStatus() {
+        boolean stored = com.airsim.phonecontrol.voble.VoBLEGatewayService
+                .hasStoredCredential(this);
+        boolean authenticated = com.airsim.phonecontrol.voble.VoBLEGatewayService.isAuthenticated();
+        String pairingCode = com.airsim.phonecontrol.voble.VoBLEGatewayService.pendingPairingCode();
+        if (voBLEAuthenticationStatusView != null) {
+            voBLEAuthenticationStatusView.setText(MainScreenPresentation.voBLEAuthenticationStatus(
+                    stored, authenticated, pairingCode));
+            voBLEAuthenticationStatusView.setTextColor(
+                    authenticated || stored ? PRIMARY : WARNING);
+        }
+        if (voBLEPairingCodeView != null) {
+            String formatted = MainScreenPresentation.formatPairingCode(pairingCode);
+            voBLEPairingCodeView.setText(MainScreenPresentation.voBLEPairingCode(pairingCode));
+            voBLEPairingCodeView.setTextColor("--- ---".equals(formatted) ? MUTED : PRIMARY);
+        }
+        if (voBLEDiagnosticsView != null) {
+            voBLEDiagnosticsView.setText(
+                    com.airsim.phonecontrol.voble.VoBLEGatewayService.diagnosticsSummary());
+        }
+        if (voBLEClearCredentialButton != null) {
+            voBLEClearCredentialButton.setEnabled(stored);
+            voBLEClearCredentialButton.setTextColor(stored ? DANGER : MUTED);
+        }
     }
 
     private View pairingPage() {
@@ -853,11 +1052,49 @@ public final class MainActivity extends Activity {
             requestDialerRole();
             return;
         }
-        getSystemService(TelecomManager.class).placeCall(Uri.parse("tel:" + value), null);
+        try {
+            getSystemService(TelecomManager.class).placeCall(Uri.parse("tel:" + value),
+                    DefaultCallAccount.dialExtras(this));
+        } catch (RuntimeException error) {
+            toast(error.getMessage() == null ? "系统拨号失败" : error.getMessage());
+        }
+    }
+
+    private void chooseDefaultCallAccount() {
+        DefaultCallAccount.Snapshot snapshot = DefaultCallAccount.snapshot(this);
+        String[] choices = new String[snapshot.accounts().size() + 1];
+        choices[0] = "跟随系统默认";
+        String key = DefaultCallAccount.selectedKey(this);
+        int checked = key.isEmpty() ? 0 : -1;
+        for (int i = 0; i < snapshot.accounts().size(); i++) {
+            DefaultCallAccount.Account account = snapshot.accounts().get(i);
+            choices[i + 1] = account.label() + (account.number().isEmpty() ? "" : "\n" + account.number());
+            if (key.equals(account.key())) checked = i + 1;
+        }
+        new AlertDialog.Builder(this).setTitle("默认通话卡")
+                .setSingleChoiceItems(choices, checked, (dialog, which) -> {
+                    if (which == 0) DefaultCallAccount.followSystem(this);
+                    else DefaultCallAccount.select(this, snapshot.accounts().get(which - 1));
+                    dialog.dismiss();
+                    showPage(Page.SETTINGS);
+                    toast("已保存默认通话卡");
+                }).setNegativeButton("取消", null).show();
     }
 
     private void continueStartupSetup() {
+        if (isFinishing() || isDestroyed() || startupSetupInFlight) return;
+        startupSetupPending = true;
+        if (!resumed) return;
         ShizukuBridgeManager shizuku = ShizukuBridgeManager.get(this);
+        ShizukuBridgeManager.StartupSnapshot snapshot = shizuku.startupSnapshot();
+        ShizukuStartupPolicy.Prompt prompt = shizukuStartupPolicy.inspect(
+                snapshot.installed(), snapshot.running(), snapshot.authorized(), true);
+        startupSetupInFlight = true;
+        startupSetupPending = false;
+        if (prompt != ShizukuStartupPolicy.Prompt.NONE) {
+            showShizukuStartupPrompt(prompt);
+            return;
+        }
         switch (DialerRoleSetupPolicy.initial(
                 dialerRoleHeld(), shizuku.dialerRoleAutomationAuthorized())) {
             case COMPLETE -> checkAVFEnvironmentAtStartup();
@@ -865,6 +1102,93 @@ public final class MainActivity extends Activity {
             case SYSTEM_ROLE -> requestDialerRole();
             case SETTINGS -> openDefaultAppsSettings();
         }
+    }
+
+    private void scheduleStartupSetup() {
+        handler.removeCallbacks(startupSetup);
+        handler.postDelayed(startupSetup, 500);
+    }
+
+    private void showShizukuStartupPrompt(ShizukuStartupPolicy.Prompt prompt) {
+        String title;
+        String message;
+        String action;
+        switch (prompt) {
+            case INSTALL -> {
+                title = "需要安装 Shizuku";
+                message = "AirSIM 的通话音频桥需要 Shizuku。当前未检测到安装；安装后请启动服务并授权 AirSIM。"
+                        + "\n\n官方下载：\n" + ShizukuBridgeManager.DOWNLOAD_URL;
+                action = "下载 Shizuku";
+            }
+            case START -> {
+                title = "Shizuku 尚未运行";
+                message = "已安装 Shizuku，但服务尚未启动。请打开 Shizuku，使用无线调试或 Root 启动服务，再返回 AirSIM。"
+                        + "\n\n未就绪时，通话音频无法转送到 iPhone。";
+                action = "打开 Shizuku";
+            }
+            case AUTHORIZE -> {
+                title = "需要 Shizuku 授权";
+                message = "Shizuku 已运行，但 AirSIM 尚未获授权。请允许 AirSIM 使用 Shizuku，以启动通话音频桥。"
+                        + "\n\n若此前拒绝过，请在 Shizuku 的「已授权应用」中允许 AirSIM。";
+                action = "授权";
+            }
+            default -> throw new IllegalArgumentException("No Shizuku prompt to present");
+        }
+        boolean[] awaitingAction = {false};
+        shizukuStartupDialog = new AlertDialog.Builder(this).setTitle(title).setMessage(message)
+                .setPositiveButton(action, (dialog, which) -> {
+                    if (prompt == ShizukuStartupPolicy.Prompt.AUTHORIZE) {
+                        awaitingAction[0] = true;
+                        attemptPrivilegedDialerRole(true);
+                    } else {
+                        awaitingAction[0] = openShizukuStartupAction(prompt);
+                    }
+                })
+                .setNegativeButton("稍后", null).create();
+        shizukuStartupDialog.setOnDismissListener(dialog -> {
+            shizukuStartupDialog = null;
+            if (!awaitingAction[0] && !isFinishing() && !isDestroyed()) {
+                startupSetupInFlight = false;
+                startupSetupPending = true;
+                scheduleStartupSetup();
+            }
+        });
+        shizukuStartupDialog.show();
+        if (prompt == ShizukuStartupPolicy.Prompt.INSTALL) {
+            TextView text = shizukuStartupDialog.findViewById(android.R.id.message);
+            if (text != null) {
+                // Selectable URL remains usable even if no browser is installed.
+                text.setTextIsSelectable(true);
+            }
+        }
+    }
+
+    private boolean openShizukuStartupAction(ShizukuStartupPolicy.Prompt prompt) {
+        try {
+            Intent intent = prompt == ShizukuStartupPolicy.Prompt.INSTALL
+                    ? new Intent(Intent.ACTION_VIEW, Uri.parse(ShizukuBridgeManager.DOWNLOAD_URL))
+                    : getPackageManager().getLaunchIntentForPackage(ShizukuBridgeManager.MANAGER_PACKAGE);
+            if (intent == null) {
+                toast("无法打开 Shizuku，请从官方下载页安装");
+                return false;
+            }
+            // Keep the return callback in this Activity's task, even if the
+            // package manager's launch intent originally had NEW_TASK set.
+            intent.setFlags(intent.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivityForResult(intent, SHIZUKU_SETUP_REQUEST);
+            return true;
+        } catch (RuntimeException error) {
+            BridgeLog.error("shizuku_startup_action_failed", error);
+            toast("无法打开页面，请复制弹窗中的官方下载地址");
+            return false;
+        }
+    }
+
+    private void completeStartupSetup() {
+        startupSetupInFlight = false;
+        startupSetupPending = false;
+        startupSetupCompleted = true;
+        handler.post(this::maybeShowCrashReportPrompt);
     }
 
     private void requestDialerRole() {
@@ -931,8 +1255,7 @@ public final class MainActivity extends Activity {
         if (callId.isEmpty()) { toast("当前没有可控制的通话"); return; }
         Executors.newSingleThreadExecutor().execute(() -> {
             CallRepository.ActionResult result = CallRepository.execute(
-                    new AgentCommand(UUID.randomUUID().toString(), action, callId, ""),
-                    getSystemService(TelecomManager.class));
+                    MainActivity.this, new AgentCommand(UUID.randomUUID().toString(), action, callId, ""));
             runOnUiThread(() -> toast(result.success ? "Telecom 已确认" : result.error));
         });
     }
@@ -1210,12 +1533,16 @@ public final class MainActivity extends Activity {
 	private void checkAVFEnvironmentAtStartup() {
 		if (RuntimeMode.isStandalone(this)) {
 			StandaloneAgentService.start(this);
+			completeStartupSetup();
 			return;
 		}
-		if (avfStartupPromptShown) return;
+		if (avfStartupPromptShown) { completeStartupSetup(); return; }
 		AVFEnvironmentDetector.Snapshot snapshot = AVFEnvironmentDetector.inspect(this);
 		boolean agentConfigured = AppConfig.configured(this);
-		if (!AVFStartupPolicy.shouldPrompt(snapshot.state(), agentConfigured)) return;
+		if (!AVFStartupPolicy.shouldPrompt(snapshot.state(), agentConfigured)) {
+            completeStartupSetup();
+            return;
+        }
 		avfStartupPromptShown = true;
 		boolean needsInstall = snapshot.state() == AVFStartupPolicy.State.RUNNING && !agentConfigured;
 		boolean canLaunch = snapshot.state() == AVFStartupPolicy.State.READY_TO_START;
@@ -1240,6 +1567,7 @@ public final class MainActivity extends Activity {
 						})
 				.setNegativeButton("稍后", null)
 				.create();
+		dialog.setOnDismissListener(ignored -> completeStartupSetup());
 		dialog.show();
 	}
 
@@ -1508,7 +1836,8 @@ public final class MainActivity extends Activity {
 	}
 
 	private void maybeShowCrashReportPrompt() {
-		if (crashPromptShown || isFinishing() || !CrashReportStore.hasReport(getFilesDir())) return;
+		if (crashPromptShown || !resumed || startupSetupInFlight || isFinishing() || isDestroyed()
+                || !CrashReportStore.hasReport(getFilesDir())) return;
 		crashPromptShown = true;
 		new AlertDialog.Builder(this)
 				.setTitle("检测到上次闪退")
@@ -1751,21 +2080,35 @@ public final class MainActivity extends Activity {
             continueAfterSystemRoleRequest();
         } else if (request == DEFAULT_APPS_REQUEST) {
             if (dialerRoleHeld()) checkAVFEnvironmentAtStartup();
-            else toast("AirSIM 仍未获得默认电话角色");
+            else {
+                toast("AirSIM 仍未获得默认电话角色");
+                completeStartupSetup();
+            }
+        } else if (request == SHIZUKU_SETUP_REQUEST) {
+            startupSetupInFlight = false;
+            startupSetupPending = true;
+            scheduleStartupSetup();
         }
     }
 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (startupSetupPending) scheduleStartupSetup();
+        if (currentPage == Page.SETTINGS && !voBLEAuthenticationVisible) showPage(Page.SETTINGS);
         if (currentPage == Page.STATUS && pcmStatusPoller != null) pcmStatusPoller.start();
+        if (voBLEAuthenticationVisible) handler.post(voBLEAuthenticationRefresh);
         refreshShizukuStatus();
 		startSMSInboxBaselineIfAuthorized();
+        if (startupSetupCompleted && !startupSetupPending && !startupSetupInFlight) {
+            handler.post(this::maybeShowCrashReportPrompt);
+        }
     }
 
     @Override protected void onPause() {
         resumed = false;
         if (pcmStatusPoller != null) pcmStatusPoller.stop();
+        handler.removeCallbacks(voBLEAuthenticationRefresh);
         super.onPause();
     }
 
@@ -1783,9 +2126,20 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        handler.removeCallbacks(startupSetup);
+        if (shizukuStartupDialog != null) {
+            shizukuStartupDialog.setOnDismissListener(null);
+            shizukuStartupDialog.dismiss();
+        }
         if (pcmStatusPoller != null) pcmStatusPoller.stop();
         handler.removeCallbacks(debugRefresh);
+        handler.removeCallbacks(voBLEAuthenticationRefresh);
         stopPairingServer();
         super.onDestroy();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean(SHIZUKU_STARTUP_CHECKED, shizukuStartupPolicy.checked());
+        super.onSaveInstanceState(outState);
     }
 }

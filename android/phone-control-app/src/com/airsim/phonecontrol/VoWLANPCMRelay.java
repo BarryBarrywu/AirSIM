@@ -91,6 +91,7 @@ public final class VoWLANPCMRelay implements Closeable {
             }
             peer.getOutputStream().write(VoWLANPCMProtocol.READY.getBytes(StandardCharsets.US_ASCII));
             peer.getOutputStream().flush();
+            RemoteAudioSessionRegistry.setVoWLAN(true);
             peer.setSoTimeout(0);
             internal.setSoTimeout(0);
             Socket activeInternal = internal;
@@ -106,6 +107,7 @@ public final class VoWLANPCMRelay implements Closeable {
             closeQuietly(internal);
             if (acquired) gate.release(owner);
             if (acquired) activeSession = false;
+            if (acquired) RemoteAudioSessionRegistry.setVoWLAN(false);
             BridgeLog.info("vowlan_pcm_closed uplink_bytes=" + uplink.bytes.get()
                     + " uplink_frames=" + uplink.frames.get() + " uplink_peak=" + uplink.peak.get()
                     + " downlink_bytes=" + downlink.bytes.get() + " downlink_frames=" + downlink.frames.get()

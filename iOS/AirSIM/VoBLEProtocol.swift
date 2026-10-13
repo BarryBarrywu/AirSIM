@@ -47,7 +47,12 @@ struct VoBLEAudioPacket: Equatable, Sendable {
         }
         let capacity = min(255, maximumPacketLength - Self.headerLength)
         guard capacity > 0 else { throw VoBLEProtocolError.invalidLength }
-        let body = payload + authenticationTag
+        // CryptoKit can vend Data values backed by slices whose Collection indices
+        // do not start at zero. Build a fresh contiguous buffer before fragmenting;
+        // subdata(in:) otherwise traps when fed integer offsets as indices.
+        var body = Data(capacity: payload.count + authenticationTag.count)
+        body.append(payload)
+        body.append(authenticationTag)
         let count = max(1, (body.count + capacity - 1) / capacity)
         guard count <= Self.maximumFragmentCount else {
             throw VoBLEProtocolError.tooManyFragments

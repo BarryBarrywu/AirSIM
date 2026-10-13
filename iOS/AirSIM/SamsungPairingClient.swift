@@ -97,9 +97,11 @@ enum SamsungPairingClient {
     private struct Response: Decodable {
         let configured: Bool
         let deviceIDHint: String?
+        let agentID: String?
         enum CodingKeys: String, CodingKey {
             case configured
             case deviceIDHint = "device_id_hint"
+            case agentID = "agent_id"
         }
     }
 
@@ -123,6 +125,7 @@ enum SamsungPairingClient {
         let responseData = try await exchange(endpoint: service.endpoint, body: body)
         let response = try JSONDecoder().decode(Response.self, from: responseData)
         guard response.configured else { throw SamsungPairingClientError.rejected }
+        if let agentID = response.agentID { PairedAndroidDeviceStore.allowPairing(agentID) }
         return response.deviceIDHint.map { "配对成功（设备 …\($0)）" } ?? "配对成功"
     }
 

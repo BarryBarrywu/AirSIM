@@ -136,6 +136,24 @@ struct CloudAgentStatus: Decodable, Equatable, Sendable {
     }
 }
 
+struct AndroidAgentMetadata: Decodable, Equatable, Sendable {
+    let agentID: String
+    let deviceName: String
+    let phoneNumber: String?
+    let agentKind: String?
+    enum CodingKeys: String, CodingKey {
+        case agentID = "agent_id", deviceName = "device_name"
+        case phoneNumber = "phone_number", agentKind = "agent_kind"
+    }
+    static func decode(_ data: Data, expectedID: String) throws -> Self {
+        let value = try JSONDecoder().decode(Self.self, from: data)
+        guard value.agentID == expectedID else { throw VoBLECentralError.invalidResponse }
+        let number = value.phoneNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self(agentID: value.agentID, deviceName: value.deviceName,
+                    phoneNumber: number?.isEmpty == false ? number : nil, agentKind: value.agentKind)
+    }
+}
+
 struct AndroidAgentPresentation: Equatable, Identifiable, Sendable {
     let id: String
     let deviceName: String
@@ -143,7 +161,28 @@ struct AndroidAgentPresentation: Equatable, Identifiable, Sendable {
     let agentKind: String?
     let cloudOnline: Bool
     let vowlanOnline: Bool
+    let bluetoothOnline: Bool
     let isCurrent: Bool
+
+    init(
+        id: String,
+        deviceName: String,
+        phoneNumber: String?,
+        agentKind: String?,
+        cloudOnline: Bool,
+        vowlanOnline: Bool,
+        bluetoothOnline: Bool = false,
+        isCurrent: Bool
+    ) {
+        self.id = id
+        self.deviceName = deviceName
+        self.phoneNumber = phoneNumber
+        self.agentKind = agentKind
+        self.cloudOnline = cloudOnline
+        self.vowlanOnline = vowlanOnline
+        self.bluetoothOnline = bluetoothOnline
+        self.isCurrent = isCurrent
+    }
 
     var agentKindTitle: String {
         switch agentKind {

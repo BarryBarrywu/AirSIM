@@ -131,6 +131,8 @@ public final class PairingServer implements Closeable {
             // 注册结构使用严格 JSON 解码，且无须接触该密钥，因此转发前必须移除。
             registration.remove("vowlan_secret");
             String agentResponse = new AgentClient(context).registerPairing(registration.toString());
+            agentResponse = new JSONObject(agentResponse)
+                    .put("agent_id", AndroidAgentIdentity.agentID(context)).toString();
             VoWLANPairingStore.saveEncoded(context, vowlanSecret);
             VoWLANGatewayService.start(context);
             respond(peer, 200, agentResponse);

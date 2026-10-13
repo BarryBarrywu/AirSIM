@@ -1,5 +1,6 @@
 package com.airsim.phonecontrol;
 
+import android.content.Context;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -80,13 +81,14 @@ public final class CallRepository {
         });
     }
 
-    public static ActionResult execute(AgentCommand command, TelecomManager telecomManager) {
+    public static ActionResult execute(Context context, AgentCommand command) {
         if (!command.isSupported()) return ActionResult.failure("unsupported action");
         if ("dial".equals(command.action)) {
             if (command.number.isEmpty()) return ActionResult.failure("number missing");
             String error = TelecomInvocation.run(
                     task -> new Handler(Looper.getMainLooper()).post(task),
-                    () -> telecomManager.placeCall(Uri.parse("tel:" + command.number), null),
+                    () -> context.getSystemService(TelecomManager.class).placeCall(
+                            Uri.parse("tel:" + command.number), DefaultCallAccount.dialExtras(context)),
                     2_000L);
             return error.isEmpty() ? ActionResult.success() : ActionResult.failure(error);
         }
@@ -138,9 +140,8 @@ public final class CallRepository {
     }
 
     public static ActionResult executeRemote(
-            String requestId, String action, String callId, String number,
-            TelecomManager telecomManager) {
-        return execute(new AgentCommand(requestId, action, callId, number), telecomManager);
+            Context context, String requestId, String action, String callId, String number) {
+        return execute(context, new AgentCommand(requestId, action, callId, number));
     }
 
     public static final class ActionResult {

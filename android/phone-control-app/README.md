@@ -2,7 +2,7 @@
 
 该目录包含 AirSIM Android 端的共享实现以及旧 AVF 兼容 Manifest。新安装推荐使用根目录的 [Android Standalone APK](../../android-standalone/README.md)，由同一 APK 内置 Agent；只有兼容旧部署时才使用这里的 AVF 版构建入口。
 
-当前正式应用版本为 [`v0.9.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6)（Android `versionCode 79`）；配套 AVF Agent 当前为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
+当前正式应用版本为 [`v0.9.7`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7)（Android `versionCode 80`）；配套 AVF Agent 当前为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
 
 ## 主要职责
 
@@ -17,6 +17,12 @@
 - 通过独立 AVF installerd 检查、安装和回滚签名 Debian 包。
 - 启动时检测 AVF、AOSP Linux Terminal 和 AVF 私网状态，并提供可复制的一键安装命令。
 - 状态首页明确显示当前使用 VoWLAN、云端模式、云端异常或离线；仅配置 Relay 不会被误报为已经在线。
+
+## 默认通话卡
+
+Android AirSIM「设置 → 默认通话卡」支持选择已启用的 SIM/eSIM，或保持「跟随系统默认」。本地保存的选项用于 BLE、VoWLAN、Relay 和 Android 本机拨号，不改变系统默认通话卡及短信卡，无需 Relay 注册或网络连接。
+
+读取可选卡需要现有的电话状态权限，号码展示权限为可选。每次拨号使用系统提供的 `PhoneAccountHandle` 并重新检查其是否仍启用；指定卡不可用时返回明确错误，不静默切换其他卡。系统紧急呼叫路由不受此选项保证。
 
 ## 运行要求
 
@@ -57,6 +63,8 @@ AIRSIM_ANDROID_KEY_PASSWORD='从 Secret Store 注入' \
 Release APK 输出到 `android/phone-control-app/build/android/AirSIM-Phone-Bridge-release.apk`。签名库和密码不得提交到 Git；公开 Release 必须复用同一签名证书，才能覆盖升级已安装版本。
 
 ## 三星手机配置
+
+首次权限请求结束后，App 自动检查 Shizuku：未安装的弹窗包含官方地址 `https://shizuku.rikka.app/zh-hans/download/` 和下载入口；已安装未启动提示打开管理器，未授权提示授权。就绪时不弹窗；本次启动最多一次，可点「稍后」继续。启动引导与权限、AVF 环境及闪退报告提示按顺序呈现，不会自动安装 Shizuku 或绕过用户授权。
 
 1. 安装 APK 并启动 AirSIM。
 2. 如果启动提示显示 AVF Linux 尚未运行，点“启动 Linux Terminal”；若 Terminal 未启用，点“打开开发者选项”并启用 Linux 开发环境。

@@ -50,6 +50,7 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
         let agentKind: String?
         let pairedAgentCount: Int?
         let vowlanOnline: Bool?
+        let bluetoothOnline: Bool?
         let cloudOnline: Bool?
 
         init(
@@ -70,6 +71,7 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             agentKind: String? = nil,
             pairedAgentCount: Int? = nil,
             vowlanOnline: Bool? = nil,
+            bluetoothOnline: Bool? = nil,
             cloudOnline: Bool? = nil
         ) {
             self.callID = callID
@@ -89,6 +91,7 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             self.agentKind = agentKind
             self.pairedAgentCount = pairedAgentCount
             self.vowlanOnline = vowlanOnline
+            self.bluetoothOnline = bluetoothOnline
             self.cloudOnline = cloudOnline
         }
 
@@ -160,6 +163,36 @@ enum IslandActionLayout {
         case .active, .held: return buttonSide
         case .standby, .cloudStandby, .offline: return 0
         }
+    }
+}
+
+enum AirSIMLiveActivityAction: String, Equatable, Sendable {
+    case answer
+    case reject
+    case hangup
+}
+
+enum AirSIMLiveActivityActionURL {
+    static func make(action: AirSIMLiveActivityAction, callID: String) -> URL? {
+        guard !callID.isEmpty else { return nil }
+        var components = URLComponents()
+        components.scheme = "airsim"
+        components.host = "call"
+        components.path = "/\(action.rawValue)"
+        components.queryItems = [URLQueryItem(name: "call_id", value: callID)]
+        return components.url
+    }
+
+    static func parse(_ url: URL) -> (action: AirSIMLiveActivityAction, callID: String)? {
+        guard url.scheme?.lowercased() == "airsim",
+              url.host?.lowercased() == "call",
+              let action = AirSIMLiveActivityAction(
+                rawValue: url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+              ),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let callID = components.queryItems?.first(where: { $0.name == "call_id" })?.value,
+              !callID.isEmpty else { return nil }
+        return (action, callID)
     }
 }
 
@@ -245,6 +278,7 @@ private enum LiveActivityCallClient {
                     agentKind: previous.agentKind,
                     pairedAgentCount: previous.pairedAgentCount,
                     vowlanOnline: previous.vowlanOnline,
+                    bluetoothOnline: previous.bluetoothOnline,
                     cloudOnline: previous.cloudOnline
                 )
                 await activity.update(ActivityContent(state: state, staleDate: nil))

@@ -1,11 +1,27 @@
 import Foundation
 
+@MainActor
+protocol VoBLECallControlling: AnyObject {
+    var state: VoBLEConnectionState { get }
+    var onEvent: ((VoBLEAndroidEvent) -> Void)? { get set }
+    var onAudioDownlinkFragment: ((Data) -> Void)? { get set }
+    var onReadyToSendAudio: (() -> Void)? { get set }
+    var onDisconnected: (() -> Void)? { get set }
+    var onReady: (() -> Void)? { get set }
+    func send(command: String, callID: String, generation: UInt64,
+              number: String) async throws -> VoBLEControlResponse
+    func mediaKey(callID: String, generation: UInt64) throws -> Data
+}
+
+extension VoBLECentralController: VoBLECallControlling {}
+
 struct VoBLECallIdentity: Equatable, Sendable {
     let callID: String
     let generation: UInt64
     let uuid: UUID
     let direction: String
     let number: String?
+    let isProvisional: Bool
 
     var mediaIdentity: VoBLEMediaSessionIdentity {
         .init(callID: callID, generation: generation)
@@ -30,7 +46,7 @@ struct VoBLECallLifecycleReducer: Sendable {
     mutating func beginOutgoing(callID: String, generation: UInt64, number: String) -> VoBLECallIdentity {
         let value = VoBLECallIdentity(
             callID: callID, generation: generation, uuid: UUID(),
-            direction: "outgoing", number: number)
+            direction: "outgoing", number: number, isProvisional: true)
         current = value
         mediaRequested = false
         return value
@@ -58,12 +74,14 @@ struct VoBLECallLifecycleReducer: Sendable {
             identity = VoBLECallIdentity(
                 callID: event.callID, generation: event.generation, uuid: current.uuid,
                 direction: event.direction.isEmpty ? current.direction : event.direction,
-                number: event.number.isEmpty ? current.number : event.number)
+                number: event.number.isEmpty ? current.number : event.number,
+                isProvisional: false)
         } else {
             guard current == nil || event.generation > current!.generation else { return .ignored }
             identity = VoBLECallIdentity(
                 callID: event.callID, generation: event.generation, uuid: UUID(),
-                direction: event.direction, number: event.number.isEmpty ? nil : event.number)
+                direction: event.direction, number: event.number.isEmpty ? nil : event.number,
+                isProvisional: false)
             mediaRequested = false
         }
         current = identity
@@ -85,6 +103,10 @@ struct VoBLECallLifecycleReducer: Sendable {
         mediaRequested = false
         return true
     }
+
+    func hasEnded(_ identity: VoBLECallIdentity) -> Bool {
+        terminalKeys.contains("\(identity.callID):\(identity.generation)")
+    }
 }
 
 @MainActor
@@ -93,8 +115,9 @@ final class VoBLECallCoordinator {
     var onState: ((VoBLECallIdentity, CallLifecycleState) -> Void)?
     var onEnded: ((VoBLECallIdentity) -> Void)?
     var onError: ((String) -> Void)?
+    var audioSessionContext: () -> (managedByCallKit: Bool, active: Bool) = { (true, false) }
 
-    private let central: VoBLECentralController
+    private let central: any VoBLECallControlling
     private let media: VoBLEGATTMediaTransport
     private let audio: VoBLEAudioEngine
     private let defaults: UserDefaults
@@ -104,7 +127,7 @@ final class VoBLECallCoordinator {
     private let generationKey = "airsim.voble.call-generation"
 
     init(
-        central: VoBLECentralController,
+        central: any VoBLECallControlling,
         media: VoBLEGATTMediaTransport,
         audio: VoBLEAudioEngine,
         defaults: UserDefaults = .standard
@@ -139,8 +162,13 @@ final class VoBLECallCoordinator {
                 throw VoBLECentralError.bluetooth(response.detail.isEmpty ? response.code : response.detail)
             }
             defaults.set(Int(generation), forKey: generationKey)
-            onState?(identity, .connecting)
-            return identity
+            // Telecom events may arrive before the dial response. Never restore
+            // the provisional ID or regress an already active call to connecting.
+            guard let current = reducer.current, current.generation == generation else {
+                throw CancellationError()
+            }
+            if current.isProvisional { onState?(current, .connecting) }
+            return current
         } catch {
             _ = reducer.resetIfMatching(identity)
             throw error
@@ -155,7 +183,20 @@ final class VoBLECallCoordinator {
 
     func end(rejectIfRinging: Bool) async throws {
         guard let identity = reducer.current else { throw VoBLECentralError.invalidResponse }
-        try await requireSuccess(rejectIfRinging ? "reject" : "end", identity: identity)
+        do {
+            try await requireSuccess(rejectIfRinging ? "reject" : "end", identity: identity)
+        } catch {
+            // The authenticated terminal event is authoritative even if an
+            // older Android build rejects the later command as call_mismatch.
+            guard reducer.hasEnded(identity) else { throw error }
+#if DEBUG
+            print("[AirSIM VoBLE Call] end acknowledged by terminal event")
+#endif
+            return
+        }
+        // An ended event or a newer call can win while awaiting the reply.
+        // Never resurrect the old call or overwrite the replacement's state.
+        guard reducer.current == identity else { return }
         onState?(identity, .ending)
     }
 
@@ -186,6 +227,9 @@ final class VoBLECallCoordinator {
     }
 
     private func receive(_ event: VoBLEAndroidEvent) {
+#if DEBUG
+        print("[AirSIM VoBLE Call] event state=\(event.state) generation=\(event.generation)")
+#endif
         if let recoveringIdentity, event.generation != recoveringIdentity.generation { return }
         defaults.set(Int(max(event.generation, UInt64(max(0, defaults.integer(forKey: generationKey))))),
                      forKey: generationKey)
@@ -227,9 +271,19 @@ final class VoBLECallCoordinator {
 
     private func startMedia(for identity: VoBLECallIdentity) async {
         do {
+            let context = audioSessionContext()
+            try await audio.prepareForCall(
+                managedByCallKit: context.managedByCallKit,
+                callKitAudioActive: context.active)
+            guard reducer.current == identity else {
+                if reducer.current == nil { audio.stop() }
+                return
+            }
+            // Permission prompts can yield while CallKit activates its session.
+            audio.setCallKitAudioActive(audioSessionContext().active)
             let response = try await central.send(
                 command: "start_media", callID: identity.callID,
-                generation: identity.generation)
+                generation: identity.generation, number: "")
             guard response.success, response.detail == "media_ready",
                   reducer.current == identity else {
                 throw VoBLECentralError.bluetooth(
@@ -243,8 +297,14 @@ final class VoBLECallCoordinator {
     }
 
     private func requireSuccess(_ command: String, identity: VoBLECallIdentity) async throws {
+#if DEBUG
+        print("[AirSIM VoBLE Call] command=\(command) generation=\(identity.generation)")
+#endif
         let response = try await central.send(
-            command: command, callID: identity.callID, generation: identity.generation)
+            command: command, callID: identity.callID, generation: identity.generation, number: "")
+#if DEBUG
+        print("[AirSIM VoBLE Call] response command=\(command) success=\(response.success) code=\(response.code)")
+#endif
         guard response.success else {
             throw VoBLECentralError.bluetooth(response.detail.isEmpty ? response.code : response.detail)
         }

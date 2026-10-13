@@ -89,6 +89,63 @@ struct AirSIMFirstConnectionView: View {
     }
 }
 
+#Preview("已配对设备 · 空列表") {
+    Form { Section("三星连接") { PairedAndroidDeviceRows(devices: [], onDelete: { _ in }) } }
+}
+
+#Preview("已配对设备 · 在线与离线") {
+    Form {
+        Section("三星连接") {
+            PairedAndroidDeviceRows(devices: [
+                .init(id: "preview-flip", deviceName: "Samsung Flip7", phoneNumber: "+10000000001",
+                      agentKind: "standalone", cloudOnline: false, vowlanOnline: false,
+                      bluetoothOnline: true, isCurrent: true),
+                .init(id: "preview-vivo", deviceName: "vivo X60", phoneNumber: nil,
+                      agentKind: "standalone", cloudOnline: false, vowlanOnline: false, isCurrent: false)
+            ], onDelete: { _ in })
+        }
+    }
+}
+
+private struct PairedAndroidDeviceRows: View {
+    let devices: [AndroidAgentPresentation]
+    let onDelete: (AndroidAgentPresentation) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("已配对设备").font(.subheadline.weight(.semibold))
+            if devices.isEmpty {
+                Text("暂无配对记录").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(devices) { device in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(device.deviceName).font(.subheadline.weight(.medium))
+                        Text(device.phoneNumber ?? "号码未提供").font(.caption).foregroundStyle(.secondary)
+                        Text(connectionText(device)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button(role: .destructive) { onDelete(device) } label: {
+                        Image(systemName: "trash").padding(10)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("删除 \(device.deviceName) 配对记录")
+                }
+            }
+            Text("重连时重新读取当前信息，离线记录不保存号码。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func connectionText(_ device: AndroidAgentPresentation) -> String {
+        let routes = [device.vowlanOnline ? "VoWLAN 在线" : nil,
+                      device.bluetoothOnline ? "VoBLE 在线" : nil,
+                      device.cloudOnline ? "云端在线" : nil].compactMap { $0 }
+        return routes.isEmpty ? "离线 · 下次连接重新读取" : routes.joined(separator: " · ")
+    }
+}
+
 struct AirSIMSettingsView: View {
     private enum SelfTestPhase {
         case idle
@@ -109,6 +166,8 @@ struct AirSIMSettingsView: View {
     @State private var selfTestPhase: SelfTestPhase = .idle
     @State private var selfTestReport: CloudSelfTestReport?
     @State private var selfTestTask: Task<Void, Never>?
+    @State private var deletingDevice: AndroidAgentPresentation?
+    @State private var deviceDeletionInProgress = false
 
     var body: some View {
         NavigationStack {
@@ -159,6 +218,8 @@ struct AirSIMSettingsView: View {
                     } label: {
                         Label("配对三星手机", systemImage: "personalhotspot")
                     }
+                    PairedAndroidDeviceRows(devices: model.pairedDeviceHistory, onDelete: { deletingDevice = $0 })
+                        .disabled(deviceDeletionInProgress)
                     Button("重新发现", systemImage: "arrow.clockwise") {
                         model.vowlan.restartBrowsing()
                         Task { await model.vowlan.probeNow() }
@@ -288,12 +349,23 @@ struct AirSIMSettingsView: View {
                     }
                 }
             }
-            .navigationTitle("设置")
-            .task {
-                if runtimePolicy.startsCloud {
-                    await model.refreshCloudStatusForDiagnostics()
+            .task { await model.refreshPairedDeviceInformation() }
+            .confirmationDialog("删除这个设备的本机配对记录？",
+                isPresented: Binding(get: { deletingDevice != nil }, set: { if !$0 { deletingDevice = nil } }),
+                titleVisibility: .visible, presenting: deletingDevice) { device in
+                Button("删除 \(device.deviceName)", role: .destructive) {
+                    deviceDeletionInProgress = true
+                    Task {
+                        defer { deviceDeletionInProgress = false }
+                        do { try await model.forgetAndroidDevice(device.id) }
+                        catch { message = error.localizedDescription }
+                    }
                 }
+                Button("取消", role: .cancel) {}
+            } message: { _ in
+                Text("清除本机记录、绑定和缓存；不会删除通话或短信。此设备需要重新配对才能自动连接，其他设备不受影响。离线设备的远端凭据不会因此自动撤销。")
             }
+            .navigationTitle("设置")
             .onDisappear {
                 selfTestTask?.cancel()
                 selfTestTask = nil

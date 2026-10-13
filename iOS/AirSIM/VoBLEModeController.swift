@@ -6,6 +6,15 @@ protocol VoBLECentralControlling: AnyObject {
     func stop()
 }
 
+/// Credential removal ends the old session, not the user's selected BLE mode.
+@MainActor
+enum VoBLEPairingConnectionReset {
+    static func perform(on bluetooth: any VoBLECentralControlling, resumeScanning: Bool) {
+        bluetooth.stop()
+        if resumeScanning { bluetooth.start() }
+    }
+}
+
 struct VoBLEModeActions: Equatable, Sendable {
     let startVoWLAN: Bool
     let startCloud: Bool

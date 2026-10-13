@@ -21,6 +21,9 @@ final class ShizukuBridgeManager {
     }
 
     static final int PERMISSION_REQUEST = 7301;
+    static final String MANAGER_PACKAGE = "moe.shizuku.privileged.api";
+    static final String DOWNLOAD_URL = "https://shizuku.rikka.app/zh-hans/download/";
+    record StartupSnapshot(boolean installed, boolean running, boolean authorized) {}
     private static volatile ShizukuBridgeManager instance;
 
     private final Context app;
@@ -107,7 +110,9 @@ final class ShizukuBridgeManager {
                 .processNameSuffix("pcm_shell")
                 .debuggable(true)
                 .tag("airsim-pcm-v1")
-                .version(5);
+                // Bump when the embedded bridge or its lifecycle changes so an
+                // APK update cannot keep Vivo/Samsung running an old daemon.
+                .version(7);
         Shizuku.addBinderReceivedListenerSticky(binderReceived);
         Shizuku.addBinderDeadListener(binderDead);
         Shizuku.addRequestPermissionResultListener(permissionResult);
@@ -204,6 +209,21 @@ final class ShizukuBridgeManager {
     boolean dialerRoleAutomationAvailable() {
         try { return Shizuku.pingBinder(); }
         catch (RuntimeException error) { return false; }
+    }
+
+    StartupSnapshot startupSnapshot() {
+        boolean installed = false;
+        try {
+            app.getPackageManager().getPackageInfo(MANAGER_PACKAGE, 0);
+            installed = true;
+        } catch (PackageManager.NameNotFoundException ignored) {
+            // Both APK manifests declare package visibility for the manager.
+        } catch (RuntimeException error) {
+            BridgeLog.error("shizuku_package_check_failed", error);
+        }
+        boolean running = dialerRoleAutomationAvailable();
+        return new StartupSnapshot(installed || running, running,
+                running && dialerRoleAutomationAuthorized());
     }
 
     void ensureDialerRole(boolean requestPermission, DialerRoleCallback callback) {
@@ -315,12 +335,16 @@ final class ShizukuBridgeManager {
     }
 
     void openShizuku() {
-        Intent launch = app.getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+        Intent launch = app.getPackageManager().getLaunchIntentForPackage(MANAGER_PACKAGE);
         if (launch == null) {
             status = "未安装 Shizuku";
             return;
         }
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        app.startActivity(launch);
+        try { app.startActivity(launch); }
+        catch (RuntimeException error) {
+            status = "无法打开 Shizuku";
+            BridgeLog.error("shizuku_open_failed", error);
+        }
     }
 }

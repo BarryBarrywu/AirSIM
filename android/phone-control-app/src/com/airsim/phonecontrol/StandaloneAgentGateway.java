@@ -2,7 +2,6 @@ package com.airsim.phonecontrol;
 
 import android.app.role.RoleManager;
 import android.content.Context;
-import android.telecom.TelecomManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -242,7 +241,7 @@ final class StandaloneAgentGateway {
         return AgentCommandDispatcher.execute(command, dialer,
                 value -> {
                     CallRepository.ActionResult result = CallRepository.execute(
-                            value, context.getSystemService(TelecomManager.class));
+                            context, value);
                     return new AgentCommandDispatcher.Result(result.success, result.error, 0);
                 },
                 value -> SMSCommandExecutor.execute(context, value));

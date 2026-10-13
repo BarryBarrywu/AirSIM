@@ -12,13 +12,13 @@ import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
-import android.telecom.TelecomManager;
 
 import com.airsim.phonecontrol.AndroidAgentIdentity;
 import com.airsim.phonecontrol.AppConfig;
 import com.airsim.phonecontrol.BridgeLog;
 import com.airsim.phonecontrol.CallRepository;
 import com.airsim.phonecontrol.RuntimeMode;
+import com.airsim.phonecontrol.RemoteAudioSessionRegistry;
 
 import org.json.JSONObject;
 
@@ -40,9 +40,36 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     private static volatile VoBLEGatewayService instance;
     private static volatile VoBLEDiagnostics.Snapshot diagnostics =
             VoBLEDiagnostics.idle("Android");
+    private static volatile String pendingPairingCode = "";
 
     public static String diagnosticsSummary() {
         return VoBLEDiagnostics.summary(diagnostics);
+    }
+
+    public static boolean isAuthenticated() {
+        return diagnostics != null && diagnostics.authenticated();
+    }
+
+    public static String pendingPairingCode() {
+        return pendingPairingCode;
+    }
+
+    public static boolean hasStoredCredential(Context context) {
+        String identity = AndroidAgentIdentity.agentID(context);
+        return VoBLECredentialStore.androidPrivatePreferences(context).hasCredential(identity);
+    }
+
+    /** Local recovery path for a stale iPhone credential. It never opens a remote reset endpoint. */
+    public static void clearStoredCredential(Context context) {
+        VoBLEGatewayService active = instance;
+        if (active != null) {
+            active.controlQueue.execute(active::revokeLocalCredential);
+            return;
+        }
+        String identity = AndroidAgentIdentity.agentID(context);
+        VoBLECredentialStore.androidPrivatePreferences(context).revoke(identity);
+        pendingPairingCode = "";
+        diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(context));
     }
 
     private record SessionContext(
@@ -104,10 +131,9 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         }
         VoBLECredentialStore credentials = VoBLECredentialStore.androidPrivatePreferences(this);
         pairingManager = new VoBLEPairingManager(credentials);
-        TelecomManager telecom = getSystemService(TelecomManager.class);
         calls = new VoBLECallController(request -> {
             CallRepository.ActionResult result = CallRepository.executeRemote(
-                    request.requestId(), request.action(), request.callId(), request.number(), telecom);
+                    VoBLEGatewayService.this, request.requestId(), request.action(), request.callId(), request.number());
             return result.success
                     ? VoBLECallController.Result.success("accepted")
                     : VoBLECallController.Result.failure("telecom_failed", result.error);
@@ -134,6 +160,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             JSONObject response = new JSONObject().put("version", 1).put("op", operation);
             String identity = AndroidAgentIdentity.agentID(this);
             if ("begin".equals(operation)) {
+                pendingPairingCode = "";
                 VoBLEPairingManager.Challenge challenge = pairingManager.begin(
                         identity, System.currentTimeMillis());
                 response.put("challenge_id", challenge.id())
@@ -205,15 +232,25 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             if (!valid) throw new SecurityException("control authentication failed");
             String requestId = body.getString("request_id");
             String action = normalizeAction(envelope.command());
-            session = new SessionContext(deviceId, envelope.sessionId(),
-                    envelope.callId(), envelope.generation());
+            // Reading fresh metadata must not replace an active call's ID/generation.
+            if (!"device_info".equals(action) || session == null) {
+                session = new SessionContext(deviceId, envelope.sessionId(),
+                        envelope.callId(), envelope.generation());
+            }
             VoBLECallController.Request request = new VoBLECallController.Request(
                     requestId, action, envelope.callId(), body.optString("number", ""),
                     envelope.generation());
             VoBLECallController.Result result;
+            boolean revokeAfterResponse = false;
             if ("ping".equals(action)) {
                 result = calls.executeOnce(request, true,
                         ignored -> VoBLECallController.Result.success("ready"));
+            } else if ("device_info".equals(action)) {
+                result = VoBLECallController.Result.success(new JSONObject()
+                        .put("agent_id", AndroidAgentIdentity.agentID(this))
+                        .put("device_name", AndroidAgentIdentity.deviceName())
+                        .put("agent_kind", RuntimeMode.isStandalone(this) ? "standalone" : "avf")
+                        .put("phone_number", AndroidAgentIdentity.phoneNumber(this)).toString());
             } else if ("start_media".equals(action)) {
                 result = calls.executeOnce(request, true,
                         ignored -> startMedia(deviceId, identity, envelope));
@@ -225,6 +262,9 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                     stopMedia(envelope.callId(), envelope.generation());
                     return VoBLECallController.Result.success("stopped");
                 });
+            } else if ("unpair".equals(action)) {
+                result = VoBLECallController.Result.success("unpaired");
+                revokeAfterResponse = true;
             } else {
                 result = calls.execute(request, true);
             }
@@ -232,6 +272,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                     "response", new JSONObject().put("request_id", requestId)
                             .put("ok", result.success()).put("code", result.code())
                             .put("detail", result.detail()));
+            if (revokeAfterResponse && result.success()) revokeAuthenticatedPeer(deviceId, identity);
         } catch (Exception error) {
             sendPlainControlError(deviceId, error instanceof SecurityException
                     ? "authentication_failed" : "invalid_request");
@@ -257,14 +298,27 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 session = null;
                 stopMedia("", 0);
             }
+            pendingPairingCode = "";
+            diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(this));
         });
     }
 
     private void publishCallState(String callId, String direction, String state, String number) {
         Long generation = callGenerations.get(callId);
         if (generation == null && !"ended".equals(state)) {
-            long candidate = generations.incrementAndGet();
-            generation = Math.max(candidate, calls.currentGeneration() + 1);
+            SessionContext activeSession = session;
+            boolean ownsPendingOutgoing = "outgoing".equals(direction)
+                    && activeSession != null
+                    && calls.ownsCall(activeSession.callId, activeSession.generation);
+            if (ownsPendingOutgoing) {
+                // `dial` starts with an iOS provisional ID. Android's first
+                // Telecom event authoritatively replaces the ID, not the
+                // generation; advancing both strands iOS on the old call.
+                generation = activeSession.generation;
+            } else {
+                long candidate = generations.incrementAndGet();
+                generation = Math.max(candidate, calls.currentGeneration() + 1);
+            }
             generations.accumulateAndGet(generation, Math::max);
             callGenerations.put(callId, generation);
         }
@@ -315,6 +369,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 next.start(identity, mediaKey);
                 media = next;
                 mediaIdentity = identity;
+                RemoteAudioSessionRegistry.setVoBLE(true);
                 diagnostics = new VoBLEDiagnostics.Snapshot(
                         RuntimeMode.agentLabel(this), true, true, "G.711-mu/8000/mono",
                         0, 0, 0, "");
@@ -336,6 +391,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         VoBLEMediaSession active = media;
         media = null;
         mediaIdentity = null;
+        RemoteAudioSessionRegistry.setVoBLE(false);
         if (active != null) {
             VoBLEMediaSession.Stats stats = active.stats();
             diagnostics = new VoBLEDiagnostics.Snapshot(
@@ -345,6 +401,37 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             publishDiagnostics();
             active.close();
         }
+    }
+
+    private void revokeLocalCredential() {
+        String identity = AndroidAgentIdentity.agentID(this);
+        pairingManager.revoke(identity);
+        for (String deviceId : peerIdentities.keySet()) {
+            channel.revokeOwnerAndDisconnect(deviceId, () -> {
+                VoBLEGattServer active = gatt;
+                if (active != null) active.disconnectPeer(deviceId);
+            });
+        }
+        peerIdentities.clear();
+        session = null;
+        pendingPairingCode = "";
+        stopMedia("", 0);
+        diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(this));
+        publishDiagnostics();
+        BridgeLog.info("voble_pairing_cleared_locally");
+    }
+
+    private void revokeAuthenticatedPeer(String deviceId, String identity) {
+        pairingManager.revoke(identity);
+        channel.revokeOwner(deviceId);
+        peerIdentities.remove(deviceId);
+        SessionContext current = session;
+        if (current != null && current.deviceId.equals(deviceId)) session = null;
+        pendingPairingCode = "";
+        stopMedia("", 0);
+        diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(this));
+        publishDiagnostics();
+        BridgeLog.info("voble_pairing_revoked_by_authenticated_peer");
     }
 
     private void publishDiagnostics() {
@@ -411,6 +498,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     }
 
     private void showPairingCode(String sas) {
+        pendingPairingCode = sas == null ? "" : sas;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
         manager.notify(NOTIFICATION_ID, new Notification.Builder(this, CHANNEL_ID)
@@ -421,6 +509,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     }
 
     private void showReadyNotification() {
+        pendingPairingCode = "";
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
         manager.notify(NOTIFICATION_ID, new Notification.Builder(this, CHANNEL_ID)
@@ -432,6 +521,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
 
     @Override public void onDestroy() {
         instance = null;
+        pendingPairingCode = "";
+        diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(this));
         controlQueue.shutdownNow();
         mediaQueue.shutdownNow();
         stopMedia("", 0);

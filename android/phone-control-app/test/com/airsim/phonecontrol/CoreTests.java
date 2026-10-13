@@ -7,6 +7,8 @@ public final class CoreTests {
 		assertVoBLEAudioVectorAndBounds();
 		assertVoBLEPairingAndReplay();
 		assertVoBLEControlOwnershipAndCallDeduplication();
+		assertVoBLEHangupAfterTerminalEventIsIdempotentAndCannotEndNextCall();
+		assertVoBLERevocationClosesOnlyOwnedTransport();
 		assertVoBLEPCMResolutionHandshakeAndMediaCrypto();
 		assertTransientMuteFailureRetriesAndRestorationCancelsStaleRetry();
 		assertMutedCallRecoversAfterThreeTransientAudioFailures();
@@ -551,6 +553,14 @@ public final class CoreTests {
 			assertContains(expected.getMessage(), "package");
 		}
 		assertEquals("266 145", MainScreenPresentation.formatPairingCode("266145"));
+		assertEquals("等待 iPhone 发起首次配对",
+				MainScreenPresentation.voBLEAuthenticationStatus(false, false, ""));
+		assertEquals("请在两端核对安全码",
+				MainScreenPresentation.voBLEAuthenticationStatus(false, false, "266145"));
+		assertEquals("已认证并连接",
+				MainScreenPresentation.voBLEAuthenticationStatus(true, true, ""));
+		assertEquals("266 145", MainScreenPresentation.voBLEPairingCode("266145"));
+		assertEquals("等待 iPhone 发起配对", MainScreenPresentation.voBLEPairingCode(""));
 		assertEquals(
 				"22:45 VoWLAN 健康检查通过\n22:43 VoWLAN 广播已发现",
 				MainScreenPresentation.recentLogLines(
@@ -765,6 +775,7 @@ public final class CoreTests {
 							@Override public void remove(String key) { protectedValues.remove(key); }
 						});
 		store.save("samsung-test", android.pairingKey());
+		assertTrue(store.hasCredential("samsung-test"));
 		com.airsim.phonecontrol.voble.VoBLEPairingManager manager =
 				new com.airsim.phonecontrol.voble.VoBLEPairingManager(store);
 		long now = 1_000_000L;
@@ -786,7 +797,24 @@ public final class CoreTests {
 						oldPairingKey, reconnectTranscript), now + 1);
 		assertTrue(!java.util.Arrays.equals(oldPairingKey, reconnected.pairingKey()));
 		manager.revoke("samsung-test");
+		assertTrue(!store.hasCredential("samsung-test"));
 		assertTrue(store.load("samsung-test") == null);
+	}
+
+	private static void assertVoBLERevocationClosesOnlyOwnedTransport() {
+		var channel = new com.airsim.phonecontrol.voble.VoBLEControlChannel();
+		var disconnects = new java.util.concurrent.atomic.AtomicInteger();
+		channel.subscribeControl("owner");
+		channel.subscribeAudio("owner");
+		assertTrue(channel.authenticate("owner"));
+		assertTrue(!channel.revokeOwnerAndDisconnect("other", disconnects::incrementAndGet));
+		assertTrue(disconnects.get() == 0);
+		assertTrue(channel.revokeOwnerAndDisconnect("owner", disconnects::incrementAndGet));
+		assertTrue(disconnects.get() == 1);
+		assertTrue(!channel.isControlSubscribed("owner"));
+		assertTrue(!channel.isAudioSubscribed("owner"));
+		assertTrue(!channel.revokeOwnerAndDisconnect("owner", disconnects::incrementAndGet));
+		assertTrue(disconnects.get() == 1);
 	}
 
 	private static void assertVoBLEControlOwnershipAndCallDeduplication() {
@@ -803,6 +831,10 @@ public final class CoreTests {
 		assertTrue(channel.isControlSubscribed("iphone-air"));
 		assertTrue(!channel.isAudioSubscribed("iphone-air"));
 		assertTrue(!channel.authenticate("other-iphone"));
+		assertTrue(channel.revokeOwner("iphone-air"));
+		assertTrue(!channel.owns("iphone-air"));
+		assertTrue(channel.canAuthenticate("other-iphone"));
+		assertTrue(!channel.revokeOwner("iphone-air"));
 
 		java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
 		com.airsim.phonecontrol.voble.VoBLECallController controller =
@@ -835,6 +867,54 @@ public final class CoreTests {
 			return com.airsim.phonecontrol.voble.VoBLECallController.Result.success("media_ready");
 		});
 		assertEquals(1, mediaStarts.get());
+
+		var dial = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"dial-1", "dial", "provisional-call", "10086", 8);
+		assertEquals("ok", controller.execute(dial, true).code());
+		assertTrue(controller.ownsCall("provisional-call", 8));
+		controller.observeCall("android-call", 8, "dialing");
+		assertTrue(controller.ownsCall("android-call", 8));
+
+		// Android process/app data can restart while iPhone keeps its monotonic
+		// generation. The first authenticated dial must resynchronize forward,
+		// while an older delayed dial must still be rejected.
+		var restarted = new com.airsim.phonecontrol.voble.VoBLECallController(ignored ->
+				com.airsim.phonecontrol.voble.VoBLECallController.Result.success("ok"));
+		var resumedDial = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"dial-resume", "dial", "provisional-resume", "10086", 42);
+		assertEquals("ok", restarted.execute(resumedDial, true).code());
+		assertTrue(restarted.ownsCall("provisional-resume", 42));
+		var delayedDial = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"dial-delayed", "dial", "provisional-old", "10010", 41);
+		assertEquals("stale_generation", restarted.execute(delayedDial, true).code());
+	}
+
+	private static void assertVoBLEHangupAfterTerminalEventIsIdempotentAndCannotEndNextCall() {
+		var invocations = new java.util.concurrent.atomic.AtomicInteger();
+		var controller = new com.airsim.phonecontrol.voble.VoBLECallController(request -> {
+			invocations.incrementAndGet();
+			return com.airsim.phonecontrol.voble.VoBLECallController.Result.success("accepted");
+		});
+		controller.observeCall("ended-call", 7, "active");
+		assertTrue(controller.observeCall("ended-call", 7, "ended"));
+		for (String action : new String[]{"end", "reject"}) {
+			var late = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+					"late-" + action, action, "ended-call", "", 7);
+			assertTrue(controller.execute(late, true).success());
+			assertEquals("authentication_failed", controller.execute(late, false).code());
+		}
+		assertEquals(0, invocations.get());
+		controller.observeCall("next-call", 8, "active");
+		assertTrue(controller.execute(new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"late-again", "end", "ended-call", "", 7), true).success());
+		assertTrue(controller.ownsCall("next-call", 8));
+		assertEquals(0, invocations.get());
+		assertEquals("call_mismatch", controller.execute(
+				new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+						"unknown", "end", "unknown-call", "", 8), true).code());
+		assertTrue(controller.execute(new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"end-next", "end", "next-call", "", 8), true).success());
+		assertEquals(1, invocations.get());
 	}
 
 	private static void assertVoBLEPCMResolutionHandshakeAndMediaCrypto() throws Exception {

@@ -39,8 +39,16 @@ public final class VoBLECallController {
         }
         Result cached = results.get(request.requestId);
         if (cached != null) return cached;
+        // Telecom may publish the terminal event before the BLE hangup arrives.
+        // A known ended identity is already satisfied. Never invoke Telecom or
+        // use the current call as a fallback for this delayed request.
+        if (("end".equals(request.action) || "reject".equals(request.action))
+                && terminalEvents.contains(request.callId + ":" + request.generation)) {
+            return remember(request.requestId, Result.success("already_ended"));
+        }
         boolean nextDial = "dial".equals(request.action)
-                && request.generation == currentGeneration + 1;
+                && currentCallId.isEmpty()
+                && request.generation > currentGeneration;
         if (request.generation != currentGeneration && !nextDial) return remember(
                 request.requestId, Result.failure("stale_generation"));
         if (!"dial".equals(request.action) && !currentCallId.equals(request.callId)) {
@@ -53,7 +61,13 @@ public final class VoBLECallController {
         } catch (RuntimeException error) {
             result = Result.failure("gateway_failed", error.getClass().getSimpleName());
         }
-        if (nextDial && result.success) currentGeneration = request.generation;
+        if (nextDial && result.success) {
+            // Own the provisional iOS call immediately. The first Telecom event
+            // will replace this ID with Android's authoritative call ID while
+            // retaining the same generation.
+            currentCallId = request.callId;
+            currentGeneration = request.generation;
+        }
         return remember(request.requestId, result);
     }
 

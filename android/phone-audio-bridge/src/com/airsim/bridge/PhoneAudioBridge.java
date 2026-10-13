@@ -242,7 +242,7 @@ public final class PhoneAudioBridge {
                 () -> captureDownlink(recorder, client, stats, running, stop),
                 "airsim-phone-downlink");
             Thread uplink = new Thread(
-                () -> playUplink(track, client, started, stats, running, stop),
+                () -> playUplink(track, playbackRoute, client, started, stats, running, stop),
                 "airsim-phone-uplink");
             Thread reporter = new Thread(
                 () -> reportStats(started, stats, running),
@@ -302,6 +302,7 @@ public final class PhoneAudioBridge {
 
     private static void playUplink(
             AudioTrack track,
+            PlaybackRoute playbackRoute,
             Socket client,
             long started,
             BridgeStats stats,
@@ -309,7 +310,11 @@ public final class PhoneAudioBridge {
             Runnable stop) {
         byte[] frame = new byte[BridgeProtocol.FRAME_BYTES];
         long firstPlaybackAt = 0;
-        boolean routeVerified = false;
+        // Samsung's VOICE_TX audio-policy tag does not necessarily expose a
+        // TYPE_TELEPHONY routed device even when the vendor route is working.
+        boolean routeVerified = playbackRoute == PlaybackRoute.SAMSUNG_TAG;
+        boolean routeWarningEmitted = false;
+        boolean routeObserved = false;
         try {
             client.setSoTimeout(250);
             InputStream input = client.getInputStream();
@@ -318,9 +323,12 @@ public final class PhoneAudioBridge {
                 try {
                     count = readFrame(input, frame);
                 } catch (SocketTimeoutException timeout) {
-                    if (voiceTxRouteTimedOut(
+                    if (!routeWarningEmitted && voiceTxRouteTimedOut(
                             routeVerified, firstPlaybackAt, SystemClock.elapsedRealtime())) {
-                        throw new IllegalStateException("VOICE_TX did not route to Telephony Tx");
+                        routeWarningEmitted = true;
+                        emit(started, "voice_tx_route_unverified", Map.of(
+                                "playback_route", playbackRoute.name().toLowerCase(),
+                                "result", "degraded"));
                     }
                     continue;
                 }
@@ -333,6 +341,15 @@ public final class PhoneAudioBridge {
                     firstPlaybackAt = SystemClock.elapsedRealtime();
                 }
                 AudioDeviceInfo routed = track.getRoutedDevice();
+                if (!routeObserved && routed != null) {
+                    routeObserved = true;
+                    emit(started, "voice_tx_route_observed", Map.of(
+                        "playback_route", playbackRoute.name().toLowerCase(),
+                        "device_id", routed.getId(),
+                        "device_type", routed.getType(),
+                        "telephony_sink", routed.getType() == AudioDeviceInfo.TYPE_TELEPHONY,
+                        "result", "observed"));
+                }
                 if (!routeVerified && routed != null
                         && routed.getType() == AudioDeviceInfo.TYPE_TELEPHONY) {
                     routeVerified = true;
@@ -341,9 +358,15 @@ public final class PhoneAudioBridge {
                         "device_type", routed.getType(),
                         "result", "ok"));
                 }
-                if (voiceTxRouteTimedOut(
+                if (!routeWarningEmitted && voiceTxRouteTimedOut(
                         routeVerified, firstPlaybackAt, SystemClock.elapsedRealtime())) {
-                    throw new IllegalStateException("VOICE_TX did not route to Telephony Tx");
+                    // Do not tear down capture/downlink just because an OEM does not
+                    // report its hidden telephony sink. Keep the call alive and expose
+                    // the degraded route through diagnostics.
+                    routeWarningEmitted = true;
+                    emit(started, "voice_tx_route_unverified", Map.of(
+                            "playback_route", playbackRoute.name().toLowerCase(),
+                            "result", "degraded"));
                 }
             }
         } catch (Throwable error) {

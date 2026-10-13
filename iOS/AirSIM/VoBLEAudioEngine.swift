@@ -1,6 +1,16 @@
 import AVFoundation
 import Foundation
 
+enum VoBLEPlaybackScheduling {
+    static func schedule(_ buffer: AVAudioPCMBuffer, on player: AVAudioPlayerNode,
+                         completion: @escaping @Sendable () -> Void) {
+        // Refill when the player consumes data, not after Voice Processing I/O
+        // and the receiver have presented it. The latter includes sink latency
+        // and can starve a bounded streaming queue every few buffers.
+        player.scheduleBuffer(buffer, completionCallbackType: .dataConsumed) { _ in completion() }
+    }
+}
+
 @MainActor
 final class VoBLEAudioEngine: ObservableObject {
     @Published private(set) var running = false
@@ -12,18 +22,55 @@ final class VoBLEAudioEngine: ObservableObject {
     private var player: AVAudioPlayerNode?
     private var encoder: VoicePCMEncoder?
     private var playbackTask: Task<Void, Never>?
+    private var playbackGeneration = UUID()
+    private var playbackQueue = PlaybackQueueTracker(maximumFrames: 480)
     private var pendingCapture = Data()
     private var muted = false
+#if DEBUG
+    private var capturedFrames = 0
+    private var playedFrames = 0
+#endif
+
+    func prepareForCall(managedByCallKit: Bool, callKitAudioActive: Bool) async throws {
+        let granted: Bool
+        if #available(iOS 17.0, *) {
+            granted = await AVAudioApplication.requestRecordPermission()
+        } else {
+            granted = await withCheckedContinuation { continuation in
+                AVAudioSession.sharedInstance().requestRecordPermission {
+                    continuation.resume(returning: $0)
+                }
+            }
+        }
+        guard granted else { throw VoiceAudioError.microphoneUnavailable }
+        gate.callKitAudioActive = callKitAudioActive
+        if !managedByCallKit {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
+            try session.setPreferredSampleRate(48_000)
+            try session.setPreferredIOBufferDuration(0.02)
+            try session.setActive(true)
+            try session.overrideOutputAudioPort(.none)
+            gate.appAudioSessionActive = true
+        }
+        updateRunningState()
+    }
 
     init(transport: VoBLEGATTMediaTransport) { self.transport = transport }
 
     func setMediaReady(_ ready: Bool) {
         gate.mediaReady = ready
+#if DEBUG
+        print("[AirSIM VoBLE Audio] mediaReady=\(ready) callKitActive=\(gate.callKitAudioActive) appActive=\(gate.appAudioSessionActive)")
+#endif
         updateRunningState()
     }
 
     func setCallKitAudioActive(_ active: Bool) {
         gate.callKitAudioActive = active
+#if DEBUG
+        print("[AirSIM VoBLE Audio] callKitActive=\(active) mediaReady=\(gate.mediaReady) appActive=\(gate.appAudioSessionActive)")
+#endif
         updateRunningState()
     }
 
@@ -33,8 +80,12 @@ final class VoBLEAudioEngine: ObservableObject {
     }
 
     func stop() {
+        let deactivateAppSession = gate.appAudioSessionActive
         gate = VoBLEAudioStartGate()
         stopEngine()
+        if deactivateAppSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     private func updateRunningState() {
@@ -69,16 +120,38 @@ final class VoBLEAudioEngine: ObservableObject {
             try engine.start()
             player.play()
             self.engine = engine; self.player = player; self.encoder = encoder
+            playbackGeneration = UUID()
+            playbackQueue.reset()
             running = true; errorMessage = nil
+#if DEBUG
+            capturedFrames = 0
+            playedFrames = 0
+            print("[AirSIM VoBLE Audio] started inputRate=\(inputFormat.sampleRate) route=\(AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue))")
+#endif
             playbackTask = Task { @MainActor [weak self] in
+#if DEBUG
+                var ticks = 0
+#endif
                 while !Task.isCancelled {
-                    self?.scheduleNextPlaybackFrame()
-                    try? await Task.sleep(for: .milliseconds(20))
+                    // This task only primes/restarts a starved player. Normal
+                    // replenishment follows the audio clock via completion,
+                    // not a drifting 20 ms MainActor timer.
+                    self?.fillPlaybackQueue()
+#if DEBUG
+                    ticks += 1
+                    if ticks % 100 == 0, let self {
+                        print("[AirSIM VoBLE Audio] stats engineRunning=\(self.engine?.isRunning == true) captured=\(self.capturedFrames) played=\(self.playedFrames) dropped=\(self.transport.droppedFrameCount) \(self.transport.diagnosticSummary)")
+                    }
+#endif
+                    try? await Task.sleep(for: .milliseconds(10))
                 }
             }
         } catch {
             stopEngine()
             errorMessage = "无法启动蓝牙通话音频：\(error.localizedDescription)"
+#if DEBUG
+            print("[AirSIM VoBLE Audio] start_failed \(error.localizedDescription)")
+#endif
         }
     }
 
@@ -86,12 +159,22 @@ final class VoBLEAudioEngine: ObservableObject {
         pendingCapture.append(data)
         while pendingCapture.count >= 320 {
             transport.enqueueCapturedPCM(Data(pendingCapture.prefix(320)))
+#if DEBUG
+            capturedFrames += 1
+#endif
             pendingCapture.removeFirst(320)
         }
     }
 
-    private func scheduleNextPlaybackFrame() {
-        guard running, let player, let frame = transport.dequeuePlayback() else { return }
+    private func fillPlaybackQueue() {
+        while running, playbackQueue.scheduledFrames < playbackQueue.maximumFrames {
+            guard let frame = transport.dequeuePlayback() else { return }
+            schedulePlayback(frame)
+        }
+    }
+
+    private func schedulePlayback(_ frame: VoBLEPlaybackFrame) {
+        guard running, let player else { return }
         let samples = frame.pcm.count / 2
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 8_000,
@@ -107,12 +190,29 @@ final class VoBLEAudioEngine: ObservableObject {
                 output[index] = Float(Int16(bitPattern: bits)) / 32_768
             }
         }
-        player.scheduleBuffer(buffer)
+        guard playbackQueue.reserve(frames: samples) else { return }
+        let generation = playbackGeneration
+        VoBLEPlaybackScheduling.schedule(buffer, on: player) {
+            [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.running, self.playbackGeneration == generation else { return }
+                self.playbackQueue.complete(frames: samples)
+                self.fillPlaybackQueue()
+            }
+        }
+#if DEBUG
+        playedFrames += 1
+#endif
         if !player.isPlaying { player.play() }
     }
 
     private func stopEngine() {
+#if DEBUG
+        if running { print("[AirSIM VoBLE Audio] stopped") }
+#endif
         playbackTask?.cancel(); playbackTask = nil
+        playbackGeneration = UUID()
+        playbackQueue.reset()
         pendingCapture.removeAll(keepingCapacity: true)
         if let engine {
             engine.inputNode.removeTap(onBus: 0)

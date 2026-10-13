@@ -189,7 +189,13 @@ struct VoBLEStoredPeer: Codable, Equatable, Sendable {
     let createdAt: Date
 }
 
-final class VoBLEPairingStore: @unchecked Sendable {
+protocol VoBLEPairingStoring: Sendable {
+    func save(_ peer: VoBLEStoredPeer) throws
+    func load(identity: String) throws -> VoBLEStoredPeer?
+    func revoke(identity: String) throws
+}
+
+final class VoBLEPairingStore: VoBLEPairingStoring, @unchecked Sendable {
     private let service: String
 
     init(service: String = "com.eric3u.airsim.voble") {

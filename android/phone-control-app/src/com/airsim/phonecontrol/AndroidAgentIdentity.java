@@ -49,11 +49,26 @@ public final class AndroidAgentIdentity {
         if (context.checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS)
                 != PackageManager.PERMISSION_GRANTED) return "";
         try {
+            String selected = DefaultCallAccount.selectedKey(context);
+            if (!selected.isEmpty()) {
+                for (DefaultCallAccount.Account account : DefaultCallAccount.snapshot(context).accounts()) {
+                    if (selected.equals(account.key())) return clean(account.number());
+                }
+                // A disabled chosen card must not borrow another SIM's number.
+                return "";
+            }
             SubscriptionManager manager = context.getSystemService(SubscriptionManager.class);
             if (manager != null && context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
                     == PackageManager.PERMISSION_GRANTED) {
                 List<SubscriptionInfo> subscriptions = manager.getActiveSubscriptionInfoList();
                 if (subscriptions != null) {
+                    int defaultVoice = SubscriptionManager.getDefaultVoiceSubscriptionId();
+                    for (SubscriptionInfo subscription : subscriptions) {
+                        if (subscription.getSubscriptionId() == defaultVoice) {
+                            return clean(Build.VERSION.SDK_INT >= 33
+                                    ? manager.getPhoneNumber(defaultVoice) : subscription.getNumber());
+                        }
+                    }
                     for (SubscriptionInfo subscription : subscriptions) {
                         String value = Build.VERSION.SDK_INT >= 33
                                 ? manager.getPhoneNumber(subscription.getSubscriptionId())
@@ -64,7 +79,7 @@ public final class AndroidAgentIdentity {
             }
             TelephonyManager telephony = context.getSystemService(TelephonyManager.class);
             return telephony == null ? "" : clean(telephony.getLine1Number());
-        } catch (SecurityException ignored) {
+        } catch (RuntimeException ignored) {
             return "";
         }
     }

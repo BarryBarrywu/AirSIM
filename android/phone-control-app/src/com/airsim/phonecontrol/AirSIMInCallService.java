@@ -4,6 +4,8 @@ import android.content.Intent;
 import android.net.Uri;
 import android.telecom.Call;
 import android.telecom.InCallService;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -12,6 +14,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class AirSIMInCallService extends InCallService {
+    private static volatile AirSIMInCallService instance;
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final Map<Call, Call.Callback> callbacks = new ConcurrentHashMap<>();
 	private final Map<Call, String> callStates = new ConcurrentHashMap<>();
@@ -22,6 +26,7 @@ public final class AirSIMInCallService extends InCallService {
     @Override
     public void onCallAdded(Call call) {
         super.onCallAdded(call);
+		instance = this;
 		if (localAudio == null) localAudio = new LocalCallAudioController(this);
         String callId = CallRepository.add(call);
         BridgeLog.info("telecom_call_added call_id=" + DebugRedactor.safeIdentifier(callId)
@@ -69,7 +74,7 @@ public final class AirSIMInCallService extends InCallService {
 	private void updateLocalAudioPolicy() {
 		if (localAudio == null) return;
 		String mode = AppConfig.mode(this);
-		boolean shouldSilence = false;
+		boolean shouldSilence = RemoteAudioSessionRegistry.active();
 		for (String state : callStates.values()) {
 			if (TelecomStateMapper.shouldSilenceLocalOutput(mode, state)) {
 				shouldSilence = true;
@@ -78,6 +83,11 @@ public final class AirSIMInCallService extends InCallService {
 		}
 		localAudio.update(shouldSilence);
 	}
+
+    public static void refreshAudioPolicy() {
+        AirSIMInCallService active = instance;
+        if (active != null) MAIN.post(active::updateLocalAudioPolicy);
+    }
 
     private void emit(String callId, String direction, String state, String number) {
         com.airsim.phonecontrol.voble.VoBLEGatewayService.publishCallState(
@@ -109,6 +119,7 @@ public final class AirSIMInCallService extends InCallService {
     @Override public void onDestroy() {
 		BridgeLog.info("incall_service_destroyed");
 		if (localAudio != null) localAudio.update(false);
+        if (instance == this) instance = null;
         network.shutdownNow();
         super.onDestroy();
     }

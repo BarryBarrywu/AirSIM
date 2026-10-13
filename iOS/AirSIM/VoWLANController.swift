@@ -33,9 +33,18 @@ struct VoWLANDiscoveredAgent: Equatable, Identifiable, Sendable {
     let model: String?
     let phoneNumber: String?
     let agentKind: String?
+
+    func refreshed(with identity: VoWLANHealthIdentity) -> Self {
+        Self(id: identity.agentID?.isEmpty == false ? identity.agentID! : id,
+             endpoint: endpoint,
+             deviceName: identity.deviceName?.isEmpty == false ? identity.deviceName! : deviceName,
+             manufacturer: identity.manufacturer ?? manufacturer, model: identity.model ?? model,
+             phoneNumber: identity.phoneNumber?.isEmpty == false ? identity.phoneNumber : nil,
+             agentKind: identity.agentKind ?? agentKind)
+    }
 }
 
-private struct VoWLANHealthIdentity: Decodable {
+struct VoWLANHealthIdentity: Decodable {
     let ok: Bool
     let agentID: String?
     let agentKind: String?
@@ -286,6 +295,33 @@ final class VoWLANController: ObservableObject {
     private var browserLifecycle = VoWLANBrowserLifecycle()
     private var recoveryGate = VoWLANRecoveryGate()
     private var discoveredEndpoint: VoWLANEndpoint?
+    private var disappearanceTask: Task<Void, Never>?
+    private var identityEpoch: UInt64 = 0
+
+    func forget(_ agentID: String) {
+        identityEpoch &+= 1
+        let removingActive = discoveredAgents.contains { $0.id == agentID && $0.endpoint == discoveredEndpoint }
+        discoveredAgents.removeAll { $0.id == agentID }
+        if removingActive {
+            discoveredEndpoint = nil
+            availability = .discovering
+        }
+        restartBrowsing()
+    }
+
+    func bind(to agentID: String?) {
+        AndroidAgentBindingPreference.set(agentID)
+        let selected = agentID.flatMap { id in discoveredAgents.first(where: { $0.id == id }) }
+        if let selected {
+            disappearanceTask?.cancel()
+            discoveredEndpoint = selected.endpoint
+            availability = .discovered(selected.endpoint, at: Date())
+            Task { await probeNow() }
+        } else if agentID != nil {
+            discoveredEndpoint = nil
+            availability = .discovering
+        }
+    }
 
     func startBrowsing() {
         guard VoWLANCredentialStore.load() != nil else {
@@ -298,6 +334,7 @@ final class VoWLANController: ObservableObject {
     }
 
     func restartBrowsing() {
+        identityEpoch &+= 1
         guard VoWLANCredentialStore.load() != nil else {
             stopBrowserSession()
             availability = .unpaired
@@ -326,18 +363,22 @@ final class VoWLANController: ObservableObject {
             using: parameters
         )
         active.browseResultsChangedHandler = { [weak self] results, _ in
-            let agents = results.compactMap(Self.parseAgent)
-            let endpoints = Set(agents.map(\.endpoint))
+            let parsed = results.compactMap(Self.parseAgent)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.browserLifecycle.accepts(generation) else { return }
+                let agents = parsed.filter { PairedAndroidDeviceStore.permits($0.id) }
+                let endpoints = Set(agents.map(\.endpoint))
                 self.discoveredAgents = agents.sorted {
                     if $0.deviceName == $1.deviceName { return $0.id < $1.id }
                     return $0.deviceName.localizedCaseInsensitiveCompare($1.deviceName) == .orderedAscending
                 }
-                let endpoint = self.discoveredEndpoint.flatMap { endpoints.contains($0) ? $0 : nil }
-                    ?? agents.first?.endpoint
+                let bound = AndroidAgentBindingPreference.selected()
+                let endpoint = agents.first(where: { $0.id == bound })?.endpoint
+                    ?? (bound == nil ? self.discoveredEndpoint.flatMap { endpoints.contains($0) ? $0 : nil } : nil)
+                    ?? (bound == nil ? agents.first?.endpoint : nil)
                 if let endpoint {
+                    self.disappearanceTask?.cancel()
                     self.discoveredEndpoint = endpoint
                     if self.availability.endpoint == endpoint, self.availability.isReady() { return }
                     self.availability = .discovered(endpoint, at: Date())
@@ -348,8 +389,10 @@ final class VoWLANController: ObservableObject {
                     )
                     await self.probeNow()
                 } else if self.discoveredEndpoint != nil {
-                    self.discoveredEndpoint = nil
-                    self.availability = .unavailable("局域网已断开")
+                    // Bonjour frequently publishes an empty intermediate result while VPN,
+                    // hotspot, or Wi-Fi routes settle. Preserve the verified endpoint and
+                    // verify it after a grace period instead of tearing down an active route.
+                    self.scheduleDisappearanceCheck(generation: generation)
                 } else if !self.availability.isReady() {
                     self.availability = .discovering
                 }
@@ -382,10 +425,27 @@ final class VoWLANController: ObservableObject {
     }
 
     private func stopBrowserSession() {
+        identityEpoch &+= 1
+        disappearanceTask?.cancel()
+        disappearanceTask = nil
         browserLifecycle.stop()
         stopCurrentBrowser()
         discoveredEndpoint = nil
         discoveredAgents = []
+    }
+
+    private func scheduleDisappearanceCheck(generation: UInt64) {
+        guard disappearanceTask == nil else { return }
+        disappearanceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard let self, !Task.isCancelled,
+                  self.browserLifecycle.accepts(generation) else { return }
+            self.disappearanceTask = nil
+            if let endpoint = self.discoveredEndpoint {
+                self.availability = .discovered(endpoint, at: Date())
+                await self.probeNow()
+            }
+        }
     }
 
     private func stopCurrentBrowser() {
@@ -397,7 +457,7 @@ final class VoWLANController: ObservableObject {
     }
 
     func refreshAfterPairing() async {
-        startBrowsing()
+        restartBrowsing()
         await probeNow()
     }
 
@@ -423,6 +483,7 @@ final class VoWLANController: ObservableObject {
             availability = .unpaired
             return
         }
+        let epoch = identityEpoch
         do {
             let (data, response) = try await VoWLANProbeRecovery.run {
                 let signed = try VoWLANRequestSigner(secret: credential.secret).sign(
@@ -443,17 +504,16 @@ final class VoWLANController: ObservableObject {
                   identity.ok else {
                 throw VoWLANControllerError.authenticationFailed
             }
+            guard epoch == identityEpoch, discoveredEndpoint == endpoint else { return }
+            if let id = identity.agentID, !PairedAndroidDeviceStore.permits(id) {
+                discoveredAgents.removeAll { $0.endpoint == endpoint }
+                discoveredEndpoint = nil
+                availability = .discovering
+                return
+            }
             if let index = discoveredAgents.firstIndex(where: { $0.endpoint == endpoint }) {
                 let previous = discoveredAgents[index]
-                discoveredAgents[index] = VoWLANDiscoveredAgent(
-                    id: identity.agentID?.isEmpty == false ? identity.agentID! : previous.id,
-                    endpoint: endpoint,
-                    deviceName: identity.deviceName?.isEmpty == false ? identity.deviceName! : previous.deviceName,
-                    manufacturer: identity.manufacturer ?? previous.manufacturer,
-                    model: identity.model ?? previous.model,
-                    phoneNumber: identity.phoneNumber?.isEmpty == false ? identity.phoneNumber : previous.phoneNumber,
-                    agentKind: identity.agentKind ?? previous.agentKind
-                )
+                discoveredAgents[index] = previous.refreshed(with: identity)
             }
             availability = .verified(endpoint, at: Date())
             await AgentVerboseTraceRecorder.shared.recordEvent(
@@ -462,6 +522,7 @@ final class VoWLANController: ObservableObject {
                 fields: ["host": endpoint.host, "control_port": String(endpoint.controlPort)]
             )
         } catch {
+            guard epoch == identityEpoch else { return }
             availability = .unavailable(VoWLANProbeRecovery.userFacingMessage(for: error))
             await AgentVerboseTraceRecorder.shared.recordEvent(
                 source: "ios", category: "vowlan", phase: "failed",

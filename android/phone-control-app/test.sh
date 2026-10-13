@@ -84,6 +84,18 @@ assert_contains "$ROOT/src/com/airsim/phonecontrol/MainActivity.java" \
 rm -rf "$OUT"
 mkdir -p "$OUT"
 "$JAVAC" --release 17 -d "$OUT" \
+  "$ROOT"/test/android/Manifest.java \
+  "$ROOT"/test/android/provider/Settings.java \
+  "$ROOT"/test/android/content/SharedPreferences.java \
+  "$ROOT"/test/android/content/ComponentName.java \
+  "$ROOT"/test/android/content/pm/PackageManager.java \
+  "$ROOT"/test/android/os/Bundle.java \
+  "$ROOT"/test/android/os/Build.java \
+  "$ROOT"/test/android/telecom/PhoneAccount.java \
+  "$ROOT"/test/android/telecom/PhoneAccountHandle.java \
+  "$ROOT"/test/android/telephony/TelephonyManager.java \
+  "$ROOT"/test/android/telephony/SubscriptionManager.java \
+  "$ROOT"/test/android/telephony/SubscriptionInfo.java \
   "$ROOT"/test/android/content/Context.java \
   "$ROOT"/test/android/net/Uri.java \
   "$ROOT"/test/android/os/Looper.java \
@@ -106,6 +118,7 @@ mkdir -p "$OUT"
   "$ROOT"/src/com/airsim/phonecontrol/TelecomStateMapper.java \
 	"$ROOT"/src/com/airsim/phonecontrol/TelecomRolePolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/DialerRoleSetupPolicy.java \
+	"$ROOT"/src/com/airsim/phonecontrol/ShizukuStartupPolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/TelecomInvocation.java \
 	"$ROOT"/src/com/airsim/phonecontrol/PrivilegedBridgeProtocol.java \
 	"$ROOT"/src/com/airsim/phonecontrol/PrivilegedBridgeCoordinator.java \
@@ -117,6 +130,7 @@ mkdir -p "$OUT"
   "$ROOT"/src/com/airsim/phonecontrol/CrashReportSharePayload.java \
   "$ROOT"/src/com/airsim/phonecontrol/AgentCommand.java \
   "$ROOT"/src/com/airsim/phonecontrol/CallRepository.java \
+  "$ROOT"/src/com/airsim/phonecontrol/DefaultCallAccount.java \
   "$ROOT"/src/com/airsim/phonecontrol/CloudCallTarget.java \
   "$ROOT"/src/com/airsim/phonecontrol/AgentCommandDispatcher.java \
   "$ROOT"/src/com/airsim/phonecontrol/SMSPayloadPolicy.java \
@@ -158,7 +172,15 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEMediaSession.java \
 	"$ROOT"/test/com/airsim/phonecontrol/CoreTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/NotificationUpdateGateTests.java \
-  "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java
+  "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/DefaultCallAccountTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/ShizukuStartupPolicyTests.java
+"$JAVAC" --release 17 -cp "$OUT" -d "$OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/AndroidAgentIdentity.java \
+  "$ROOT"/test/com/airsim/phonecontrol/AndroidAgentIdentityTests.java
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CoreTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.NotificationUpdateGateTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CallRepositoryTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.DefaultCallAccountTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.AndroidAgentIdentityTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.ShizukuStartupPolicyTests
