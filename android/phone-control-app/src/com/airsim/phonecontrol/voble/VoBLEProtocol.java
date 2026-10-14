@@ -150,7 +150,7 @@ public final class VoBLEProtocol {
             for (int part = 0; part < count; part++) {
                 byte[] value = partial.fragments.get(part);
                 if (value == null) return null;
-                output.writeBytes(value);
+                output.write(value, 0, value.length);
                 if (output.size() > MAX_MESSAGE_LENGTH) {
                     partials.remove(key);
                     throw new IllegalArgumentException("message is too large");
@@ -359,7 +359,7 @@ public final class VoBLEProtocol {
             for (int index = 0; index < header.fragmentCount; index++) {
                 byte[] fragment = partial.fragments.get(index);
                 if (fragment == null) return null;
-                body.writeBytes(fragment);
+                body.write(fragment, 0, fragment.length);
                 if (body.size() > MAX_PAYLOAD_LENGTH + AUTH_TAG_LENGTH) {
                     partials.remove(key);
                     pendingDiscontinuity = true;

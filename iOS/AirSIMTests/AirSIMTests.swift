@@ -90,6 +90,191 @@ private struct AgentSMSInboxProbe: AgentSMSInboxServicing {
 }
 
 final class AirSIMTests: XCTestCase {
+    func testOldEndedHistoryCannotFinishANewSystemCall() {
+        XCTAssertTrue(CallKitSynchronizationPolicy.mayFinishEndedHistory(currentBackendID: "a", endedID: "a"))
+        XCTAssertFalse(CallKitSynchronizationPolicy.mayFinishEndedHistory(currentBackendID: "b", endedID: "a"))
+        XCTAssertFalse(CallKitSynchronizationPolicy.mayFinishEndedHistory(currentBackendID: nil, endedID: "a"))
+    }
+
+    func testRetiredAgentCallCannotBypassEndIntentWithSynthesizedUUID() {
+        var store = CallLifecycleStore()
+        let original = UUID()
+        let now = Date()
+        func event(_ id: String, _ uuid: UUID, _ state: CallLifecycleState) -> CallLifecycleEvent {
+            .init(callID: id, callUUID: uuid, generation: 1, state: state,
+                  source: .agent, timestamp: now, traceID: nil, failure: nil)
+        }
+        XCTAssertTrue(store.apply(event("a", original, .active)))
+        XCTAssertTrue(store.apply(event("a", original, .ended)))
+        XCTAssertTrue(store.apply(event("b", UUID(), .ringing)))
+        let b = try! XCTUnwrap(store.snapshot.callUUID)
+        XCTAssertTrue(store.apply(event("b", b, .ended)))
+        XCTAssertFalse(store.apply(event("a", UUID(), .ringing)))
+        XCTAssertTrue(store.apply(event("c", UUID(), .ringing)))
+    }
+
+    @MainActor
+    func testCancelledCloudDialDiscardsLateCallInsteadOfAdoptingIt() async {
+        var current = true
+        var completion: CheckedContinuation<String, Error>?
+        var discarded: [String] = []
+        let started = expectation(description: "dial submitted")
+        let task = Task { @MainActor in
+            do {
+                _ = try await OutgoingCallRouteCoordinator.start(
+                    number: "test", vowlanService: nil, cloudModeEnabled: true,
+                    isCurrent: { current }, discardCloud: { discarded.append($0) }
+                ) {
+                    try await withCheckedThrowingContinuation { continuation in
+                        completion = continuation; started.fulfill()
+                    }
+                }
+                XCTFail("cancelled outgoing call must not be adopted")
+            } catch is CancellationError { }
+            catch { XCTFail("unexpected error: \(error)") }
+        }
+        await fulfillment(of: [started], timeout: 2)
+        current = false
+        completion?.resume(returning: "late-call")
+        await task.value
+        XCTAssertEqual(discarded, ["late-call"])
+    }
+
+    func testCloudDownlinkActualBacklogFallsAfterBurstRecovers() {
+        var buffer = CloudPCMAdaptiveJitterBuffer()
+        let start = Date(timeIntervalSince1970: 0)
+        for sequence in 0..<12 {
+            buffer.enqueue(sequence: UInt32(sequence), pcm: Data(repeating: 1, count: 320), arrivedAt: start)
+        }
+        for sequence in 12..<212 {
+            buffer.enqueue(sequence: UInt32(sequence), pcm: Data(repeating: 1, count: 320),
+                           arrivedAt: start.addingTimeInterval(Double(sequence - 11) * 0.02))
+            _ = buffer.dequeue(maxFrames: 1)
+        }
+        XCTAssertLessThanOrEqual(buffer.bufferedFrameCount, 6)
+    }
+
+    @MainActor
+    func testLateCloudReconnectDoesNotCompleteOrFailANewerCall() async {
+        for succeeds in [true, false] {
+            var current = UUID()
+            let original = current
+            var completion: CheckedContinuation<Void, Error>?
+            let started = expectation(description: "connect suspended")
+            var connected = 0
+            var failed = 0
+            let recovery = Task { @MainActor in
+                await CloudCallRecoveryCoordinator.run(
+                    delays: [0], isCurrent: { current == original },
+                    connect: { _ in
+                        try await withCheckedThrowingContinuation { continuation in
+                            completion = continuation; started.fulfill()
+                        }
+                    }, connected: { connected += 1 }, failed: { _ in failed += 1 }
+                )
+            }
+            await fulfillment(of: [started], timeout: 2)
+            current = UUID() // Hangup, followed by a new call, while connect is pending.
+            if succeeds { completion?.resume() }
+            else { completion?.resume(throwing: URLError(.networkConnectionLost)) }
+            await recovery.value
+            XCTAssertEqual(connected, 0)
+            XCTAssertEqual(failed, 0)
+        }
+    }
+
+    func testCloudControlCannotAcknowledgeAnotherCallOrGeneration() throws {
+        let uuid = UUID()
+        let control = try XCTUnwrap(CloudPCMControlMessage.decode("""
+            {"status":"active","call_id":"a","call_uuid":"\(uuid.uuidString)","generation":2}
+            """))
+        XCTAssertTrue(control.matches(callID: "a", uuid: uuid, generation: 2))
+        XCTAssertFalse(control.matches(callID: "b", uuid: uuid, generation: 2))
+        XCTAssertFalse(control.matches(callID: "a", uuid: UUID(), generation: 2))
+        XCTAssertFalse(control.matches(callID: "a", uuid: uuid, generation: 3))
+    }
+
+    func testEndingCallCannotReopenInAppPresentation() {
+        let call = CallRecord(id: "ending-call", index: 0, direction: "outgoing",
+                              state: "ending", number: nil, startedAt: Date(), updatedAt: Date(),
+                              endedAt: nil, missed: false)
+        XCTAssertNil(CallPresentationPolicy.inAppCall(surface: .app, local: call, remote: nil))
+    }
+
+    func testLocalEndIntentRejectsSameCallWithHigherGeneration() {
+        var store = CallLifecycleStore()
+        let uuid = UUID()
+        let now = Date()
+        func event(_ state: CallLifecycleState, _ generation: UInt64) -> CallLifecycleEvent {
+            .init(callID: "cloud-call", callUUID: uuid, generation: generation, state: state,
+                  source: state == .ending ? .app : .relay, timestamp: now, traceID: nil, failure: nil)
+        }
+        XCTAssertTrue(store.apply(event(.active, 1)))
+        XCTAssertTrue(store.apply(event(.ending, 1)))
+        XCTAssertFalse(store.apply(event(.active, 2)), "reconnect must not revoke the user's end intent")
+        XCTAssertEqual(store.snapshot.state, .ending)
+    }
+
+    func testRetiredCloudCallCannotReturnAfterANewerCallEnds() {
+        var store = CallLifecycleStore()
+        let first = UUID(), next = UUID(), now = Date()
+        func event(_ id: String, _ uuid: UUID, _ state: CallLifecycleState) -> CallLifecycleEvent {
+            .init(callID: id, callUUID: uuid, generation: 1, state: state,
+                  source: .relay, timestamp: now, traceID: nil, failure: nil)
+        }
+        XCTAssertTrue(store.apply(event("first", first, .active)))
+        XCTAssertTrue(store.apply(event("first", first, .ending)))
+        XCTAssertTrue(store.apply(event("next", next, .ringing)))
+        XCTAssertTrue(store.apply(event("next", next, .ended)))
+        XCTAssertFalse(store.apply(event("first", first, .connecting)))
+        XCTAssertEqual(store.snapshot.callID, "next")
+    }
+
+    func testCloudBufferReturnsToLowDelayAfterNetworkRecovers() {
+        var buffer = CloudPCMAdaptiveJitterBuffer()
+        for _ in 0..<6 { buffer.notePlaybackUnderrun() }
+        let raised = buffer.targetFrameCount
+        let epoch = Date(timeIntervalSince1970: 100)
+        for sequence in 0..<500 {
+            buffer.enqueue(sequence: UInt32(sequence), pcm: Data(repeating: 1, count: 320),
+                           arrivedAt: epoch.addingTimeInterval(Double(sequence) * 0.02))
+            _ = buffer.dequeue(maxFrames: 1)
+        }
+        XCTAssertLessThan(buffer.targetFrameCount, raised, "stable networks must not retain permanent high delay")
+        XCTAssertLessThanOrEqual(buffer.targetFrameCount, 6)
+    }
+
+    func testCloudUplinkDoesNotReplayHalfSecondOldSpeech() {
+        var sender = CloudPCMUplinkSendQueue()
+        sender.enqueue(Data(repeating: 1, count: 320), at: 0)
+        XCTAssertNil(sender.next(at: 0.5))
+        sender.enqueue(Data(repeating: 2, count: 320), at: 0.5)
+        XCTAssertEqual(sender.next(at: 0.5)?.first, 2)
+    }
+
+    func testCloudBufferConcealsOnlyShortGapWithoutReprimingImmediately() {
+        var buffer = CloudPCMAdaptiveJitterBuffer()
+        let start = Date(timeIntervalSince1970: 100)
+        let pcm = Data(repeating: 16, count: 320)
+        for sequence in 0..<10 { buffer.enqueue(sequence: UInt32(sequence), pcm: pcm, arrivedAt: start) }
+        _ = buffer.dequeue(maxFrames: 10)
+        let concealed = buffer.dequeue(maxFrames: 1)
+        XCTAssertEqual(concealed.count, 1, "a 20 ms shortage should not cause a long buffering pause")
+        XCTAssertNotEqual(concealed.first?.pcm, pcm, "concealed speech must decay")
+        _ = buffer.dequeue(maxFrames: 1)
+        XCTAssertTrue(buffer.dequeue(maxFrames: 1).isEmpty, "never replay old speech through a long outage")
+    }
+
+    func testCloudBufferBoundsBurstToLessThan300Milliseconds() {
+        var buffer = CloudPCMAdaptiveJitterBuffer()
+        let now = Date()
+        for sequence in 0..<100 {
+            buffer.enqueue(sequence: UInt32(sequence), pcm: Data(repeating: 1, count: 320), arrivedAt: now)
+        }
+        XCTAssertLessThanOrEqual(buffer.bufferedFrameCount * 20, 240)
+        XCTAssertEqual(buffer.dequeue(maxFrames: 1).first?.sequence, 88)
+    }
+
     @MainActor
     func testVoBLEHangupReplyCannotResurrectAnEndedCall() async throws {
         let central = VoBLECallControlProbe()
@@ -467,22 +652,22 @@ final class AirSIMTests: XCTestCase {
 
     func testCloudUplinkNeverBurstsAfterBlockedSend() {
         var queue = CloudPCMUplinkSendQueue()
-        for index in 0..<20 {
+        for index in 0..<10 {
             queue.enqueue(Data(repeating: UInt8(index), count: 320), at: Double(index) * 0.02)
         }
-        XCTAssertEqual(queue.next(at: 0.4)?.first, 0)
-        XCTAssertNil(queue.next(at: 0.6))
+        XCTAssertEqual(queue.next(at: 0.2)?.first, 0)
+        XCTAssertNil(queue.next(at: 0.21))
         queue.complete()
-        XCTAssertEqual(queue.next(at: 0.61)?.first, 1)
+        XCTAssertEqual(queue.next(at: 0.23)?.first, 1)
         queue.complete()
-        XCTAssertNil(queue.next(at: 0.611))
-        XCTAssertEqual(queue.next(at: 0.631)?.first, 2)
+        XCTAssertNil(queue.next(at: 0.231))
+        XCTAssertEqual(queue.next(at: 0.251)?.first, 2)
     }
 
     func testCloudUplinkDropsStaleBacklog() {
         var queue = CloudPCMUplinkSendQueue()
         for _ in 0..<200 { queue.enqueue(Data(repeating: 1, count: 320), at: 0) }
-        XCTAssertEqual(queue.pendingPackets, 50)
+        XCTAssertEqual(queue.pendingPackets, 12)
         XCTAssertNil(queue.next(at: 2))
         XCTAssertEqual(queue.pendingPackets, 0)
         XCTAssertEqual(queue.droppedPackets, 200)
@@ -509,19 +694,19 @@ final class AirSIMTests: XCTestCase {
                            pcm: Data(repeating: 1, count: 320),
                            arrivedAt: epoch.addingTimeInterval(Double(sequence) * 0.02))
         }
-        XCTAssertEqual(buffer.bufferedFrameCount, 50)
-        XCTAssertEqual(buffer.droppedFrameCount, 25)
-        XCTAssertEqual(buffer.dequeue(maxFrames: 50).map(\.sequence), Array(25..<75).map(UInt32.init))
+        XCTAssertEqual(buffer.bufferedFrameCount, 12)
+        XCTAssertEqual(buffer.droppedFrameCount, 63)
+        XCTAssertEqual(buffer.dequeue(maxFrames: 50).map(\.sequence), Array(63..<75).map(UInt32.init))
     }
 
     func testCloudPlaybackReserveRefillsOnRenderedFrames() {
         var window = CloudPCMPlaybackWindow()
-        for _ in 0..<12 { window.schedulePacket() }
+        for _ in 0..<2 { window.schedulePacket() }
         XCTAssertEqual(window.availablePackets, 0)
         window.didRenderPacket()
         XCTAssertEqual(window.availablePackets, 1)
         window.schedulePacket()
-        XCTAssertEqual(window.scheduledPackets, 12)
+        XCTAssertEqual(window.scheduledPackets, 2)
     }
 
     func testOnlySamsungPrivateEndpointsAreAccepted() throws {
@@ -1526,6 +1711,86 @@ final class AirSIMTests: XCTestCase {
 
         XCTAssertTrue(LocalModePreference.isEnabled(defaults: defaults))
         XCTAssertFalse(CloudModePreference.isEnabled(defaults: defaults))
+    }
+
+    func testLocalPairingChoiceDoesNotReadCloudCredentialsOrChangeGlobalMode() throws {
+        let suite = "AirSIMTests.pairing-choice.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: LocalModePreference.key)
+        let registration = try SamsungPairingRegistrationPolicy.registration(
+            localOnly: true, vowlanSecret: "fixture-key",
+            cloudRegistration: { XCTFail("local pairing must not request push credentials"); return nil }
+        )
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(registration)) as? [String: Any])
+        XCTAssertEqual(payload["vowlan_secret"] as? String, "fixture-key")
+        XCTAssertNil(payload["relay_url"])
+        XCTAssertFalse(LocalModePreference.isEnabled(defaults: defaults))
+    }
+
+    func testCloudPairingChoiceRequiresCredentialsWithoutFallingBackToLocal() throws {
+        XCTAssertThrowsError(try SamsungPairingRegistrationPolicy.registration(
+            localOnly: false, vowlanSecret: "fixture-key", cloudRegistration: { nil }
+        ))
+        var cloud = AgentPushRegistration.local(vowlanSecret: "old-key")
+        cloud.localMode = false
+        let registration = try SamsungPairingRegistrationPolicy.registration(
+            localOnly: false, vowlanSecret: "new-key", cloudRegistration: { cloud }
+        )
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(registration)) as? [String: Any])
+        XCTAssertEqual(payload["local_mode"] as? Bool, false)
+        XCTAssertEqual(payload["vowlan_secret"] as? String, "new-key")
+        XCTAssertNotNil(payload["relay_url"])
+    }
+
+    @MainActor
+    func testLocalPairingWaitsForOldAgentWriteAndBlocksNewWrites() async throws {
+        let gate = SamsungPairingRegistrationGate()
+        XCTAssertTrue(gate.beginAgentWrite())
+        var pairingStarted = false
+        let pair = Task { @MainActor in
+            try await gate.withPairing {
+                pairingStarted = true
+                XCTAssertFalse(gate.beginAgentWrite())
+            }
+        }
+        await Task.yield()
+        XCTAssertFalse(pairingStarted, "old cloud write must finish before local claim")
+        XCTAssertFalse(gate.beginAgentWrite(), "no new cloud write while pairing is waiting")
+        gate.endAgentWrite()
+        try await pair.value
+        XCTAssertTrue(pairingStarted)
+        XCTAssertTrue(gate.beginAgentWrite(), "other/global operations resume after pairing")
+        gate.endAgentWrite()
+    }
+
+    @MainActor
+    func testPairingFailureReleasesAgentWriteGate() async throws {
+        let gate = SamsungPairingRegistrationGate()
+        do {
+            try await gate.withPairing { throw SamsungPairingClientError.expired }
+            XCTFail("pairing must fail")
+        } catch { /* preserve original error, unlock for retry */ }
+        XCTAssertTrue(gate.beginAgentWrite())
+        gate.endAgentWrite()
+    }
+
+    func testAutomaticRegistrationPreservesLocalPairingForStandaloneAndLegacyAgent() throws {
+        for json in [
+            #"{"local_mode":true,"configured":true,"cloud_enabled":false,"call_push_ready":false,"message_push_ready":false}"#,
+            #"{"configured":true,"cloud_enabled":false,"call_push_ready":false,"message_push_ready":false}"#
+        ] {
+            let status = try JSONDecoder().decode(AgentPushStatus.self, from: Data(json.utf8))
+            XCTAssertTrue(status.preservesLocalPairing)
+        }
+        let unconfigured = try JSONDecoder().decode(AgentPushStatus.self, from: Data(
+            #"{"configured":false,"cloud_enabled":false,"call_push_ready":false,"message_push_ready":false}"#.utf8))
+        XCTAssertFalse(unconfigured.preservesLocalPairing)
+        let cloud = try JSONDecoder().decode(AgentPushStatus.self, from: Data(
+            #"{"local_mode":false,"configured":true,"cloud_enabled":false,"relay_url":"https://relay.example","call_push_ready":false,"message_push_ready":false}"#.utf8))
+        XCTAssertFalse(cloud.preservesLocalPairing)
     }
 
     func testLocalPairingPayloadOmitsRelayAndPushCredentials() throws {

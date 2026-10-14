@@ -263,7 +263,8 @@ public final class VoBLEPairingManager {
         ByteArrayOutputStream context = new ByteArrayOutputStream();
         writeField(context, sessionId);
         writeField(context, callId.getBytes(StandardCharsets.UTF_8));
-        context.writeBytes(ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(generation).array());
+        byte[] generationBytes = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(generation).array();
+        context.write(generationBytes, 0, generationBytes.length);
         byte[] salt = MessageDigest.getInstance("SHA-256").digest(context.toByteArray());
         return new SessionKeys(
                 hkdf(pairingKey, salt, concat(PREFIX, utf8("control")), 32),
@@ -312,8 +313,9 @@ public final class VoBLEPairingManager {
     private static byte[] authenticationMessage(byte[] nonce, long timestamp, byte[] message) {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         writeField(output, nonce);
-        output.writeBytes(ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(timestamp).array());
-        output.writeBytes(message);
+        byte[] timestampBytes = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(timestamp).array();
+        output.write(timestampBytes, 0, timestampBytes.length);
+        output.write(message, 0, message.length);
         return output.toByteArray();
     }
 
@@ -324,7 +326,7 @@ public final class VoBLEPairingManager {
         byte[] previous = new byte[0];
         for (int counter = 1; output.size() < length; counter++) {
             previous = hmac(pseudoRandomKey, concat(concat(previous, info), new byte[]{(byte) counter}));
-            output.writeBytes(previous);
+            output.write(previous, 0, previous.length);
         }
         return Arrays.copyOf(output.toByteArray(), length);
     }
@@ -339,7 +341,7 @@ public final class VoBLEPairingManager {
         if (value.length > 0xffff) throw new IllegalArgumentException("transcript field too large");
         output.write((value.length >>> 8) & 0xff);
         output.write(value.length & 0xff);
-        output.writeBytes(value);
+        output.write(value, 0, value.length);
     }
 
     private static boolean constantTimeEquals(String first, String second) {

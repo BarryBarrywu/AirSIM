@@ -108,7 +108,7 @@ public final class BridgeLog {
             byte[] buffer = new byte[8192];
             int count;
             while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
-            return output.toString(StandardCharsets.UTF_8);
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
         } catch (Exception error) {
             return "[日志读取失败: " + error.getClass().getSimpleName() + "]\n";
         }

@@ -28,7 +28,7 @@ final class RuntimePermissionPolicy {
         if (!sendSMSGranted) missing.add(SEND_SMS);
         if (!sendSMSGranted) missing.add(RECEIVE_SMS);
         if (sdk >= 33 && !notificationsGranted) missing.add(POST_NOTIFICATIONS);
-        return missing.toArray(String[]::new);
+        return missing.toArray(new String[0]);
     }
 
     static String[] missingPermissions(
@@ -55,6 +55,6 @@ final class RuntimePermissionPolicy {
         if (sdk >= 33 && !notificationsGranted) missing.add(POST_NOTIFICATIONS);
         if (sdk >= 31 && !bluetoothConnectGranted) missing.add(BLUETOOTH_CONNECT);
         if (sdk >= 31 && !bluetoothAdvertiseGranted) missing.add(BLUETOOTH_ADVERTISE);
-        return missing.toArray(String[]::new);
+        return missing.toArray(new String[0]);
     }
 }

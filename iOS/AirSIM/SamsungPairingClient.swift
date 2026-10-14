@@ -10,7 +10,7 @@ struct SamsungPairingService: Identifiable {
     var id: String { sessionID }
     var displayName: String {
         if case let .service(name, _, _, _) = endpoint { return name }
-        return "Samsung Phone Bridge"
+        return "Android Phone Bridge"
     }
 }
 
@@ -34,8 +34,8 @@ final class SamsungPairingBrowser: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 switch state {
-                case .ready: self.stateText = "正在等待三星配对广播…"
-                case .waiting: self.stateText = "请确认 iPhone 与三星处于同一 Wi-Fi 或三星热点"
+                case .ready: self.stateText = "正在等待安卓配对广播…"
+                case .waiting: self.stateText = "请确认 iPhone 与安卓处于同一 Wi-Fi 或安卓热点"
                 case .failed(let error): self.stateText = "局域网扫描失败：\(error.localizedDescription)"
                 case .cancelled: self.stateText = "扫描已停止"
                 default: break
@@ -76,6 +76,45 @@ final class SamsungPairingBrowser: ObservableObject {
             serverPublicKey: serverPublicKey,
             expiresAt: Date(timeIntervalSince1970: expiresMillis / 1_000)
         )
+    }
+}
+
+@MainActor
+final class SamsungPairingRegistrationGate {
+    private var activeAgentWrites = 0
+    private var pairing = false
+
+    func beginAgentWrite() -> Bool {
+        guard !pairing else { return false }
+        activeAgentWrites += 1
+        return true
+    }
+
+    func endAgentWrite() { activeAgentWrites -= 1 }
+
+    func withPairing<T>(_ operation: () async throws -> T) async throws -> T {
+        guard !pairing else { throw SamsungPairingClientError.pairingBusy }
+        pairing = true
+        defer { pairing = false }
+        // Wait only for local Agent writes, never for an unrelated Relay request.
+        while activeAgentWrites > 0 { try await Task.sleep(nanoseconds: 20_000_000) }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+}
+
+enum SamsungPairingRegistrationPolicy {
+    static func registration(
+        localOnly: Bool,
+        vowlanSecret: String,
+        cloudRegistration: () -> AgentPushRegistration?
+    ) throws -> AgentPushRegistration {
+        if localOnly { return .local(vowlanSecret: vowlanSecret) }
+        guard var registration = cloudRegistration(), !registration.localMode else {
+            throw SamsungPairingClientError.registrationUnavailable
+        }
+        registration.vowlanSecret = vowlanSecret
+        return registration
     }
 }
 
@@ -209,7 +248,7 @@ private final class PairingExchangeState: @unchecked Sendable {
 }
 
 enum SamsungPairingClientError: LocalizedError {
-    case invalidCode, expired, rejected, responseTooLarge, connectionClosed, registrationUnavailable
+    case invalidCode, expired, rejected, responseTooLarge, connectionClosed, registrationUnavailable, pairingBusy
     var errorDescription: String? {
         switch self {
         case .invalidCode: return "请输入三星屏幕上的 6 位验证码"
@@ -217,7 +256,8 @@ enum SamsungPairingClientError: LocalizedError {
         case .rejected: return "三星拒绝了配对，请核对验证码后重试"
         case .responseTooLarge: return "三星返回的数据异常"
         case .connectionClosed: return "与三星的局域网连接已断开"
-        case .registrationUnavailable: return "本机尚未取得 PushKit 凭据，请先允许通知并等待注册"
+        case .registrationUnavailable: return "Relay／推送配置未就绪。请先在设置完成云端配置；若只需本地连接，请打开‘本地模式配对’。"
+        case .pairingBusy: return "另一个配对正在进行，请稍后重试"
         }
     }
 }

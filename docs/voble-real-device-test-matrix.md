@@ -144,6 +144,23 @@
 
 ## 已知边界
 
+### 2026-10-14 兼容风险审查修复与本次配对开关（未发布）
+
+- Redmi Android 12 的旧包在 VoBLE 页因 `ByteArrayOutputStream.writeBytes` 缺失崩溃；配对/分片重组等九处改为兼容写法。VoBLE 前台服务启动受系统限制时记录失败并等待前台重试，不因 `IllegalStateException` 或权限撤销竞态终止 App。此前签名修复包保留数据覆盖安装后，用户确认可以完成配对。
+- 后续六项审查风险已修复：Shizuku 输出的 API 35 `isEmpty`、URL Charset 重载、短信 API 31 工厂、PCM 失败路径空流、AVF API 34 启动选项，以及旧 OEM 无 `cmd audio` 实现。官方 NewApi 扫描不再报告本轮缺失 API；完整扫描仍保留四项既有权限诊断和三项常量警告，不宣称完整 lint 全绿。
+- 静音使用 shell 包身份的 `AudioManager`，回读验证后才报成功；挂断恢复初始静音与音量，失败保留快照重试。回归覆盖系统忽略 mute、原先已静音、重复 mute、解除静音失败、解除成功但恢复音量失败，后者不再误报已静音。测试替换平台音频边界，未改变真机通话音量。
+- Android 共享与 Standalone 测试通过，包含 API 29–35 短信工厂分支和空服务回退（不发送短信）；47 项 PCM 桥检查通过。AVF/Standalone Debug 构建通过；编译仍有弃用等警告。
+- Redmi 使用 `app_process` 加载新构建进行蓝牙分片、加密、服务拒绝/重试、URL 查询/PCM 失败清理/Shizuku 输出及音频后端只读检查；旧已安装包的 URL 解码先复现 `NoSuchMethodError`，候选包对应路径通过。这里只加载测试包，不代表新候选 APK 已覆盖安装或完成真实通话、短信验收。MIUI shell Context 初始化会打印系统缺失主题配置的诊断，但只读检查最终通过。
+- iOS「配对安卓手机」新增仅控制本次配对的本地开关；不写全局模式。ON 不读取云端凭据，仅写 VoWLAN；OFF 缺凭据时明确失败。配对等待在途 Agent 写入结束并阻止新写入，防止迟到云端 POST 覆盖本地配置。自动同步识别本地 Agent，其他全局 Relay token 刷新不因此关闭。97 项 iOS 测试通过；本轮尚未覆盖安装 iPhone 验收界面。
+- 发布继续暂停；没有 commit、push、GitHub Release 或 TestFlight 更新。Android 10/11/13、其他 OEM、真实静音及音量恢复、真实双向通话和 Apple Watch 仍需真机验证。
+
+### 2026-10-14 Android 11/12 启动兼容修复（未发布热修）
+
+- 小米 M2004J19C（Android API 31）实机与用户提供的 vivo V2111A（API 30、报告标注旧版 0.1.0）堆栈均定位到 `BridgeLog.readFile` 的 `ByteArrayOutputStream.toString(Charset)`，不是配对数据损坏。报告内容与用户标识未写入仓库。
+- 七处日志/报告/HTTP/WS 解码改用兼容构造器；四处 VoWLAN/WS/云端 PCM 定长读取改为 `DataInputStream.readFully`。短 READY 帧仍拒绝，不消费后续 PCM。字节码回归检查在旧实现上先失败，改动后通过；真实诊断文件 UTF-8 读写、Android 共享与 Standalone 全套、47 项音频桥检查通过。
+- 首次修复包真机启动继续暴露 `RuntimePermissionPolicy` 的 `List.toArray(IntFunction)` 不可用。新增方法引用检查先复现两处失败，再将两处统一改为 `toArray(new String[0])`；完整测试与 Standalone 正式签名构建通过。
+- 同正式发布证书保留数据覆盖安装至小米成功，冷启动后 PID 11266 在多次检查中存活，进入 MIUI 权限申请页；内置 Agent 与 VoWLAN 服务已创建。权限选择后的首页/配对、vivo 真机、实际通话仍待验收。本次未清除数据、未替换 GitHub Release 工件。
+
 ### 2026-10-14 Apps v0.9.7 发布核验
 
 - 从源码提交 `8bce6ac` 构建，Android/iOS 版本统一为 `0.9.7 (80)`；独立 Linux Agent 保持 `0.4.6`。不新增 workflow，不合并 main。

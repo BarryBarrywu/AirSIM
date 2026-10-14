@@ -2094,6 +2094,9 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (hasVoBLEPermissions()) {
+            com.airsim.phonecontrol.voble.VoBLEGatewayService.start(this);
+        }
         if (startupSetupPending) scheduleStartupSetup();
         if (currentPage == Page.SETTINGS && !voBLEAuthenticationVisible) showPage(Page.SETTINGS);
         if (currentPage == Page.STATUS && pcmStatusPoller != null) pcmStatusPoller.start();

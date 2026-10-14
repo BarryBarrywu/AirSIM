@@ -55,7 +55,7 @@ public final class CrashReportStore {
                 output.write(buffer, 0, count);
                 remaining -= count;
             }
-            return DebugRedactor.sanitize(output.toString(StandardCharsets.UTF_8));
+            return DebugRedactor.sanitize(new String(output.toByteArray(), StandardCharsets.UTF_8));
         } catch (Exception ignored) {
             return "";
         }

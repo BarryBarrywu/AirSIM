@@ -1,7 +1,6 @@
 package com.airsim.phonecontrol;
 
 import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -74,7 +73,9 @@ final class StandaloneLongPoll {
 
     private static String decode(String value) {
         try {
-            return URLDecoder.decode(value, StandardCharsets.UTF_8);
+            return URLDecoder.decode(value, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException impossible) {
+            throw new IllegalStateException("UTF-8 unavailable", impossible);
         } catch (IllegalArgumentException error) {
             throw new IllegalArgumentException("query encoding is invalid", error);
         }

@@ -4,7 +4,8 @@
 [![iOS](https://img.shields.io/badge/iOS-16.3%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![watchOS](https://img.shields.io/badge/watchOS-10%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![Android AVF](https://img.shields.io/badge/Android%20AVF-Linux%20arm64-FCC624?logo=linux&logoColor=black)](module/packaging/README.md)
-[![Apps release](https://img.shields.io/badge/Apps-v0.9.7-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7)
+[![Apps release](https://img.shields.io/badge/Apps-v0.9.7.1-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)
+[![Android 10–13 recommended hotfix](https://img.shields.io/badge/Android%2010–13-修复版·推荐安装-3DDC84)](docs/releases/0.9.7.1-android10-13.md)
 [![AVF Agent release](https://img.shields.io/badge/AVF%20Agent-v0.4.6-0F766E)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)
 [![Cloudflare Relay](https://img.shields.io/badge/Relay-airsim--push.remotepilot.site-F38020?logo=cloudflare&logoColor=white)](https://airsim-push.remotepilot.site/healthz)
 [![Project status](https://img.shields.io/badge/status-active%20development-1f6feb)](#项目状态)
@@ -92,12 +93,21 @@ VoBLE 是与 VoWLAN、云端 Relay 并列的模式选项，不是现有 Wi-Fi �
 
 | 组件 | 当前版本或地址 |
 | --- | --- |
-| Android AVF / Standalone APK、iPhone / Apple Watch App | [`v0.9.7`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7) |
+| Android Standalone / AVF Bridge · Android 10–13 修复 APK | [`v0.9.7.1 (81)`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)，推荐安装 Standalone |
+| iPhone / Apple Watch App | `0.9.7 (81)`，随 [v0.9.7.1](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1) 提供 unsigned IPA；TestFlight 单独上传处理 |
 | Android AVF Linux Agent | [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包版本 `0.4.6-1`） |
 | AirSIM Relay | `0.2.1` · [`https://airsim-push.remotepilot.site`](https://airsim-push.remotepilot.site/healthz) |
 | DJOneHub Relay | `https://push.remotepilot.site`（独立服务，AirSIM 不得使用） |
 
 ### 应用发布包
+
+#### Android 10–13 专用修复版
+
+[AirSIM v0.9.7.1 — Android 10–13 修复版，推荐安装](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)。新安装优先选择 `AirSIM-Android-Standalone-0.9.7.1-Android10-13.apk`：内置 Agent，不需要 AVF Linux；正式签名构建可覆盖同证书的 Standalone 并保留数据，版本号由 80 升至 81。不要先卸载或清除配对数据；其他证书的 Debug/第三方重签版不能直接覆盖。旧 AVF 部署可选择同版 AVF Bridge APK，但不需要更新 Linux Agent。
+
+修复旧系统缺少 Java 方法导致的启动、日志/闪退报告读取、权限申请，以及 VoWLAN、Relay、PCM 读取路径崩溃。替换 `ByteArrayOutputStream.toString(Charset)`、`InputStream.readNBytes` 和 `Collection.toArray(IntFunction)`，构建时检查编译产物，防止这些调用重新进入 APK。未降低 `targetSdk`，未移除权限或蓝牙功能；面向 10–13 发布不表示禁止更高系统安装，也不保证厂商通话音频能力。
+
+Redmi M2004J19C（Android 12）已保留数据安装修复包，用户确认 VoBLE 配对正常；最新双端云端通话实测反馈「挂断后不再重现通话页，声音更稳」。iOS 配对页新增仅控制本次配对的本地开关，并修复云端异步挂断竞态。vivo Android 11、Android 10/13 及 realme 尚未完成本轮修复包真机验收，短信与双向音频仍须按机型验证。公开 IPA 需自行重签，TestFlight 上传不等于审核通过。详情见 [发布说明](docs/releases/0.9.7.1-android10-13.md)。
 
 [AirSIM Apps v0.9.7](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7) 引入独立 VoBLE 蓝牙模式、可用拨号路由优先级、配对设备管理与当前 SIM 身份刷新；修复蓝牙通话音频、重连和挂断竞态，并增加 Android 默认通话卡、闪退报告分享及 Shizuku 启动引导。Release 同时提供 AVF Bridge APK、Standalone APK 与 unsigned IPA；正式 iOS build `80` 另行上传 TestFlight。摘要、验收边界、安装和重签步骤见 [v0.9.7 发布说明](docs/releases/0.9.7.md)。
 

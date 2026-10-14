@@ -135,8 +135,8 @@ public final class PairingCrypto {
 
     private static byte[] concat(byte[] first, byte[] second) {
         ByteArrayOutputStream output = new ByteArrayOutputStream(first.length + second.length);
-        output.writeBytes(first);
-        output.writeBytes(second);
+        output.write(first, 0, first.length);
+        output.write(second, 0, second.length);
         return output.toByteArray();
     }
 }

@@ -68,10 +68,30 @@ struct CallLifecycleSnapshot: Equatable, Sendable {
 /// 单通话状态的唯一归并器。所有来源只能提交事件，不能直接改写最终状态。
 struct CallLifecycleStore: Sendable {
     private(set) var snapshot: CallLifecycleSnapshot = .idle
+    private struct RetiredCall: Hashable, Sendable {
+        let id: String
+        let uuid: UUID
+    }
+    private var retired: [RetiredCall] = []
+
+    func suppressesPresentation(callID: String) -> Bool {
+        retired.contains { $0.id == callID }
+    }
+
+    mutating func retire(callID: String, uuid: UUID) {
+        let identity = RetiredCall(id: callID, uuid: uuid)
+        guard !retired.contains(identity) else { return }
+        retired.append(identity)
+        if retired.count > 64 { retired.removeFirst() }
+    }
 
     @discardableResult
     mutating func apply(_ event: CallLifecycleEvent) -> Bool {
         guard !event.callID.isEmpty, event.generation > 0 else { return false }
+        let identity = RetiredCall(id: event.callID, uuid: event.callUUID)
+        // A reconnect's generation is not permission to revoke a local end intent.
+        // Retain older identities too, so a delayed push cannot return after the next call.
+        if suppressesPresentation(callID: event.callID), !event.state.isTerminal, event.state != .ending { return false }
         let sameIdentity = snapshot.callID == event.callID && snapshot.callUUID == event.callUUID
         if snapshot.generation > 0, !sameIdentity {
             // 旧协议会把每通电话的 generation 都设为 1；上一通进入 ending 或
@@ -97,6 +117,9 @@ struct CallLifecycleStore: Sendable {
             traceID: event.traceID,
             failure: event.state == .failed ? event.failure : nil
         )
+        if event.state == .ending || event.state.isTerminal, !retired.contains(identity) {
+            retire(callID: event.callID, uuid: event.callUUID)
+        }
         return true
     }
 

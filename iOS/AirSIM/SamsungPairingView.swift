@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SamsungPairingView: View {
     @EnvironmentObject private var model: AppModel
-    @AppStorage(LocalModePreference.key) private var localModeEnabled = false
+    @State private var localPairingOnly = LocalModePreference.isEnabled()
     @StateObject private var browser = SamsungPairingBrowser()
     @State private var code = ""
     @State private var pairingServiceID: String?
@@ -10,20 +10,23 @@ struct SamsungPairingView: View {
 
     var body: some View {
         Form {
-            if localModeEnabled {
-                Section {
+            Section {
+                Toggle(isOn: $localPairingOnly) {
                     Label("本地模式配对", systemImage: "wifi")
-                        .foregroundStyle(.green)
-                    Text("配对包只包含 VoWLAN 密钥，不检查或写入 Relay、APNs、PushKit 和 CallKit 参数。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
+                .disabled(pairingServiceID != nil)
+                .accessibilityIdentifier("localPairingOnly")
+                Text(localPairingOnly
+                     ? "本次配对只写入 VoWLAN 密钥，不检查或写入 Relay 和推送参数。不会改变全局通话模式。"
+                     : "本次配对写入 VoWLAN 密钥及 Relay／推送配置；需要云端凭据就绪。不会改变全局通话模式。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("连接步骤") {
-                Label("让三星与本机连接同一 Wi-Fi", systemImage: "wifi")
-                Label("也可让本机连接三星移动热点", systemImage: "personalhotspot")
-                Label("在三星 App 点击“开始一次性配对”", systemImage: "key")
+                Label("让安卓与本机连接同一 Wi-Fi", systemImage: "wifi")
+                Label("也可让本机连接安卓移动热点", systemImage: "personalhotspot")
+                Label("在安卓 App 点击“开始一次性配对”", systemImage: "key")
             }
 
             Section("发现的设备") {
@@ -37,7 +40,7 @@ struct SamsungPairingView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(service.displayName, systemImage: "iphone.radiowaves.left.and.right")
                             .font(.headline)
-                        TextField("三星显示的 6 位验证码", text: $code)
+                        TextField("安卓显示的 6 位验证码", text: $code)
                             .keyboardType(.numberPad)
                             .textContentType(.oneTimeCode)
                             .onChange(of: code) { value in
@@ -57,7 +60,7 @@ struct SamsungPairingView: View {
                 Section("结果") { Text(message) }
             }
         }
-        .navigationTitle("配对三星开发机")
+        .navigationTitle("配对安卓手机")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { browser.start() }
         .onDisappear { browser.stop() }
@@ -66,7 +69,7 @@ struct SamsungPairingView: View {
     @MainActor
     private func pair(_ service: SamsungPairingService) async {
         pairingServiceID = service.id
-        message = localModeEnabled
+        message = localPairingOnly
             ? "正在加密并写入 VoWLAN 本地密钥…"
             : "正在加密并写入 Android Agent…"
 #if DEBUG
@@ -74,10 +77,10 @@ struct SamsungPairingView: View {
 #endif
         defer { pairingServiceID = nil }
         do {
-            guard let registration = VoIPPushController.shared.pairingRegistration() else {
-                throw SamsungPairingClientError.registrationUnavailable
-            }
-            message = try await SamsungPairingCompletionCoordinator.complete(
+            message = try await VoIPPushController.shared.performAndroidPairing(
+                localOnly: localPairingOnly
+            ) { registration in
+                try await SamsungPairingCompletionCoordinator.complete(
                 performPairing: {
                     try await SamsungPairingClient.pair(
                         service: service,
@@ -88,7 +91,8 @@ struct SamsungPairingView: View {
                 refreshVoWLAN: {
                     await model.vowlan.refreshAfterPairing()
                 }
-            )
+                )
+            }
 #if DEBUG
             print("[AirSIM Pair] claim_completed session=\(service.sessionID)")
 #endif

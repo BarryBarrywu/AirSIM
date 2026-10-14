@@ -92,8 +92,14 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     public static void start(Context context) {
         if (!hasPermissions(context)) return;
         Intent intent = new Intent(context, VoBLEGatewayService.class);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
-        else context.startService(intent);
+        try {
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
+            else context.startService(intent);
+        } catch (IllegalStateException | SecurityException restricted) {
+            // Application/boot may run in the background. Retry when the Activity resumes;
+            // do not let an expected platform restriction kill the app or clear pairing.
+            BridgeLog.error("voble_service_start_deferred", restricted);
+        }
     }
 
     public static boolean hasPermissions(Context context) {

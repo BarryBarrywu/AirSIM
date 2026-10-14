@@ -5,6 +5,7 @@ import android.util.Base64;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
+import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -149,7 +150,7 @@ final class StandaloneWebSocket implements Closeable {
             value.write(next);
             state = state == 0 && next == '\r' ? 1 : state == 1 && next == '\n' ? 2
                     : state == 2 && next == '\r' ? 3 : state == 3 && next == '\n' ? 4 : 0;
-            if (state == 4) return value.toString(StandardCharsets.US_ASCII);
+            if (state == 4) return new String(value.toByteArray(), StandardCharsets.US_ASCII);
         }
         throw new IOException("WebSocket response headers too large");
     }
@@ -161,8 +162,8 @@ final class StandaloneWebSocket implements Closeable {
     }
 
     private byte[] readExactly(int length) throws IOException {
-        byte[] value = input.readNBytes(length);
-        if (value.length != length) throw new EOFException();
+        byte[] value = new byte[length];
+        new DataInputStream(input).readFully(value);
         return value;
     }
 

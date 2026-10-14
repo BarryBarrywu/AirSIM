@@ -5,6 +5,7 @@ import android.content.Context;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -133,7 +134,7 @@ public final class VoWLANControlGateway implements Closeable {
             if (state == 4) break;
         }
         if (state != 4) throw new IOException("headers too large");
-        String[] lines = headerBytes.toString(StandardCharsets.US_ASCII).split("\\r\\n");
+        String[] lines = new String(headerBytes.toByteArray(), StandardCharsets.US_ASCII).split("\\r\\n");
         String[] first = lines[0].split(" ", 3);
         if (first.length != 3 || !first[2].startsWith("HTTP/1.")) throw new IOException("invalid request line");
         Map<String, String> headers = new HashMap<>();
@@ -146,8 +147,8 @@ public final class VoWLANControlGateway implements Closeable {
         try { length = Integer.parseInt(headers.getOrDefault("content-length", "0")); }
         catch (NumberFormatException error) { throw new IOException("invalid content length", error); }
         if (length < 0 || length > MAX_BODY) throw new IOException("body too large");
-        byte[] body = input.readNBytes(length);
-        if (body.length != length) throw new IOException("incomplete body");
+        byte[] body = new byte[length];
+        new DataInputStream(input).readFully(body);
         return new Request(first[0].toUpperCase(Locale.ROOT), first[1], headers, body);
     }
 

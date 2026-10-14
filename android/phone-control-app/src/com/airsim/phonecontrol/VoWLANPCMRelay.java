@@ -117,7 +117,7 @@ public final class VoWLANPCMRelay implements Closeable {
 
     private static InputStream activeInternalInput(Socket socket) {
         try { return socket.getInputStream(); }
-        catch (IOException error) { return InputStream.nullInputStream(); }
+        catch (IOException error) { return new java.io.ByteArrayInputStream(new byte[0]); }
     }
 
     private static void copy(

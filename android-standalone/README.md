@@ -2,6 +2,10 @@
 
 AirSIM Android Standalone 是推荐的 Android 端部署方式：它把原本运行在 Android AVF Linux 中的 Agent 合并进 Android 前台服务，形成单一 APK。安装后不再需要 Linux Terminal、Debian、AVF 私网、`airsim-installerd`，也不再监听 Agent / installer 的 `8575`、`8576` 端口。
 
+**[Android 10–13 修复版 0.9.7.1（81），推荐安装](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)**。正式签名构建沿用原证书与包名，可保留数据覆盖升级；不要先卸载。其他证书的调试版/重签版不能直接覆盖。本版不更新 Linux AVF Agent 或 Relay；iOS build 81 另行通过 Xcode 上传 TestFlight。
+
+本次修复针对旧系统缺失的 Java I/O 和数组转换方法，不代表所有 Android 10–13/OEM 音频适配均已通过。Redmi Android 12 已保留数据覆盖安装，用户确认 VoBLE 配对正常，并在本轮云端通话中反馈挂断 UI 不再重现、声音更稳；vivo Android 11 已定位报告但未复测，Android 10、13 和 realme（真我）尚未实测。完整范围、签名和验证边界见[发布说明](../docs/releases/0.9.7.1-android10-13.md)。
+
 Standalone 复用 [`android/phone-control-app`](../android/phone-control-app/README.md) 的 Telecom、短信、VoWLAN、配对与 Shizuku 管理代码，以及 [`android/phone-audio-bridge`](../android/phone-audio-bridge/README.md) 的通话 PCM 桥。独立 Manifest 使用包名 `com.airsim.phonecontrol.standalone`，因此可与旧 AVF 版并存安装；但同一时间只能有一个 App 持有默认电话角色和 Shizuku PCM 会话。
 
 ## 内置能力
@@ -9,6 +13,7 @@ Standalone 复用 [`android/phone-control-app`](../android/phone-control-app/REA
 - Relay 设备注册、30 秒心跳、WebSocket 云端命令与 HTTP 补漏；
 - Android Telecom 拨号、接听、拒接、挂断、DTMF 和系统短信发送；
 - 来电 Push、通话生命周期以及单路云端 PCM 媒体编排；
+- 云端 PCM 抖动优化将采集/收发解耦，限制旧语音积压，并在 WebSocket 重连后重新启动媒体；策略与真机验收边界见[云端 PCM 抖动处理](../docs/cloud-pcm-resilience.md)；
 - VoWLAN 本地控制和 PCM 链路；
 - VoBLE 蓝牙本地控制和加密 G.711 μ-law 双向音频链路；
 - 原 Agent `/api/health`、`/api/android/status`、通话和音频配置接口的进程内兼容层；
@@ -35,6 +40,10 @@ Shizuku 仍是采集和注入系统通话音频所需的权限桥。Standalone �
 启动时，在系统权限请求结束后检查 Shizuku：未安装显示官方下载安装地址（`https://shizuku.rikka.app/zh-hans/download/`）和「下载 Shizuku」按钮；已安装但未运行提供「打开 Shizuku」；已运行但未授权提供「授权」。已就绪不提示，每次启动最多提示一次，从下载页或 Shizuku 返回不重复弹窗；可选「稍后」继续进入 App，但未就绪的通话音频桥仍无法工作。不会静默下载安装或绕过系统授权。
 
 ## 构建与测试
+
+兼容修复还包括：移除 `StringBuilder.isEmpty()`、URL 编解码的 `Charset` 重载与 `InputStream.nullInputStream()`；Android 10/11 通过旧版短信工厂保留所选短信 SIM，服务为空时有回退。Shizuku 静音改为 shell 身份的 `AudioManager` 能力检测、回读验证与原状态恢复，不依赖 OEM 可能未实现的 `cmd audio`；系统拒绝静音时明确失败，不能将静音能力或 JVM 测试当作真实双向通话验收。
+
+共享测试与 APK 构建包含 Android 11/12 Java API 兼容性回归检查，防止日志读取、权限列表、VoWLAN 和 Relay 路径引用旧系统不存在的流读取及数组转换重载。该检查针对已知问题，不替代不同 Android 版本的真机启动和通话验收。
 
 需要 JDK 17、Android SDK Platform 35、Build Tools 35 和 Python 3。构建脚本默认读取 `ANDROID_SDK_ROOT`；未设置时使用 Homebrew Android command-line tools 路径。
 

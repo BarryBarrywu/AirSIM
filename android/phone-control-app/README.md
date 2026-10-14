@@ -2,7 +2,7 @@
 
 该目录包含 AirSIM Android 端的共享实现以及旧 AVF 兼容 Manifest。新安装推荐使用根目录的 [Android Standalone APK](../../android-standalone/README.md)，由同一 APK 内置 Agent；只有兼容旧部署时才使用这里的 AVF 版构建入口。
 
-当前正式应用版本为 [`v0.9.7`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7)（Android `versionCode 80`）；配套 AVF Agent 当前为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
+当前正式应用版本为 [`v0.9.7.1`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)（Android `versionCode 81`），包含 Android 10–13 兼容性修复，推荐升级；新安装优先 Standalone。配套 Linux AVF Agent 保持 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
 
 ## 主要职责
 
@@ -86,6 +86,10 @@ Release APK 输出到 `android/phone-control-app/build/android/AirSIM-Phone-Brid
 Terminal 若报 `udev` 需要较新 `libudev1`、`unmet dependencies`，属于 AVF Debian 包状态问题。先在 Terminal 运行 `apt-cache policy udev libudev1` 和 `sudo apt-get -s -f install`，检查模拟计划；不要直接让 App 或脚本自动执行 `apt --fix-broken install`。
 
 ## 厂商系统兼容性边界
+
+本版修复增加 URL UTF-8 编解码、Shizuku 命令输出与 PCM 失败清理的旧 API 替代；短信工厂按 API 31 分支，保留默认短信 SIM。旧 AVF 模式在 Android 10–13 改为可点击通知提示用户恢复 Terminal，只有 API 34+ 才调用新的后台启动选项。Shizuku daemon 版本提升至 8，覆盖升级后不复用旧静音实现；使用 shell 包身份的 `AudioManager` 操作并回读静音结果，挂断恢复之前的静音/音量，失败保留恢复快照供重试，不虚报静音成功。OEM 不支持时仍须用户处理。
+
+Android 11/12 真机曾在启动时因 `ByteArrayOutputStream.toString(Charset)` 和 `Collection.toArray(IntFunction)` 缺失而闪退。共享实现改用兼容的 UTF-8/ASCII 解码与数组转换；VoWLAN、Relay、PCM 和闪退报告路径同步替换 `InputStream.readNBytes`。`test.sh` 与 APK 构建都会检查编译后的方法引用，阻止这些已知不兼容调用回归；这是定向回归检查，不是完整 Android API lint，仍需目标系统真机验收。
 
 AirSIM 会识别小米、Redmi、OPPO、OnePlus、realme、vivo、iQOO 和荣耀等厂商，并区分“Terminal 已安装但停用”“Terminal 未安装”和“系统未公开 AVF”三种情况。App 可以启动已安装的 AOSP Linux Terminal，或跳转到开发者选项，但普通第三方 App 无法强制补装厂商固件删除的 Terminal、打开未公开的 AVF 系统功能，或绕过系统签名权限。遇到后两种情况需要厂商系统更新、包含 Terminal 的系统镜像，或由 OEM 将 AirSIM 作为特权系统组件集成。
 

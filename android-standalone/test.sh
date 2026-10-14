@@ -20,9 +20,9 @@ assert_not_contains() {
 
 assert_contains "$MANIFEST" 'package="com.airsim.phonecontrol.standalone"' \
   'standalone package id is missing'
-assert_contains "$MANIFEST" 'android:versionCode="80"' \
+assert_contains "$MANIFEST" 'android:versionCode="81"' \
   'standalone version code does not match the Apps release'
-assert_contains "$MANIFEST" 'android:versionName="0.9.7"' \
+assert_contains "$MANIFEST" 'android:versionName="0.9.7.1"' \
   'standalone version name does not match the Apps release'
 assert_contains "$MANIFEST" 'com.airsim.phonecontrol.STANDALONE_AGENT' \
   'standalone runtime flag is missing'

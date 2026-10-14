@@ -216,7 +216,7 @@ struct AirSIMSettingsView: View {
                     NavigationLink {
                         SamsungPairingView()
                     } label: {
-                        Label("配对三星手机", systemImage: "personalhotspot")
+                        Label("配对安卓手机", systemImage: "personalhotspot")
                     }
                     PairedAndroidDeviceRows(devices: model.pairedDeviceHistory, onDelete: { deletingDevice = $0 })
                         .disabled(deviceDeletionInProgress)

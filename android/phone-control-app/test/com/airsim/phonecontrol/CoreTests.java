@@ -956,7 +956,7 @@ public final class CoreTests {
 					@Override public java.io.OutputStream output() { return hello; }
 					@Override public void close() {}
 				});
-		assertEquals("AIRSIMPCM1\n", hello.toString(java.nio.charset.StandardCharsets.US_ASCII));
+		assertEquals("AIRSIMPCM1\n", new String(hello.toByteArray(), java.nio.charset.StandardCharsets.US_ASCII));
 		assertTrue(bridge.ready());
 		bridge.close();
 		try {

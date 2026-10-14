@@ -170,7 +170,7 @@ public final class StandaloneAgentService extends Service {
                     continue;
                 }
                 URI relayURI = URI.create(registration.getString("relay_url"));
-                String deviceID = URLEncoder.encode(registration.getString("device_id"), StandardCharsets.UTF_8)
+                String deviceID = URLEncoder.encode(registration.getString("device_id"), "UTF-8")
                         .replace("+", "%20");
                 URI endpoint = URI.create("wss://" + relayURI.getRawAuthority()
                         + "/v1/devices/" + deviceID + "/commands/connect");

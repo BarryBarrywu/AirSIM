@@ -670,6 +670,7 @@ struct AgentPushRegistration: Encodable, Equatable, Sendable {
 }
 
 struct AgentPushStatus: Decodable, Sendable {
+    let localMode: Bool?
     let cloudModeEnabled: Bool?
     let configured: Bool
     let callPushReady: Bool
@@ -678,7 +679,16 @@ struct AgentPushStatus: Decodable, Sendable {
     let relayURL: String?
     let lastError: String?
 
+    var preservesLocalPairing: Bool {
+        if let localMode { return localMode }
+        // Older AVF Agents omit local_mode but only report configured without
+        // cloud credentials for a local pairing. Never infer from HTTP 200 alone.
+        return configured && cloudModeEnabled == false && !callPushReady && !messagePushReady
+            && (relayURL ?? "").isEmpty
+    }
+
     enum CodingKeys: String, CodingKey {
+        case localMode = "local_mode"
         case cloudModeEnabled = "cloud_enabled"
         case configured
         case callPushReady = "call_push_ready"
@@ -792,6 +802,7 @@ final class VoIPPushController: NSObject {
     private var lastRegisteredRoute: LocalAgentRoute?
     private var lastRelayRegisteredFingerprint: String?
     private var registrationInFlight = false
+    private let pairingGate = SamsungPairingRegistrationGate()
     private var registrationPending = false
     private var nextRegistrationAttempt = Date.distantPast
     private var nextRelayRegistrationAttempt = Date.distantPast
@@ -1037,9 +1048,15 @@ final class VoIPPushController: NSObject {
             "环境=\(registration.environment)，Relay=\(registration.relayURL.isEmpty ? "未配置" : "已配置")"
         )
 #endif
-        if !agentRegistered {
+        if !agentRegistered, pairingGate.beginAgentWrite() {
+            defer { pairingGate.endAgentWrite() }
             do {
                 guard case .vowlan = api.route else { throw CallKitBridgeError.noReachableTransport }
+                if try await api.pushStatus().preservesLocalPairing {
+                    // Preserve only this Agent's local choice; global Relay token
+                    // refresh for other paired devices remains independent below.
+                    agentRegistered = true
+                } else {
                 try await api.registerVoIPPush(registration)
                 lastRegisteredFingerprint = fingerprint
                 lastRegisteredRoute = api.route
@@ -1060,6 +1077,7 @@ final class VoIPPushController: NSObject {
                     }
                 }
 #endif
+                }
             } catch {
 #if DEBUG
                 print("[AirSIM PushKit] 向模块注册 token 失败：\(error.localizedDescription)")
@@ -1503,18 +1521,28 @@ final class VoIPPushController: NSObject {
         )
     }
 
-    func pairingRegistration() -> AgentPushRegistration? {
-        if LocalModePreference.isEnabled() {
-            guard let secret = try? VoWLANCredentialStore.loadOrCreate().encodedSecret else { return nil }
-            return .local(vowlanSecret: secret)
+    func performAndroidPairing<T>(
+        localOnly: Bool,
+        operation: (AgentPushRegistration) async throws -> T
+    ) async throws -> T {
+        try await pairingGate.withPairing {
+            guard let registration = self.pairingRegistration(localOnly: localOnly) else {
+                throw SamsungPairingClientError.registrationUnavailable
+            }
+            return try await operation(registration)
         }
-        guard var registration = currentRegistration() else { return nil }
-        registration.vowlanSecret = (try? VoWLANCredentialStore.loadOrCreate().encodedSecret)
-        return registration
     }
 
-    private func currentRegistration() -> AgentPushRegistration? {
-        guard !LocalModePreference.isEnabled() else { return nil }
+    func pairingRegistration(localOnly: Bool = LocalModePreference.isEnabled()) -> AgentPushRegistration? {
+        guard let secret = try? VoWLANCredentialStore.loadOrCreate().encodedSecret else { return nil }
+        return try? SamsungPairingRegistrationPolicy.registration(
+            localOnly: localOnly, vowlanSecret: secret,
+            cloudRegistration: { self.currentRegistration(allowLocalMode: true) }
+        )
+    }
+
+    private func currentRegistration(allowLocalMode: Bool = false) -> AgentPushRegistration? {
+        guard allowLocalMode || !LocalModePreference.isEnabled() else { return nil }
         guard let token = UserDefaults.standard.string(forKey: Keys.token), !token.isEmpty else {
 #if DEBUG
             print("[AirSIM PushKit] 暂无 VoIP token，跳过同步")
