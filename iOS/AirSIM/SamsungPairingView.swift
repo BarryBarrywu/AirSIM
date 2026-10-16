@@ -7,6 +7,10 @@ struct SamsungPairingView: View {
     @State private var code = ""
     @State private var pairingServiceID: String?
     @State private var message = ""
+    @State private var manual = false
+    @State private var host = ""
+    @State private var port = ""
+    @State private var pairingTask: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -29,7 +33,37 @@ struct SamsungPairingView: View {
                 Label("在安卓 App 点击“开始一次性配对”", systemImage: "key")
             }
 
-            Section("发现的设备") {
+            Section("配对方式") {
+                Picker("配对方式", selection: $manual) {
+                    Text("自动发现").tag(false)
+                    Text("手动地址").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .disabled(pairingServiceID != nil)
+            }
+
+            if manual {
+                Section {
+                    TextField("安卓 IPv4，例如 192.168.1.2 或 100.64.1.2", text: $host)
+                        .keyboardType(.decimalPad)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("manualPairingHost")
+                    TextField("安卓本次配对端口", text: $port)
+                        .keyboardType(.numberPad)
+                        .accessibilityIdentifier("manualPairingPort")
+                    codeField
+                    Button("连接并加密配对", systemImage: "lock.shield") {
+                        pairingTask = Task { await pairManually() }
+                    }
+                    .disabled(code.count != 6 || host.isEmpty || port.isEmpty || pairingServiceID != nil)
+                    if pairingServiceID != nil { ProgressView("正在连接与认证…") }
+                } header: { Text("手动地址配对") } footer: {
+                    Text("先在安卓打开一次性配对窗口，填写该页的配对端口，不是 ADB 或通话端口。使用 Tailscale 时填安卓的 Tailscale IPv4，两端须已接入且允许互访；无需开启 AirSIM 云端模式。配对后选择 VoWLAN 或自动连接模式。")
+                }
+                .disabled(pairingServiceID != nil)
+            } else {
+              Section("发现的设备") {
                 if browser.services.isEmpty {
                     HStack {
                         ProgressView()
@@ -40,20 +74,16 @@ struct SamsungPairingView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(service.displayName, systemImage: "iphone.radiowaves.left.and.right")
                             .font(.headline)
-                        TextField("安卓显示的 6 位验证码", text: $code)
-                            .keyboardType(.numberPad)
-                            .textContentType(.oneTimeCode)
-                            .onChange(of: code) { value in
-                                code = String(value.filter(\.isNumber).prefix(6))
-                            }
+                        codeField
                         Button("加密配对", systemImage: "lock.shield") {
-                            Task { await pair(service) }
+                            pairingTask = Task { await pair(service) }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(code.count != 6 || pairingServiceID != nil)
                     }
                     .padding(.vertical, 4)
                 }
+              }
             }
 
             if !message.isEmpty {
@@ -62,8 +92,44 @@ struct SamsungPairingView: View {
         }
         .navigationTitle("配对安卓手机")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { browser.start() }
-        .onDisappear { browser.stop() }
+        .onAppear { if !manual { browser.start() } }
+        .onChange(of: manual) { value in
+            if value { browser.stop() } else { browser.start() }
+            code = ""
+            message = ""
+        }
+        .onDisappear { browser.stop(); pairingTask?.cancel() }
+    }
+
+    private var codeField: some View {
+        TextField("安卓显示的 6 位验证码", text: $code)
+            .keyboardType(.numberPad)
+            .textContentType(.oneTimeCode)
+            .onChange(of: code) { value in
+                code = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6))
+            }
+    }
+
+    @MainActor
+    private func pairManually() async {
+        pairingServiceID = "manual"
+        message = "正在连接安卓配对窗口…"
+        defer { pairingServiceID = nil }
+        do {
+            let address = try SamsungManualPairingAddress(host: host, port: port)
+            message = try await VoIPPushController.shared.performAndroidPairing(localOnly: localPairingOnly) { registration in
+                let result = try await SamsungPairingClient.pairManually(address: address, code: code, registration: registration)
+                try Task.checkCancellation()
+                try await model.vowlan.installManualRoute(result.route)
+                return model.vowlan.availability.isOnlineForDisplay
+                    ? "配对成功，直连网关已通过认证。选择 VoWLAN 或自动连接模式后可用于通话与短信。"
+                    : "配对成功，地址已保存，但直连网关暂不可达。请检查网络、Tailscale 访问规则与安卓 PCM 桥；不会回退写入 Relay。"
+            }
+        } catch is CancellationError {
+            message = "已取消连接"
+        } catch {
+            message = error.localizedDescription
+        }
     }
 
     @MainActor
@@ -96,6 +162,8 @@ struct SamsungPairingView: View {
 #if DEBUG
             print("[AirSIM Pair] claim_completed session=\(service.sessionID)")
 #endif
+        } catch is CancellationError {
+            message = "已取消连接"
         } catch {
             message = "配对失败：\(error.localizedDescription)"
 #if DEBUG

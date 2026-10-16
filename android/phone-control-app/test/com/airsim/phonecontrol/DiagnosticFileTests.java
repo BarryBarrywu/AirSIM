@@ -24,6 +24,11 @@ public final class DiagnosticFileTests {
             equal("旧日志：蓝牙\n新日志：已连接\n", BridgeLog.read());
             CrashReportStore.write(directory.toFile(), "异常：测试\n");
             equal("异常：测试\n", CrashReportStore.read(directory.toFile()));
+            BridgeLog.watchdog("audio_watchdog muted=false verified_muted=unknown acoustic_check=unavailable");
+            String watchdog = BridgeLog.read();
+            if (!watchdog.contains("VERBOSE") || !watchdog.contains("verified_muted=unknown")) {
+                throw new AssertionError("Watchdog evidence must be written even when general Debug is off");
+            }
             BridgeLog.clear();
             equal("暂无 Debug 日志", BridgeLog.read());
             equal("异常：测试\n", CrashReportStore.read(directory.toFile()));

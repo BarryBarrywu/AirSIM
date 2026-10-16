@@ -74,6 +74,7 @@ struct AgentHealth: Codable, Sendable {
 
 /// Relay 最近一次收到的 Agent 心跳。该对象只包含可展示状态，不包含设备密钥。
 struct CloudAndroidAgent: Codable, Equatable, Sendable, Identifiable {
+    var commandRoutingVersion: Int? = nil
     let agentID: String
     let agentKind: String?
     let deviceName: String?
@@ -93,10 +94,12 @@ struct CloudAndroidAgent: Codable, Equatable, Sendable, Identifiable {
         case phoneNumber = "phone_number"
         case agentVersion = "agent_version"
         case cloudOnline = "cloud_online"
+        case commandRoutingVersion = "command_routing_version"
     }
 }
 
 struct CloudAgentStatus: Decodable, Equatable, Sendable {
+    let commandRoutingVersion: Int?
     let cloudOnline: Bool
     let agentVersion: String?
     let atOK: Bool?
@@ -119,10 +122,12 @@ struct CloudAgentStatus: Decodable, Equatable, Sendable {
         case signalDBM = "signal_dbm"
         case activeAgentID = "active_agent_id"
         case agents
+        case capabilities
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        commandRoutingVersion = try values.decodeIfPresent([String: Int].self, forKey: .capabilities)?["agent_command_routing"]
         cloudOnline = try values.decode(Bool.self, forKey: .cloudOnline)
         agentVersion = try values.decodeIfPresent(String.self, forKey: .agentVersion)
         atOK = try values.decodeIfPresent(Bool.self, forKey: .atOK)
@@ -244,6 +249,26 @@ struct SMSMessage: Codable, Equatable, Sendable, Identifiable {
 }
 
 enum SMSHistoryPolicy {
+    /// Legacy IDs contain subsecond Date values, while old ISO8601 files persist whole seconds.
+    /// Prefer authoritative delivery IDs without multiplying the same legacy record on each save.
+    static func deduplicated(_ records: [SMSMessage]) -> [SMSMessage] {
+        func legacyKey(_ message: SMSMessage) -> String {
+            "\(message.sender)\u{0}\(Int64(message.timestamp.timeIntervalSince1970.rounded(.down)))\u{0}\(message.content)\u{0}\(message.direction?.rawValue ?? "incoming")"
+        }
+        let authoritativeLegacyKeys = Set(records.filter { $0.deliveryID?.isEmpty == false }.map(legacyKey))
+        var byID: [String: SMSMessage] = [:]
+        for message in records {
+            let legacy = legacyKey(message)
+            if message.deliveryID?.isEmpty != false {
+                if authoritativeLegacyKeys.contains(legacy) { continue }
+                byID["legacy:" + legacy] = message
+            } else {
+                byID[message.id] = message
+            }
+        }
+        return Array(byID.values)
+    }
+
     static func appendingSentMessage(
         recipient: String,
         content: String,

@@ -41,6 +41,34 @@ public final class CallRepository {
         return idForAction("end");
     }
 
+    public static java.util.Set<String> callIDs() { return new java.util.HashSet<>(CALLS.keySet()); }
+
+    public static String newOutgoingCallSince(java.util.Set<String> before, String number) {
+        if (number == null || number.trim().isEmpty()) return "";
+        String candidate = "";
+        for (Map.Entry<String, Call> entry : CALLS.entrySet()) {
+            int state = entry.getValue().getState();
+            if (before.contains(entry.getKey()) || state == Call.STATE_DISCONNECTED || state == Call.STATE_DISCONNECTING) continue;
+            Call.Details details = entry.getValue().getDetails();
+            if (details == null || details.getCallDirection() != Call.Details.DIRECTION_OUTGOING
+                    || details.getHandle() == null || !android.telephony.PhoneNumberUtils.compare(
+                            details.getHandle().getSchemeSpecificPart(), number)) continue;
+            if (!candidate.isEmpty()) return "";
+            candidate = entry.getKey();
+        }
+        return candidate;
+    }
+
+    public static void disconnect(String callID) {
+        Call owned = CALLS.get(callID);
+        if (owned == null) return;
+        new Handler(Looper.getMainLooper()).post(() -> {
+            if (CALLS.get(callID) != owned || owned.getState() == Call.STATE_DISCONNECTED
+                    || owned.getState() == Call.STATE_DISCONNECTING) return;
+            try { owned.disconnect(); } catch (RuntimeException ignored) {}
+        });
+    }
+
     public static int state(String callId) {
         Call call = CALLS.get(callId);
         return call == null ? -1 : call.getState();

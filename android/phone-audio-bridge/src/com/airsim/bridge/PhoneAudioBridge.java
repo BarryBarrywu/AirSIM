@@ -158,8 +158,7 @@ public final class PhoneAudioBridge {
         try (client) {
             client.setKeepAlive(true);
             client.setTcpNoDelay(true);
-            BridgeProtocol.acceptHandshake(client.getInputStream(), client.getOutputStream());
-            emit(started, "client_ready", Map.of("result", "ok"));
+            client.setSoTimeout(3_000);
             streamCallAudio(client, started, stats);
         } catch (Throwable error) {
             emit(started, "session_error", Map.of(
@@ -173,6 +172,7 @@ public final class PhoneAudioBridge {
 
     private static void streamCallAudio(Socket client, long started, BridgeStats stats)
             throws Exception {
+        stats.resetAudio();
         int recordBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING);
         int trackBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING);
         if (recordBufferSize <= 0 || trackBufferSize <= 0) {
@@ -223,11 +223,16 @@ public final class PhoneAudioBridge {
                 "track_buffer_bytes", trackBufferSize,
                 "result", "ok"));
 
-            recorder.startRecording();
-            track.play();
-            if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-                throw new IllegalStateException("VOICE_DOWNLINK AudioRecord did not start");
-            }
+            // Transport READY is emitted only after the actual audio endpoints
+            // start. A successful TCP/HELLO is not evidence of usable call audio.
+            BridgeProtocol.acceptHandshake(client.getInputStream(), client.getOutputStream(), () -> {
+                recorder.startRecording();
+                track.play();
+                if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                    throw new IOException("VOICE_DOWNLINK AudioRecord did not start");
+                }
+            });
+            emit(started, "client_ready", Map.of("result", "audio_initialized", "route_verified", false));
 
             AtomicBoolean running = new AtomicBoolean(true);
             Runnable stop = () -> {
@@ -310,9 +315,10 @@ public final class PhoneAudioBridge {
             Runnable stop) {
         byte[] frame = new byte[BridgeProtocol.FRAME_BYTES];
         long firstPlaybackAt = 0;
-        // Samsung's VOICE_TX audio-policy tag does not necessarily expose a
-        // TYPE_TELEPHONY routed device even when the vendor route is working.
-        boolean routeVerified = playbackRoute == PlaybackRoute.SAMSUNG_TAG;
+        // A vendor tag is a routing request, not proof of the route actually used.
+        // Hidden Samsung routes may remain unverified: report that honestly,
+        // without destroying a working downlink or falling back to the loudspeaker.
+        boolean routeVerified = false;
         boolean routeWarningEmitted = false;
         boolean routeObserved = false;
         try {
@@ -460,6 +466,9 @@ public final class PhoneAudioBridge {
         fields.put("downlink_bytes", snapshot.downlinkBytes());
         fields.put("downlink_frames", snapshot.downlinkFrames());
         fields.put("downlink_peak", snapshot.downlinkPeak());
+        // Nonzero samples are diagnostic evidence, not proof of intelligibility
+        // or of acoustic silence on the Android handset.
+        fields.put("downlink_signal", snapshot.downlinkSignal());
         fields.put("uplink_bytes", snapshot.uplinkBytes());
         fields.put("uplink_frames", snapshot.uplinkFrames());
         fields.put("uplink_peak", snapshot.uplinkPeak());

@@ -124,6 +124,8 @@ enum WatchCallMedia: Equatable, Sendable {
 /// Watch 直接接听所需的完整 VoIP 会话。媒体密钥只保存在内存中，
 /// 不进入 WatchConnectivity 状态镜像或通知正文。
 struct WatchVoIPCall: Equatable, Sendable {
+    let agentID: String?
+    let generation: UInt64
     let callID: String
     let uuid: UUID
     let number: String?
@@ -138,6 +140,13 @@ struct WatchVoIPCall: Equatable, Sendable {
     }
 
     var displayName: String { callerName ?? number ?? "AirSIM" }
+
+    func controlMessage(action: String) -> [String: Any] {
+        var value: [String: Any] = ["action": action, "call_id": callID,
+            "call_uuid": uuid.uuidString.lowercased(), "generation": generation]
+        if let agentID { value["agent_id"] = agentID }
+        return value
+    }
 
     init(userInfo: [AnyHashable: Any], now: Date = Date()) throws {
         guard userInfo["event"] as? String == "incoming_call" else {
@@ -180,6 +189,9 @@ struct WatchVoIPCall: Equatable, Sendable {
             media = .pendingLocal
         }
         self.callID = callID
+        agentID = userInfo["agent_id"] as? String
+        generation = max(1, (userInfo["generation"] as? NSNumber)?.uint64Value
+            ?? (userInfo["generation"] as? String).flatMap(UInt64.init) ?? 1)
         self.uuid = uuid
         number = Self.nonEmpty(userInfo["number"] as? String)
         callerName = Self.nonEmpty(userInfo["caller_name"] as? String)
@@ -203,20 +215,21 @@ struct WatchVoIPCall: Equatable, Sendable {
             callerName: parsed.callerName,
             expiresAt: parsed.expiresAt,
             media: parsed.media,
-            isOutgoing: true
+            isOutgoing: true, agentID: parsed.agentID, generation: parsed.generation
         )
     }
 
     func usingLocalMedia(_ endpoint: WatchLocalPCMEndpoint) -> WatchVoIPCall {
         WatchVoIPCall(
             callID: callID, uuid: uuid, number: number, callerName: callerName,
-            expiresAt: expiresAt, media: .local(endpoint), isOutgoing: isOutgoing
+            expiresAt: expiresAt, media: .local(endpoint), isOutgoing: isOutgoing,
+            agentID: agentID, generation: generation
         )
     }
 
     private init(
         callID: String, uuid: UUID, number: String?, callerName: String?,
-        expiresAt: Date?, media: WatchCallMedia, isOutgoing: Bool
+        expiresAt: Date?, media: WatchCallMedia, isOutgoing: Bool, agentID: String?, generation: UInt64
     ) {
         self.callID = callID
         self.uuid = uuid
@@ -225,6 +238,8 @@ struct WatchVoIPCall: Equatable, Sendable {
         self.expiresAt = expiresAt
         self.media = media
         self.isOutgoing = isOutgoing
+        self.agentID = agentID
+        self.generation = generation
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

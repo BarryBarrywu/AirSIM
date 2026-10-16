@@ -1,7 +1,6 @@
 package com.airsim.phonecontrol;
 
 import android.content.Context;
-import android.content.pm.PackageInfo;
 import android.os.Build;
 import android.os.Process;
 import android.util.Log;
@@ -37,7 +36,7 @@ public final class CrashReporter {
             if (handling.compareAndSet(false, true)) {
                 try {
                     CrashReportStore.write(context.getFilesDir(), CrashReportFormatter.format(
-                            appVersion(context), context.getPackageName(),
+                            AppInformation.version(context), context.getPackageName(),
                             Build.MANUFACTURER, Build.MODEL, Build.VERSION.SDK_INT,
                             thread == null ? "unknown" : thread.getName(), error));
                 } catch (Throwable reportError) {
@@ -54,13 +53,4 @@ public final class CrashReporter {
         }
     }
 
-    private static String appVersion(Context context) {
-        try {
-            PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            long code = info.getLongVersionCode();
-            return (info.versionName == null ? "unknown" : info.versionName) + " (" + code + ")";
-        } catch (Exception ignored) {
-            return "unknown";
-        }
-    }
 }

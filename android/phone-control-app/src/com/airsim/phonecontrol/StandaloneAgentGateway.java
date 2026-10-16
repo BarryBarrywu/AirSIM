@@ -143,7 +143,13 @@ final class StandaloneAgentGateway {
     }
 
     synchronized JSONObject executeCloudCommand(JSONObject command) throws Exception {
+        return executeCloudCommand(command,()->true);
+    }
+
+    synchronized JSONObject executeCloudCommand(JSONObject command, java.util.function.BooleanSupplier stillCurrent) throws Exception {
         String commandID = command.optString("command_id", "");
+        if (!stillCurrent.getAsBoolean()) return new JSONObject().put("command_id",commandID)
+                .put("status","failed").put("error","command_configuration_changed");
         String commandKey = commandID.trim().toLowerCase(Locale.ROOT);
         if (!commandKey.isEmpty()) {
             synchronized (commandsLock) {
@@ -176,10 +182,14 @@ final class StandaloneAgentGateway {
                     ? "end" : command.optString("action", "");
             default -> "";
         };
-        String callID = "call_control".equals(type)
+        String callID = CloudCallTarget.requiresIdentity(type)
                 ? StandaloneCloudMediaManager.get(context).androidCallIDFor(command.optJSONObject("call"))
                 : "dial".equals(action) || "send_sms".equals(action)
                     ? "" : CallRepository.idForAction(action);
+        if (CloudCallTarget.requiresIdentity(type) && callID.isBlank()) {
+            return rememberCommand(commandKey,new JSONObject().put("command_id",commandID)
+                    .put("status","failed").put("error","call_mismatch"));
+        }
         AgentCommand local = new AgentCommand(commandID, action, callID,
                 command.optString("number", ""), command.optString("message", ""));
         AgentCommandDispatcher.Result result = execute(local);

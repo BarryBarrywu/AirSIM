@@ -56,6 +56,7 @@ for artifact in api aidl shared provider; do
   SHIZUKU_JARS+=("$jar_path")
 done
 SHIZUKU_JARS+=("$DEPS/androidx-annotation.jar")
+SHIZUKU_JARS+=("$(sh "$ROOT/crypto-dependency.sh")")
 CLASSPATH="$ANDROID_JAR:$(IFS=:; echo "${SHIZUKU_JARS[*]}")"
 
 SOURCES=()
@@ -79,7 +80,7 @@ else
 fi
 "$BUILD_TOOLS/aapt2" link -o "$OUT/unsigned.apk" -I "$ANDROID_JAR" \
   --manifest "$MANIFEST" "$COMPILED_RES"
-(cd "$DEX" && zip -q -j "$OUT/unsigned.apk" classes.dex)
+(cd "$DEX" && zip -q -j "$OUT/unsigned.apk" classes*.dex)
 "$BUILD_TOOLS/zipalign" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 if [ "$BUILD_VARIANT" = debug ]; then

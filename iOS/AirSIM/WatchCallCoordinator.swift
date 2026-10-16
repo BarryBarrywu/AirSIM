@@ -222,6 +222,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         _ message: [String: Any],
         replyHandler: @escaping ([String: Any]) -> Void
     ) async {
+        let boundAtStart = AndroidAgentBindingPreference.selected()
         guard let requestID = (message["request_id"] as? String).flatMap(UUID.init(uuidString:)),
               let number = (message["number"] as? String).flatMap(WatchDialNumber.validated) else {
             replyHandler(["ok": false, "error": "请输入有效的电话号码"])
@@ -276,14 +277,16 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
                 return
             }
             let status = try await VoIPPushController.shared.fetchCloudAgentStatus()
-            guard status.cloudOnline else { throw CloudCommandError.unavailable }
+            let target = try CloudAgentRouting.select(boundAgentID: boundAtStart,
+                agents: status.agents.filter { PairedAndroidDeviceStore.permits($0.agentID) },
+                relayRoutingVersion: status.commandRoutingVersion)
             guard !cancelledWatchDialIDs.contains(requestID) else {
                 replyHandler(["ok": false, "error": "已取消拨号"])
                 return
             }
             // 没有可验证的本地 VoWLAN 时才回退公网 PCM。
             let outgoing = try await VoIPPushController.shared.startCloudOutgoingCall(
-                number: number, mediaTransport: .legacyPCM, timeout: 15
+                number: number, target: target, mediaTransport: .legacyPCM, timeout: 15
             )
             guard !cancelledWatchDialIDs.contains(requestID) else {
                 await endAbandonedWatchCall(outgoing)
@@ -310,6 +313,8 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
                 "request_id": requestID.uuidString,
                 "call_id": outgoing.callID,
                 "call_uuid": outgoing.uuid.uuidString,
+                "agent_id": outgoing.agentID ?? "",
+                "generation": outgoing.generation,
                 "number": number,
                 "call_secret": secret,
                 "media_url": mediaURL.absoluteString,

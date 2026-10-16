@@ -77,11 +77,20 @@ final class StandaloneCloudMediaManager implements Closeable {
                     .put("issued_at", Instant.now().toString())
                     .put("expires_at", Instant.now().plusSeconds(90).toString())
                     .put("media_transport", "legacy_pcm");
-            relay.postJSON(registration, "/v1/events/call", payload, 15_000);
+            relay.postJSON(registration, "/v2/events/call", payload, 15_000);
             start(descriptor);
         } else if (descriptor != null && descriptor.androidID.isEmpty()
                 && "outgoing".equals(direction)) {
             descriptor.androidID = androidID;
+            synchronized (lock) {
+                if (active != null && active.descriptor == descriptor) {
+                    synchronized (active) {
+                        if (active.running && active.mediaStarted && active.pcm != null && !active.pcm.isClosed()) {
+                            RemoteAudioSessionRegistry.setCloud(active.pcm, true, androidID);
+                        }
+                    }
+                }
+            }
         }
         if (descriptor != null) {
             String phase = phase(state);
@@ -91,7 +100,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                         .put("generation", descriptor.generation).put("phase", phase)
                         .put("source", "agent").put("timestamp", Instant.now().toString())
                         .put("trace_id", "standalone-" + descriptor.callUUID + "-" + phase);
-                relay.postJSON(registration, "/v1/events/call-state", lifecycle, 12_000);
+                relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
             }
             if ("ended".equals(state)) closeActive(descriptor);
         }
@@ -152,6 +161,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                             webSocket = null;
                             // The next answer/replay must restart PCM for the new socket.
                             mediaStarted = false;
+                            RemoteAudioSessionRegistry.setCloud(pcm, false, "");
                             closeSocket(mediaPump);
                             mediaPump = null;
                             closeSocket(pcm);
@@ -235,6 +245,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                             closeSocket(owner);
                         }, sessions);
                         mediaPump.start();
+                        RemoteAudioSessionRegistry.setCloud(connection, true, descriptor.androidID);
                     }
                     owner.writeText(status("pcm_listening", ""));
                     owner.writeText(status("active", ""));
@@ -244,6 +255,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                     closeSocket(connection);
                     synchronized (this) {
                         if (pcm == connection) {
+                            RemoteAudioSessionRegistry.setCloud(connection, false, "");
                             closeSocket(mediaPump); mediaPump = null; pcm = null;
                         }
                     }
@@ -282,6 +294,7 @@ final class StandaloneCloudMediaManager implements Closeable {
         @Override public synchronized void close() {
             running = false;
             mediaStarted = false;
+            RemoteAudioSessionRegistry.setCloud(pcm, false, "");
             closeSocket(webSocket);
             closeSocket(mediaPump);
             closeSocket(pcm);
@@ -343,6 +356,7 @@ final class StandaloneCloudMediaManager implements Closeable {
 
     private static JSONObject identity(JSONObject registration) throws Exception {
         return new JSONObject().put("device_id", registration.getString("device_id"))
+                .put("agent_id", registration.getString("android_agent_id"))
                 .put("device_secret", registration.getString("device_secret"));
     }
 

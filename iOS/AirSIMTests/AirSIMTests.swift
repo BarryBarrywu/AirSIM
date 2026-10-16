@@ -2,7 +2,603 @@ import CryptoKit
 import CoreBluetooth
 import AVFoundation
 import XCTest
+import Contacts
+import Network
 @testable import AirSIM
+
+@MainActor
+final class CallUpdateWorkSchedulerTests: XCTestCase {
+    func testEarlyBluetoothHangupAcceptsTerminalIDHandoffWithoutReopeningCall() {
+        var store = CallLifecycleStore()
+        let uuid = UUID(), now = Date(timeIntervalSince1970: 100)
+        func event(_ id: String, _ state: CallLifecycleState,
+                   _ source: CallLifecycleSource = .agent) -> CallLifecycleEvent {
+            .init(callID: id, callUUID: uuid, generation: 4, state: state,
+                  source: source, timestamp: now, traceID: nil, failure: nil)
+        }
+        XCTAssertTrue(store.apply(event("pending", .connecting)))
+        XCTAssertTrue(store.apply(event("pending", .ending, .app)))
+        XCTAssertFalse(store.apply(event("telecom", .active), replacingProvisionalCallID: "pending"))
+        XCTAssertEqual(store.snapshot.state, .ending)
+        XCTAssertTrue(store.apply(event("telecom", .ended), replacingProvisionalCallID: "pending"))
+        XCTAssertEqual(store.snapshot.callID, "telecom")
+        XCTAssertEqual(store.snapshot.state, .ended)
+        XCTAssertFalse(store.apply(event("telecom", .active)))
+        XCTAssertFalse(store.apply(event("pending", .active)))
+    }
+
+    func testLateBluetoothActivityRecordCannotSurviveHangupOrReplaceNewCall() {
+        var store = CallLifecycleStore()
+        let uuid = UUID(), now = Date(timeIntervalSince1970: 100)
+        let old = CallRecord(id: "old-ble", index: 0, direction: "outgoing", state: "active",
+                             number: "10010", startedAt: now, updatedAt: now, endedAt: nil, missed: false)
+        func event(_ id: String, _ uuid: UUID, _ state: CallLifecycleState) -> CallLifecycleEvent {
+            .init(callID: id, callUUID: uuid, generation: 4, state: state,
+                  source: .agent, timestamp: now, traceID: nil, failure: nil)
+        }
+        XCTAssertTrue(store.apply(event("old-ble", uuid, .active)))
+        XCTAssertNotNil(store.presentationRecord(from: old))
+        XCTAssertTrue(store.apply(event("old-ble", uuid, .ending)))
+        XCTAssertNil(store.presentationRecord(from: old), "Queued active data cannot bypass local hangup intent")
+        XCTAssertTrue(store.apply(event("old-ble", uuid, .ended)))
+        let state = LiveActivityStateBuilder.make(call: store.presentationRecord(from: old),
+            callerName: nil, moduleOnline: true, transport: .bluetooth, radio: nil, idleStartedAt: now)
+        XCTAssertEqual(state.phase, .standby)
+        XCTAssertEqual(state.callID, "")
+        XCTAssertTrue(store.apply(event("new-ble", UUID(), .ringing)))
+        XCTAssertNil(store.presentationRecord(from: old), "Old async updates cannot display a replacement's old call")
+    }
+
+    func testActivityBuilderNeverTurnsTerminalOrEndingRecordIntoRunningTimer() {
+        let now = Date(timeIntervalSince1970: 100)
+        for phase in ["ending", "ended", "failed"] {
+            let call = CallRecord(id: "finished", index: 0, direction: "outgoing", state: phase,
+                                  number: "10010", startedAt: now, updatedAt: now, endedAt: nil, missed: false)
+            let state = LiveActivityStateBuilder.make(call: call, callerName: nil, moduleOnline: true,
+                transport: .bluetooth, radio: nil, idleStartedAt: now)
+            XCTAssertEqual(state.phase, .standby, phase)
+            XCTAssertEqual(state.callID, "", phase)
+        }
+    }
+
+    func testBluetoothBackendIDAdoptionAllowsMatchingEndToClearActivity() {
+        var store = CallLifecycleStore()
+        let uuid = UUID()
+        let now = Date(timeIntervalSince1970: 100)
+        func event(_ id: String, _ state: CallLifecycleState) -> CallLifecycleEvent {
+            .init(callID: id, callUUID: uuid, generation: 4, state: state,
+                  source: .agent, timestamp: now, traceID: nil, failure: nil)
+        }
+        XCTAssertTrue(store.apply(event("iphone-provisional", .connecting)))
+        XCTAssertTrue(store.apply(event("android-telecom", .active),
+                                  replacingProvisionalCallID: "iphone-provisional"))
+        XCTAssertEqual(store.snapshot.callID, "android-telecom")
+        XCTAssertTrue(store.apply(event("android-telecom", .ended)))
+        XCTAssertFalse(store.snapshot.state.representsCall,
+                       "A matching Bluetooth hangup must clear the activity's call source")
+        XCTAssertFalse(store.apply(event("iphone-provisional", .active)))
+        XCTAssertFalse(store.apply(event("android-telecom", .active)))
+    }
+
+    func testBluetoothIdentityAdoptionCannotReplaceAnotherCallOrUndoHangup() {
+        let uuid = UUID(), now = Date(timeIntervalSince1970: 100)
+        func event(_ id: String, _ idUUID: UUID, _ generation: UInt64,
+                   _ state: CallLifecycleState) -> CallLifecycleEvent {
+            .init(callID: id, callUUID: idUUID, generation: generation, state: state,
+                  source: .agent, timestamp: now, traceID: nil, failure: nil)
+        }
+        var store = CallLifecycleStore()
+        XCTAssertTrue(store.apply(event("pending", uuid, 4, .connecting)))
+        XCTAssertFalse(store.apply(event("real", UUID(), 4, .active), replacingProvisionalCallID: "pending"))
+        XCTAssertFalse(store.apply(event("real", uuid, 5, .active), replacingProvisionalCallID: "pending"))
+        XCTAssertFalse(store.apply(event("real", uuid, 4, .active), replacingProvisionalCallID: "wrong"))
+        XCTAssertEqual(store.snapshot.callID, "pending")
+        XCTAssertTrue(store.apply(event("pending", uuid, 4, .ending)))
+        XCTAssertFalse(store.apply(event("real", uuid, 4, .active), replacingProvisionalCallID: "pending"))
+        XCTAssertEqual(store.snapshot.state, .ending)
+    }
+
+    func testPairingCryptoAndCredentialIOStayOffMainThread() async throws {
+        let store = PairingThreadProbe()
+        let worker = VoBLEPairingWorker(store: store)
+        let androidPrivate = Curve25519.KeyAgreement.PrivateKey()
+        let prepared = try await worker.prepare(identity: "fixture",
+            androidPublic: androidPrivate.publicKey.rawRepresentation,
+            androidNonce: Data(repeating: 7, count: 32))
+        let remote = try VoBLESessionAuthenticator.derivePairing(
+            privateKey: androidPrivate.rawRepresentation,
+            peerPublicKey: prepared.publicKey, transcript: prepared.transcript)
+        XCTAssertEqual(remote, prepared.material)
+        try await worker.save(VoBLEStoredPeer(identity: "fixture",
+            pairingKey: prepared.material.pairingKey, createdAt: Date()))
+        XCTAssertEqual(store.observedMainThread, [false, false])
+    }
+
+    func testExplicitBluetoothUsesEventsInsteadOfInheritedHTTPPolling() {
+        XCTAssertFalse(AppRefreshPolicy.shouldRunAgentPolling(mode: .bluetooth))
+        XCTAssertTrue(AppRefreshPolicy.shouldRunAgentPolling(mode: .vowlan))
+        XCTAssertTrue(AppRefreshPolicy.shouldRunAgentPolling(mode: .automatic))
+        XCTAssertTrue(AppRefreshPolicy.shouldRunAgentPolling(mode: .cloud))
+    }
+
+    func testScreenLockCannotExpirePendingOrSystemBluetoothReconnection() {
+        XCTAssertFalse(VoBLEConnectionTimeoutPolicy.shouldExpire(state: .connecting, enabled: true,
+            elapsed: 120, isBackground: true, systemReconnecting: false))
+        XCTAssertFalse(VoBLEConnectionTimeoutPolicy.shouldExpire(state: .connecting, enabled: true,
+            elapsed: 120, isBackground: false, systemReconnecting: true))
+        XCTAssertTrue(VoBLEConnectionTimeoutPolicy.shouldExpire(state: .connecting, enabled: true,
+            elapsed: 8, isBackground: false, systemReconnecting: false))
+    }
+
+    func testOldBluetoothSubscriptionCannotFailReplacementWithSameUUID() {
+        let uuid = CBUUID(string: "7e57a002-7a17-4d9f-9a3c-41a17b1e0001")
+        let old = CBMutableCharacteristic(type: uuid, properties: .indicate, value: nil, permissions: .readable)
+        let current = CBMutableCharacteristic(type: uuid, properties: .indicate, value: nil, permissions: .readable)
+        XCTAssertFalse(VoBLECharacteristicCallbackPolicy.accepts(old, current: [current]))
+        XCTAssertTrue(VoBLECharacteristicCallbackPolicy.accepts(current, current: [current]))
+        XCTAssertFalse(VoBLECharacteristicCallbackPolicy.accepts(old, current: [nil]))
+    }
+
+    func testInvalidatedBluetoothServicesRequireFreshSubscriptionsAndAuthentication() {
+        var reducer = VoBLEConnectionReducer()
+        reducer.apply(.discovered(UUID()))
+        reducer.apply(.connected)
+        reducer.apply(.characteristicsReady)
+        reducer.apply(.controlSubscription(true))
+        reducer.apply(.authenticated(identity: "fixture"))
+        XCTAssertEqual(reducer.state, .ready)
+        reducer.apply(.servicesInvalidated)
+        XCTAssertNil(reducer.authenticatedIdentity)
+        XCTAssertEqual(reducer.state, .connected)
+        reducer.apply(.authenticated(identity: "fixture"))
+        XCTAssertNotEqual(reducer.state, .ready)
+        reducer.apply(.characteristicsReady)
+        XCTAssertNotEqual(reducer.state, .ready)
+        reducer.apply(.controlSubscription(true))
+        XCTAssertEqual(reducer.state, .ready)
+    }
+
+    func testEndedCallCannotRegisterAfterPhoneActivationReturns() async throws {
+        var current = true
+        var registrations = 0
+        var rollbacks = 0
+        let result = await LocalCallAudioStartupCoordinator.start(
+            isCurrent: { current },
+            activatePhoneAudio: { current = false; return true },
+            registerAgentAudio: { registrations += 1; return .registered },
+            rollbackPhoneAudio: { rollbacks += 1 }
+        )
+        XCTAssertEqual(result, .callNoLongerActive)
+        XCTAssertEqual(registrations, 0)
+        XCTAssertEqual(rollbacks, 1)
+    }
+
+    func testEndedCallCannotLockRouteAfterRegistrationReturns() async throws {
+        var current = true
+        var rollbacks = 0
+        let result = await LocalCallAudioStartupCoordinator.start(
+            isCurrent: { current }, activatePhoneAudio: { true },
+            registerAgentAudio: { current = false; return .registered },
+            rollbackPhoneAudio: { rollbacks += 1 }
+        )
+        XCTAssertEqual(result, .callNoLongerActive)
+        XCTAssertEqual(rollbacks, 1)
+    }
+
+    func testAudioStartupTraceSurvivesDisabledVerboseWithoutCallIdentifiers() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = directory.appendingPathComponent("audio-trace.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 10, persistenceURL: file)
+        await recorder.recordAudioStartup(phase: "engine_ready", elapsedMilliseconds: 180)
+        await recorder.recordAudioStartup(phase: "call_id=private")
+        let restored = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 10, persistenceURL: file)
+        let entries = await restored.snapshot()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.category, "call-audio")
+        XCTAssertEqual(entries.first?.elapsedMilliseconds, 180)
+        XCTAssertEqual(entries.first?.fields, ["phase": "engine_ready"])
+    }
+
+    func testSlowSupplementalWorkCannotDelayToneStopOrAudioStartup() async {
+        let scheduler = CallUpdateWorkScheduler()
+        let waiting = expectation(description: "supplemental network request is pending")
+        var release: CheckedContinuation<Void, Never>?
+        var tonePlaying = true
+        var audioStarted = false
+        let operation = Task {
+            await scheduler.process(isCurrent: { true }, synchronizeCall: { tonePlaying = false },
+                updateAudio: { audioStarted = true }, updateSupplemental: { _ in
+                    await withCheckedContinuation { release = $0; waiting.fulfill() }
+                })
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        XCTAssertFalse(tonePlaying, "connected call must stop waiting tone before a slow cloud request completes")
+        XCTAssertTrue(audioStarted, "VoWLAN audio startup must not wait for registration or Live Activity")
+        release?.resume()
+        await operation.value
+        scheduler.cancel()
+    }
+
+    func testPollingCoalescesSupplementalRequestsButStillProcessesAudio() async {
+        let scheduler = CallUpdateWorkScheduler()
+        let waiting = expectation(description: "one supplemental request started")
+        var release: CheckedContinuation<Void, Never>?
+        var starts = 0
+        var audioUpdates = 0
+        await scheduler.process(isCurrent: { true }, synchronizeCall: {}, updateAudio: { audioUpdates += 1 },
+            updateSupplemental: { _ in
+                starts += 1
+                await withCheckedContinuation { release = $0; waiting.fulfill() }
+            })
+        await fulfillment(of: [waiting], timeout: 2)
+        await scheduler.process(isCurrent: { true }, synchronizeCall: {}, updateAudio: { audioUpdates += 1 },
+            updateSupplemental: { _ in starts += 1 })
+        XCTAssertEqual(starts, 1, "slow metadata must not create one new cloud task per poll")
+        XCTAssertEqual(audioUpdates, 2, "new call-state updates must not be blocked by pending metadata")
+        scheduler.cancel()
+        release?.resume()
+    }
+
+    func testHangupInvalidatesLateSupplementalResultsEvenIfNetworkIgnoresCancellation() async {
+        let scheduler = CallUpdateWorkScheduler()
+        let waiting = expectation(description: "old request pending")
+        let finished = expectation(description: "old callback resumed")
+        var release: CheckedContinuation<Void, Never>?
+        var displayedOldCall = false
+        await scheduler.process(isCurrent: { true }, synchronizeCall: {}, updateAudio: {},
+            updateSupplemental: { isCurrent in
+                await withCheckedContinuation { release = $0; waiting.fulfill() }
+                if isCurrent() { displayedOldCall = true }
+                finished.fulfill()
+            })
+        await fulfillment(of: [waiting], timeout: 2)
+        scheduler.cancel()
+        release?.resume()
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertFalse(displayedOldCall, "late cloud result cannot revive a hung-up call")
+    }
+
+    func testStaleCallCannotStartAudioOrSupplementalWork() async {
+        let scheduler = CallUpdateWorkScheduler()
+        var operations = 0
+        await scheduler.process(isCurrent: { false }, synchronizeCall: { operations += 1 },
+            updateAudio: { operations += 1 }, updateSupplemental: { _ in operations += 1 })
+        await Task.yield()
+        XCTAssertEqual(operations, 0)
+        scheduler.cancel()
+    }
+
+    func testCancelDuringAudioStartDoesNotScheduleOldSupplementalWork() async {
+        let scheduler = CallUpdateWorkScheduler()
+        let waiting = expectation(description: "audio startup suspended")
+        var release: CheckedContinuation<Void, Never>?
+        var supplementalUpdates = 0
+        let operation = Task {
+            await scheduler.process(isCurrent: { true }, synchronizeCall: {}, updateAudio: {
+                await withCheckedContinuation { release = $0; waiting.fulfill() }
+            }, updateSupplemental: { _ in supplementalUpdates += 1 })
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        scheduler.cancel()
+        release?.resume()
+        await operation.value
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(supplementalUpdates, 0, "hangup during startup must invalidate the whole old update")
+        scheduler.cancel()
+    }
+
+    func testSynchronousEndIntentStopsAudioBeforeItCanStart() async {
+        let scheduler = CallUpdateWorkScheduler()
+        var current = true
+        var audioStarts = 0
+        await scheduler.process(isCurrent: { current }, synchronizeCall: { current = false },
+            updateAudio: { audioStarts += 1 }, updateSupplemental: { _ in })
+        XCTAssertEqual(audioStarts, 0, "an end intent during call synchronization must prevent audio startup")
+        scheduler.cancel()
+    }
+}
+
+final class CloudAgentRoutingTests: XCTestCase {
+    private func status(_ agents: String, capabilities: String = #", "capabilities":{"agent_command_routing":1}"#) throws -> CloudAgentStatus {
+        try JSONDecoder().decode(CloudAgentStatus.self, from: Data((#"{"cloud_online":true,"active_agent_id":"B","agents":\#(agents)\#(capabilities)}"#).utf8))
+    }
+    func testBoundAgentSurvivesOtherAgentsLatestHeartbeat() throws {
+        let s = try status(#"[{"agent_id":"A","cloud_online":true,"command_routing_version":1},{"agent_id":"B","cloud_online":true,"command_routing_version":1}]"#)
+        let target = try CloudAgentRouting.select(boundAgentID:"A", agents:s.agents, relayRoutingVersion:s.commandRoutingVersion)
+        XCTAssertEqual(target.agentID,"A")
+        XCTAssertThrowsError(try CloudAgentRouting.select(boundAgentID:nil,agents:s.agents,relayRoutingVersion:1))
+        XCTAssertThrowsError(try CloudAgentRouting.select(boundAgentID:"offline",agents:s.agents,relayRoutingVersion:1))
+        XCTAssertThrowsError(try CloudAgentRouting.select(boundAgentID:"A",agents:s.agents,relayRoutingVersion:nil))
+        let body = target.addingRouting(to:["command_id":"synthetic-command"])
+        XCTAssertEqual(body["target_agent_id"],"A")
+        XCTAssertEqual(body["command_id"],"synthetic-command")
+    }
+    func testLegacyCapabilitiesCannotCreateNewActions() throws {
+        let old = try status(#"[{"agent_id":"A","cloud_online":true}]"#,capabilities:"")
+        XCTAssertNil(old.commandRoutingVersion)
+        XCTAssertThrowsError(try CloudAgentRouting.select(boundAgentID:"A",agents:old.agents,relayRoutingVersion:1))
+    }
+    func testShortResultPollingRemainsBounded() {
+        XCTAssertEqual(CloudAgentRouting.resultDelay(attempt:0),0.5)
+        XCTAssertEqual(CloudAgentRouting.resultDelay(attempt:1),1)
+        XCTAssertEqual(CloudAgentRouting.resultDelay(attempt:10),2)
+    }
+    func testDTMFGenerationIsEncodedAsNumber() throws {
+        let call = IncomingVoIPCall(bluetoothCallID:"fixture",uuid:UUID(),generation:7,number:nil)
+        let fields = CloudAgentRouting.callIdentity(call)
+        let data = try JSONSerialization.data(withJSONObject:fields)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any])
+        XCTAssertEqual(decoded["generation"] as? Int,7)
+        XCTAssertNil(decoded["generation"] as? String)
+    }
+    func testIncomingSourceIsNeverInferredFromSelection() throws {
+        var payload:[AnyHashable:Any] = ["event":"incoming_call","call_id":"synthetic-call","call_uuid":"c87f982a-1750-4f03-9a96-6553e454f522"]
+        XCTAssertNil(try IncomingVoIPCall(userInfo:payload).agentID)
+        payload["agent_id"]="A"
+        XCTAssertEqual(try IncomingVoIPCall(userInfo:payload).agentID,"A")
+    }
+    @MainActor func testResultPollingStopsAtTerminalOrCancellation() async throws {
+        var requests = 0
+        let value: String = try await CloudAgentRouting.poll(timeout:1, request:{ requests += 1; return "completed" }, isTerminal:{ $0 == "completed" })
+        XCTAssertEqual(value,"completed"); XCTAssertEqual(requests,1)
+        let task = Task { @MainActor in
+            try await CloudAgentRouting.poll(timeout:1, request:{ requests += 1; return "pending" }, isTerminal:{ _ in false })
+        }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("cancelled poll returned") }
+        catch is CancellationError {} catch { XCTFail("wrong cancellation error") }
+        XCTAssertEqual(requests,1)
+    }
+}
+
+final class WatchAgentRoutingTests: XCTestCase {
+    func testWatchPushAndOutgoingCopiesKeepSourceAgentAndGeneration() throws {
+        let payload:[String:Any] = ["event":"incoming_call", "call_id":"synthetic-call-A",
+            "call_uuid":"c87f982a-1750-4f03-9a96-6553e454f522", "agent_id":"android-A", "generation":7,
+            "call_secret":String(repeating:"x",count:32),
+            "media_url":"wss://relay.example/v1/calls/c87f982a-1750-4f03-9a96-6553e454f522/connect"]
+        let call = try WatchVoIPCall(userInfo:payload)
+        XCTAssertEqual(call.agentID,"android-A"); XCTAssertEqual(call.generation,7)
+        let control = call.controlMessage(action:"end")
+        XCTAssertEqual(control["call_id"] as? String,"synthetic-call-A")
+        XCTAssertEqual(control["agent_id"] as? String,"android-A")
+        XCTAssertEqual(control["generation"] as? UInt64,7)
+        let outgoing = try WatchVoIPCall(outgoingReply:payload)
+        XCTAssertEqual(outgoing.agentID,call.agentID); XCTAssertEqual(outgoing.generation,7)
+        let endpoint = try XCTUnwrap(WatchLocalPCMEndpoint(dictionary:["pcm_host":"192.168.1.2","pcm_port":18080,"pcm_secret":Data(repeating:1,count:32).base64EncodedString()]))
+        XCTAssertEqual(outgoing.usingLocalMedia(endpoint).agentID,"android-A")
+        var legacy=payload;legacy.removeValue(forKey:"agent_id");legacy.removeValue(forKey:"generation")
+        XCTAssertNil(try WatchVoIPCall(userInfo:legacy).agentID)
+        XCTAssertEqual(try WatchVoIPCall(userInfo:legacy).generation,1)
+    }
+}
+
+final class VoWLANNetworkRecoveryTests: XCTestCase {
+    func testRecoveryDoesNotMakeACloudOrBluetoothCallPollVoWLAN() {
+        XCTAssertFalse(AgentPollingRouteSelector.shouldPollLocal(mode: .automatic, activeTransport: .cloud))
+        XCTAssertFalse(AgentPollingRouteSelector.shouldPollLocal(mode: .automatic, activeTransport: .bluetooth))
+        XCTAssertTrue(AgentPollingRouteSelector.shouldPollLocal(mode: .automatic, activeTransport: .vowlan))
+        XCTAssertFalse(AgentPollingRouteSelector.shouldPollLocal(mode: .cloud, activeTransport: nil))
+        XCTAssertFalse(AgentPollingRouteSelector.shouldPollLocal(mode: .bluetooth, activeTransport: nil))
+        XCTAssertTrue(AgentPollingRouteSelector.shouldPollLocal(mode: .automatic, activeTransport: nil))
+    }
+    func testReturnToWiFiAllowsOnlyFreshIdleLocalCapableModes() {
+        var gate = VoWLANNetworkRecoveryPlan()
+        let cellular = gate.changed(wifiAvailable: false)
+        XCTAssertFalse(gate.permits(cellular, mode: .automatic, paired: true, callInProgress: false))
+        let wifi = gate.changed(wifiAvailable: true)
+        XCTAssertTrue(gate.permits(wifi, mode: .automatic, paired: true, callInProgress: false))
+        XCTAssertTrue(gate.permits(wifi, mode: .vowlan, paired: true, callInProgress: false))
+        XCTAssertFalse(gate.permits(wifi, mode: .cloud, paired: true, callInProgress: false))
+        XCTAssertFalse(gate.permits(wifi, mode: .bluetooth, paired: true, callInProgress: false))
+        XCTAssertFalse(gate.permits(wifi, mode: .automatic, paired: false, callInProgress: false))
+        XCTAssertFalse(gate.permits(wifi, mode: .automatic, paired: true, callInProgress: true))
+        XCTAssertFalse(gate.permits(cellular, mode: .automatic, paired: true, callInProgress: false))
+        gate.invalidate()
+        XCTAssertFalse(gate.permits(wifi, mode: .automatic, paired: true, callInProgress: false))
+    }
+}
+
+final class SMSDeletionTests: XCTestCase {
+    func testRepeatedFractionalLegacySaveAndUpgradeDoNotDuplicateMessages() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocalHistoryStore(directoryURL: directory)
+        let message = SMSMessage(sender: "fixture", content: "sent", code: nil,
+                                 timestamp: Date(timeIntervalSince1970: 1000.125), deliveryID: nil, direction: .outgoing)
+        XCTAssertTrue(store.saveMessages([message]))
+        XCTAssertTrue(store.saveMessages([message]))
+        XCTAssertEqual(store.loadMessages().count, 1)
+        var upgraded = message; upgraded.deliveryID = "upgraded"
+        XCTAssertTrue(store.saveMessages([upgraded]))
+        XCTAssertEqual(store.loadMessages().map(\.deliveryID), ["upgraded"])
+    }
+    func testDeletedLegacySMSStaysDeletedWhenAgentLaterAddsDeliveryID() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocalHistoryStore(directoryURL: directory)
+        let old = SMSMessage(sender: "fixture", content: "legacy", code: nil,
+                             timestamp: Date(timeIntervalSince1970: 1000), deliveryID: nil)
+        XCTAssertTrue(store.saveMessages([old]))
+        XCTAssertTrue(store.deleteMessages(ids: [old.id], from: [old]))
+        var upgraded = old; upgraded.deliveryID = "added-by-new-agent"
+        XCTAssertTrue(store.saveMessages([upgraded]))
+        XCTAssertTrue(store.loadMessages().isEmpty)
+    }
+    func testDistinctDeliveryIDsNeverShareDeletionEvenWithIdenticalContentAndTime() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocalHistoryStore(directoryURL: directory)
+        let first = SMSMessage(sender: "fixture", content: "same", code: nil,
+                               timestamp: Date(timeIntervalSince1970: 1000), deliveryID: "first")
+        var second = first; second.deliveryID = "second"
+        XCTAssertTrue(store.saveMessages([first, second]))
+        XCTAssertTrue(store.deleteMessages(ids: [first.id], from: [first, second]))
+        XCTAssertEqual(store.loadMessages(), [second])
+        XCTAssertTrue(store.saveMessages([first, second]))
+        XCTAssertEqual(store.loadMessages(), [second])
+    }
+    func testBatchDeletionDoesNotDeleteNewSameSenderAndRejectsLateBackgroundSave() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let foreground = LocalHistoryStore(directoryURL: directory)
+        let background = LocalHistoryStore(directoryURL: directory)
+        let old = SMSMessage(sender: "fixture", content: "old", code: nil,
+                             timestamp: Date(timeIntervalSince1970: 1000.125), deliveryID: nil)
+        let fresh = SMSMessage(sender: "fixture", content: "fresh", code: nil,
+                               timestamp: Date(timeIntervalSince1970: 1002), deliveryID: "fresh")
+        XCTAssertTrue(foreground.saveMessages([old]))
+        let staleBackgroundSnapshot = background.loadMessages()
+        XCTAssertTrue(background.saveMessages(staleBackgroundSnapshot + [fresh]))
+        XCTAssertTrue(foreground.deleteMessages(ids: [old.id], from: [old]))
+        XCTAssertEqual(foreground.loadMessages(), [fresh])
+        XCTAssertTrue(background.saveMessages(staleBackgroundSnapshot + [fresh]))
+        XCTAssertEqual(foreground.loadMessages(), [fresh])
+        XCTAssertTrue(background.saveMessages(staleBackgroundSnapshot))
+        XCTAssertEqual(foreground.loadMessages(), [fresh], "late background writes must not erase a newer inbox record")
+        XCTAssertEqual(foreground.visibleMessages([old, fresh]), [fresh])
+    }
+
+    func testDeletionSurvivesRestartAndStaleSyncButAllowsNewMessages() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocalHistoryStore(directoryURL: directory)
+        let old = SMSMessage(sender: "fixture", content: "private fixture", code: nil,
+                             timestamp: Date(timeIntervalSince1970: 1000), deliveryID: "old")
+        let new = SMSMessage(sender: "fixture", content: "new fixture", code: nil,
+                             timestamp: Date(timeIntervalSince1970: 1001), deliveryID: "new")
+        XCTAssertTrue(store.saveMessages([old]))
+        XCTAssertTrue(store.deleteMessages(ids: [old.id], from: [old]))
+        let reopened = LocalHistoryStore(directoryURL: directory)
+        XCTAssertEqual(reopened.loadMessages(), [])
+        XCTAssertTrue(reopened.saveMessages([old, new]))
+        XCTAssertEqual(reopened.loadMessages(), [new])
+        var legacyDuplicate = old
+        legacyDuplicate.deliveryID = nil
+        XCTAssertEqual(reopened.visibleMessages([old, legacyDuplicate, new]), [new])
+        // Tombstones cannot retain the deleted SMS body or phone number.
+        let disk = try String(contentsOf: directory.appendingPathComponent("messages.json"), encoding: .utf8)
+        XCTAssertFalse(disk.contains("private fixture"))
+    }
+
+    func testLegacyMessageArrayMigratesAndWriteFailureDoesNotDelete() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let message = SMSMessage(sender: "fixture", content: "legacy", code: nil,
+                                 timestamp: Date(timeIntervalSince1970: 1000), deliveryID: nil)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([message]).write(to: directory.appendingPathComponent("messages.json"))
+        let store = LocalHistoryStore(directoryURL: directory)
+        XCTAssertEqual(store.loadMessages(), [message])
+        XCTAssertTrue(store.deleteMessages(ids: [message.id], from: [message]))
+        XCTAssertEqual(store.loadMessages(), [])
+        let invalidRoot = directory.appendingPathComponent("not-a-directory")
+        try Data().write(to: invalidRoot)
+        XCTAssertFalse(LocalHistoryStore(directoryURL: invalidRoot).deleteMessages(ids: [message.id], from: [message]))
+    }
+}
+
+private final class LocalPairingHTTPProbe: @unchecked Sendable {
+    private let listener: NWListener
+    private let response: Data?
+    private let lock = NSLock()
+    private var connections: [NWConnection] = []
+    init(response: Data?) throws {
+        self.response = response
+        listener = try NWListener(using: .tcp)
+    }
+    func start() async throws -> NWEndpoint {
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            self.lock.withLock { self.connections.append(connection) }
+            connection.start(queue: DispatchQueue(label: "AirSIMTests.pairing-peer"))
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { _, _, _, _ in
+                if let response = self.response {
+                    connection.send(content: response, contentContext: .finalMessage, isComplete: true,
+                        completion: .contentProcessed { _ in connection.cancel() })
+                }
+            }
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            listener.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                if case .ready = state, let port = self.listener.port {
+                    self.listener.stateUpdateHandler = nil
+                    continuation.resume(returning: .hostPort(host: "127.0.0.1", port: port))
+                } else if case .failed(let error) = state {
+                    self.listener.stateUpdateHandler = nil
+                    continuation.resume(throwing: error)
+                }
+            }
+            listener.start(queue: DispatchQueue(label: "AirSIMTests.pairing-listener"))
+        }
+    }
+    func stop() {
+        listener.cancel()
+        lock.withLock { connections.forEach { $0.cancel() }; connections = [] }
+    }
+}
+
+private actor ManualPairingPeerProbe {
+    let key = Curve25519.KeyAgreement.PrivateKey()
+    let secret = Data(0..<32)
+    let corruptRoute: Bool
+    init(corruptRoute: Bool = false) { self.corruptRoute = corruptRoute }
+    func exchange(endpoint: NWEndpoint, body: Data, method: String, path: String, timeout: TimeInterval) throws -> Data {
+        guard endpoint == .hostPort(host: "100.64.1.2", port: 38000) else { throw URLError(.badURL) }
+        if method == "GET", path == "/pair/v1/info" {
+            return try JSONSerialization.data(withJSONObject: ["product": "airsim-pair", "version": 1,
+                "session_id": "fixture-session", "server_public_key": key.publicKey.rawRepresentation.base64EncodedString(),
+                "expires_at": Date().addingTimeInterval(120).timeIntervalSince1970 * 1000])
+        }
+        guard method == "POST", path == "/pair/v1/claim",
+              let claim = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              claim["want_direct_route"] as? Bool == true,
+              claim["session_id"] as? String == "fixture-session",
+              let clientKeyText = claim["client_public_key"] as? String,
+              let sealedText = claim["sealed_registration"] as? String else { throw URLError(.badServerResponse) }
+        func decode(_ text: String) -> Data {
+            let base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            return Data(base64Encoded: base64 + String(repeating: "=", count: (4 - base64.count % 4) % 4))!
+        }
+        let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: decode(clientKeyText))
+        let shared = try key.sharedSecretFromKeyAgreement(with: publicKey)
+        let aes = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data("fixture-session".utf8),
+            sharedInfo: Data("AirSIMPair/v1:123456".utf8), outputByteCount: 32)
+        let plaintext = try AES.GCM.open(AES.GCM.SealedBox(combined: decode(sealedText)), using: aes,
+                                         authenticating: Data("fixture-session".utf8))
+        let registration = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertTrue(registration["local_mode"] as? Bool == true)
+        XCTAssertNil(registration["relay_url"])
+        let encodedSecret = try XCTUnwrap(registration["vowlan_secret"] as? String)
+        XCTAssertEqual(decode(encodedSecret), secret)
+        let canonical = "AIRSIM-DIRECT1\nfixture-session\n\(clientKeyText)\nfixture-agent\n39001\n39002"
+        let proof = Data(HMAC<SHA256>.authenticationCode(for: Data(canonical.utf8), using: SymmetricKey(data: secret)))
+            .base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        return try JSONSerialization.data(withJSONObject: ["configured": true, "agent_id": "fixture-agent",
+            "control_port": corruptRoute ? 39003 : 39001, "pcm_port": 39002, "route_proof": proof])
+    }
+}
+
+private final class ContactFetcherProbe: ContactFetching, @unchecked Sendable {
+    let result: Result<[ContactStore.Contact], Error>
+    let state: ContactAuthorizationState
+    private let lock = NSLock()
+    private var reads = 0
+    var readCount: Int { lock.withLock { reads } }
+    init(_ result: Result<[ContactStore.Contact], Error>, state: ContactAuthorizationState = .authorized) {
+        self.result = result
+        self.state = state
+    }
+    func authorizationState() -> ContactAuthorizationState { state }
+    func requestAccess() async throws -> Bool { state == .authorized }
+    func fetchAll() throws -> [ContactStore.Contact] {
+        lock.withLock { reads += 1 }
+        return try result.get()
+    }
+}
 
 // Simulator test runner is unsigned and has no Keychain entitlement (-34018).
 // Keep the real controller; replace only the OS credential persistence boundary.
@@ -11,6 +607,18 @@ private final class InMemoryVoBLEPairingStore: VoBLEPairingStoring, @unchecked S
     func save(_ peer: VoBLEStoredPeer) throws { values[peer.identity] = peer }
     func load(identity: String) throws -> VoBLEStoredPeer? { values[identity] }
     func revoke(identity: String) throws { values.removeValue(forKey: identity) }
+}
+
+private final class PairingThreadProbe: VoBLEPairingStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var observations: [Bool] = []
+    var observedMainThread: [Bool] { lock.withLock { observations } }
+    func save(_ peer: VoBLEStoredPeer) throws { lock.withLock { observations.append(Thread.isMainThread) } }
+    func load(identity: String) throws -> VoBLEStoredPeer? {
+        lock.withLock { observations.append(Thread.isMainThread) }
+        return nil
+    }
+    func revoke(identity: String) throws {}
 }
 
 private actor OutgoingCallServiceProbe: OutgoingCallServicing {
@@ -90,6 +698,203 @@ private struct AgentSMSInboxProbe: AgentSMSInboxServicing {
 }
 
 final class AirSIMTests: XCTestCase {
+    func testOverlayControlAndPCMUseSystemRoutingNotWiFiOrWiredEthernet() throws {
+        XCTAssertNil(WiredHTTPTransport.pathSetupTimeout(systemRouting: true, requestTimeout: 20))
+        XCTAssertEqual(WiredHTTPTransport.pathSetupTimeout(systemRouting: false, requestTimeout: 20), 1.5)
+        let endpoint = try VoWLANEndpoint(host: "100.64.1.2", controlPort: 39001, pcmPort: 39002)
+        let credential = try VoWLANCredential(secret: Data(repeating: 1, count: 32))
+        let pcm = PCMRoute.vowlan(endpoint: endpoint, credential: credential)
+        XCTAssertTrue(AirSIMAPI.isAllowedLocalURL(endpoint.controlBaseURL))
+        XCTAssertFalse(pcm.requiresWiFi)
+        XCTAssertTrue(pcm.usesSystemRouting)
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host))
+        let api = AirSIMAPI(route: .vowlan(endpoint: endpoint, credential: credential))
+        XCTAssertEqual(api.baseURL.absoluteString, "http://100.64.1.2:39001/")
+        XCTAssertFalse(AirSIMAPI.isAllowedLocalURL(URL(string: "http://8.8.8.8:39001/")!))
+        XCTAssertTrue(AirSIMLiveActivityActionRouting.opensApp(for: .vowlan))
+        XCTAssertTrue(AirSIMLiveActivityActionRouting.opensApp(for: .bluetooth))
+        XCTAssertFalse(AirSIMLiveActivityActionRouting.opensApp(for: .cloud))
+    }
+    func testOldProbeCannotOverwriteNewProbeResult() {
+        var gate = VoWLANProbeGeneration()
+        let old = gate.begin()
+        let new = gate.begin()
+        XCTAssertFalse(gate.accepts(old))
+        XCTAssertTrue(gate.accepts(new))
+    }
+    func testPairingTCPTransportReadsFramedResponseAndBoundsUnresponsivePeer() async throws {
+        let peer = try LocalPairingHTTPProbe(response: Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8))
+        let endpoint = try await peer.start()
+        defer { peer.stop() }
+        let data = try await SamsungPairingClient.networkTransport(endpoint, Data(), "GET", "/pair/v1/info", 3)
+        XCTAssertEqual(data, Data("{}".utf8))
+        let silent = try LocalPairingHTTPProbe(response: nil)
+        let silentEndpoint = try await silent.start()
+        defer { silent.stop() }
+        do {
+            _ = try await SamsungPairingClient.networkTransport(silentEndpoint, Data(), "GET", "/pair/v1/info", 0.1)
+            XCTFail("silent peer must time out")
+        } catch {
+            XCTAssertEqual(error as? SamsungPairingClientError, .timedOut)
+        }
+        let cancelled = Task { try await SamsungPairingClient.networkTransport(silentEndpoint, Data(), "GET", "/pair/v1/info", 10) }
+        cancelled.cancel()
+        do { _ = try await cancelled.value; XCTFail("cancelled request must finish") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+    func testManualPairingEncryptsLocalCredentialsAndAcceptsOnlyAuthenticatedPorts() async throws {
+        let peer = ManualPairingPeerProbe()
+        let registration = AgentPushRegistration.local(vowlanSecret: Data(0..<32).base64EncodedString())
+        let address = try SamsungManualPairingAddress(host: "100.64.1.2", port: "38000")
+        let result = try await SamsungPairingClient.pairManually(address: address, code: "123456", registration: registration,
+            transport: { endpoint, body, method, path, timeout in
+                try await peer.exchange(endpoint: endpoint, body: body, method: method, path: path, timeout: timeout)
+            })
+        XCTAssertEqual(result.route, .init(agentID: "fixture-agent", host: "100.64.1.2", controlPort: 39001, pcmPort: 39002))
+        let corrupt = ManualPairingPeerProbe(corruptRoute: true)
+        do {
+            _ = try await SamsungPairingClient.pairManually(address: address, code: "123456", registration: registration,
+                transport: { endpoint, body, method, path, timeout in
+                    try await corrupt.exchange(endpoint: endpoint, body: body, method: method, path: path, timeout: timeout)
+                })
+            XCTFail("tampered port must not become a dial route")
+        } catch {
+            XCTAssertEqual(error as? SamsungPairingClientError, .directGatewayUnavailable)
+        }
+    }
+    func testPairingHTTPResponseDistinguishesBadCodeFromMissingManualSupport() throws {
+        let ok = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8)
+        XCTAssertEqual(try SamsungPairingHTTPResponse.decode(ok, metadata: false), Data("{}".utf8))
+        XCTAssertThrowsError(try SamsungPairingHTTPResponse.decode(Data("HTTP/1.1 401 Error\r\nContent-Length: 0\r\n\r\n".utf8), metadata: false)) { error in
+            XCTAssertEqual(error as? SamsungPairingClientError, .rejected)
+        }
+        XCTAssertThrowsError(try SamsungPairingHTTPResponse.decode(Data("HTTP/1.1 404 Error\r\nContent-Length: 0\r\n\r\n".utf8), metadata: true)) { error in
+            XCTAssertEqual(error as? SamsungPairingClientError, .manualUnsupported)
+        }
+        for invalid in ["HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n{}", "HTTP/1.1 500 200 Error\r\nContent-Length: 2\r\n\r\n{}"] {
+            XCTAssertThrowsError(try SamsungPairingHTTPResponse.decode(Data(invalid.utf8), metadata: false))
+        }
+    }
+
+    func testManualRouteSelectionSurvivesRestartButHonorsBindingAndDeletion() throws {
+        let suite = "AirSIMTests.manual-selection.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let route = VoWLANManualRoute(agentID: "manual-agent", host: "100.64.1.2", controlPort: 39001, pcmPort: 39002)
+        try VoWLANManualRouteStore.save(route, defaults: defaults)
+        let reopened = try XCTUnwrap(UserDefaults(suiteName: suite))
+        XCTAssertEqual(VoWLANManualRouteStore.selected(defaults: reopened), route)
+        AndroidAgentBindingPreference.set("other-agent", defaults: reopened)
+        XCTAssertNil(VoWLANManualRouteStore.selected(defaults: reopened))
+        AndroidAgentBindingPreference.set("manual-agent", defaults: reopened)
+        PairedAndroidDeviceStore.forget("manual-agent", defaults: reopened)
+        XCTAssertNil(VoWLANManualRouteStore.selected(defaults: reopened))
+    }
+
+    func testFreshDiscoveryReplacesUnreachableManualRouteForSamePhone() throws {
+        let saved = VoWLANManualRoute(agentID: "agent", host: "100.64.1.2", controlPort: 39001, pcmPort: 39002)
+        let wifi = VoWLANDiscoveredAgent(id: "agent", endpoint: try .init(host: "192.168.1.2", controlPort: 40001, pcmPort: 40002),
+            deviceName: "Fresh phone", manufacturer: nil, model: nil, phoneNumber: nil, agentKind: "standalone")
+        let fallback = VoWLANRouteCandidates.merge(discovered: [wifi], manual: [saved], live: [], preferred: nil)
+        XCTAssertEqual(fallback, [wifi])
+        let manualFirst = VoWLANRouteCandidates.merge(discovered: [wifi], manual: [saved], live: [], preferred: saved.endpoint)
+        XCTAssertEqual(manualFirst.first?.endpoint, saved.endpoint)
+        let noBroadcast = VoWLANRouteCandidates.merge(discovered: [], manual: [saved], live: [], preferred: nil)
+        XCTAssertEqual(noBroadcast.first?.endpoint, saved.endpoint)
+    }
+    func testManualPairingValidatesAddressesAndNeverAcceptsPublicOrMalformedTargets() throws {
+        let secret = Data(0..<32)
+        let proof = "hQLACWxrSaTjg3tib03xCffgi2LQfdBAV_HLMPmj3hI"
+        XCTAssertTrue(SamsungDirectRouteProof.verify(proof, secret: secret, sessionID: "session-1", clientKey: "client-key", agentID: "agent-1", controlPort: 7592, pcmPort: 7593))
+        XCTAssertFalse(SamsungDirectRouteProof.verify(proof, secret: secret, sessionID: "session-2", clientKey: "client-key", agentID: "agent-1", controlPort: 7592, pcmPort: 7593))
+        XCTAssertFalse(SamsungDirectRouteProof.verify(proof, secret: secret, sessionID: "session-1", clientKey: "client-key", agentID: "other", controlPort: 7592, pcmPort: 7593))
+        XCTAssertFalse(SamsungDirectRouteProof.verify(proof, secret: secret, sessionID: "session-1", clientKey: "client-key", agentID: "agent-1", controlPort: 9999, pcmPort: 7593))
+        let address = try SamsungManualPairingAddress(host: " 100.64.1.2 ", port: " 38000 ")
+        XCTAssertEqual(address.host, "100.64.1.2")
+        XCTAssertEqual(address.port, 38000)
+        for host in ["8.8.8.8", "127.0.0.1", "0.0.0.0", "100.128.1.2", "192.168.1..2", "192.168.1.2/path", "http://192.168.1.2", "192.168.1.2:80", "010.0.0.1", "192.168.001.2"] {
+            XCTAssertThrowsError(try SamsungManualPairingAddress(host: host, port: "38000"), host)
+        }
+        for port in ["", "0", "65536", "-1", "123/", "1.5"] {
+            XCTAssertThrowsError(try SamsungManualPairingAddress(host: "192.168.1.2", port: port))
+        }
+        XCTAssertNoThrow(try VoWLANEndpoint(host: "100.127.255.254", controlPort: 7592, pcmPort: 7593))
+        XCTAssertThrowsError(try VoWLANEndpoint(host: "100.128.0.1", controlPort: 7592, pcmPort: 7593))
+        XCTAssertThrowsError(try VoWLANEndpoint(host: "192.168..1.2", controlPort: 7592, pcmPort: 7593))
+    }
+
+    func testManualRoutePersistenceDropsDeletedDevicesAndDoesNotStorePhoneNumbers() throws {
+        let suite = "AirSIMTests.manual-route.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let route = VoWLANManualRoute(agentID: "fixture-agent", host: "100.64.1.2", controlPort: 7592, pcmPort: 7593)
+        try VoWLANManualRouteStore.save(route, defaults: defaults)
+        XCTAssertEqual(VoWLANManualRouteStore.routes(defaults: defaults), [route])
+        VoWLANManualRouteStore.remove(agentID: "fixture-agent", defaults: defaults)
+        XCTAssertTrue(VoWLANManualRouteStore.routes(defaults: defaults).isEmpty)
+        XCTAssertThrowsError(try VoWLANManualRouteStore.save(.init(agentID: "bad", host: "8.8.8.8", controlPort: 7592, pcmPort: 7593), defaults: defaults))
+    }
+    func testContactMappingUsesAllSystemNameComponents() throws {
+        let contact = CNMutableContact()
+        contact.givenName = "Ada"
+        contact.middleName = "Augusta"
+        contact.familyName = "Lovelace"
+        contact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile,
+                                              value: CNPhoneNumber(stringValue: "+1 202 555 0100"))]
+        let mapped = try XCTUnwrap(ContactFetcher.contact(from: contact))
+        XCTAssertEqual(mapped.name, CNContactFormatter.string(from: contact, style: .fullName))
+        for component in ["Ada", "Augusta", "Lovelace"] {
+            XCTAssertTrue(mapped.name.contains(component))
+        }
+        contact.givenName = ""
+        contact.middleName = ""
+        XCTAssertEqual(ContactFetcher.contact(from: contact)?.name, "Lovelace")
+        contact.familyName = ""
+        contact.middleName = "Augusta"
+        XCTAssertEqual(ContactFetcher.contact(from: contact)?.name, "Augusta")
+        contact.givenName = "小明"
+        contact.middleName = ""
+        contact.familyName = "王"
+        XCTAssertEqual(ContactFetcher.contact(from: contact)?.name,
+                       CNContactFormatter.string(from: contact, style: .fullName))
+    }
+
+    @MainActor
+    func testLegacyContactCacheRefreshesOnceWithoutLosingOfflineNames() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("contacts.json")
+        let old = ContactStore.Contact(id: "fixture", name: "Ada", phones: ["12025550100"], emails: [], photoData: nil)
+        let full = ContactStore.Contact(id: "fixture", name: "Ada Augusta Lovelace", phones: old.phones, emails: [], photoData: nil)
+        try JSONEncoder().encode([old]).write(to: url)
+        let cache = ContactCacheStore(fileURL: url)
+        let failing = ContactFetcherProbe(.failure(URLError(.notConnectedToInternet)))
+        let offline = ContactStore(fetcher: failing, cache: cache)
+        await offline.loadIfAuthorized()
+        XCTAssertEqual(offline.contacts, [old])
+        XCTAssertTrue(cache.needsNameRefresh)
+        let denied = ContactFetcherProbe(.success([]), state: .denied)
+        await ContactStore(fetcher: denied, cache: cache).loadIfAuthorized()
+        XCTAssertEqual(denied.readCount, 0)
+        XCTAssertTrue(cache.needsNameRefresh)
+        let fetcher = ContactFetcherProbe(.success([full]))
+        let upgraded = ContactStore(fetcher: fetcher, cache: cache)
+        await upgraded.loadIfAuthorized()
+        XCTAssertEqual(upgraded.contacts, [full])
+        XCTAssertFalse(cache.needsNameRefresh)
+        await upgraded.loadIfAuthorized()
+        XCTAssertEqual(fetcher.readCount, 1)
+        XCTAssertEqual(ContactCacheStore(fileURL: url).load(), [full])
+    }
+
+    func testAppVersionReadsBundleMetadataAndHandlesMissingValues() {
+        XCTAssertEqual(AppInformation.version(info: ["CFBundleShortVersionString": "1.2.3", "CFBundleVersion": "456"]), "1.2.3 (456)")
+        XCTAssertEqual(AppInformation.version(info: [:]), "未知版本")
+        XCTAssertFalse(AppInformation.version.isEmpty)
+        XCTAssertEqual(AppInformation.repositoryURL.host, "github.com")
+        XCTAssertEqual(AppInformation.releasesURL.path, "/kai-wu-cortex/AirSIM/releases")
+    }
     func testOldEndedHistoryCannotFinishANewSystemCall() {
         XCTAssertTrue(CallKitSynchronizationPolicy.mayFinishEndedHistory(currentBackendID: "a", endedID: "a"))
         XCTAssertFalse(CallKitSynchronizationPolicy.mayFinishEndedHistory(currentBackendID: "b", endedID: "a"))

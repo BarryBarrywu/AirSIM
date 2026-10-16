@@ -3,6 +3,7 @@ import CoreBluetooth
 import CryptoKit
 import Foundation
 import Security
+import UIKit
 
 enum VoBLEConnectionState: Equatable, Sendable {
     case stopped, bluetoothUnavailable, scanning, connecting, connected, authenticating, ready
@@ -29,13 +30,14 @@ enum VoBLEConnectionTimeoutPolicy {
     static let timeout: TimeInterval = 8
 
     static func shouldExpire(state: VoBLEConnectionState, enabled: Bool,
-                             elapsed: TimeInterval) -> Bool {
-        enabled && state == .connecting && elapsed >= timeout
+                             elapsed: TimeInterval, isBackground: Bool = false,
+                             systemReconnecting: Bool = false) -> Bool {
+        enabled && state == .connecting && !isBackground && !systemReconnecting && elapsed >= timeout
     }
 }
 
 enum VoBLEConnectionEvent: Equatable, Sendable {
-    case bluetoothPoweredOn, bluetoothUnavailable, connected, characteristicsReady, stopped
+    case bluetoothPoweredOn, bluetoothUnavailable, connected, characteristicsReady, stopped, servicesInvalidated
     case discovered(UUID), restored(UUID), controlSubscription(Bool)
     case authenticated(identity: String), authenticationFailed(String)
     case disconnected(String?)
@@ -62,6 +64,7 @@ struct VoBLEConnectionReducer: Sendable {
         case .bluetoothUnavailable: reset(); state = .bluetoothUnavailable
         case let .discovered(id): peripheralID = id; state = .connecting
         case .connected: state = .connected
+        case .servicesInvalidated: reset(); state = .connected
         case let .restored(id): reset(); peripheralID = id; state = .connecting
         case .characteristicsReady:
             characteristicsReady = true; state = authenticatedIdentity == nil ? .authenticating : state
@@ -81,6 +84,12 @@ struct VoBLEConnectionReducer: Sendable {
         characteristicsReady = false; controlSubscribed = false; authenticatedIdentity = nil
     }
     private static func failed(_ message: String) -> VoBLEConnectionState { .failed(message) }
+}
+
+enum VoBLECharacteristicCallbackPolicy {
+    static func accepts(_ value: CBCharacteristic, current: [CBCharacteristic?]) -> Bool {
+        current.contains { $0 === value }
+    }
 }
 
 struct VoBLEDiscoveredPeer: Identifiable, Equatable, Sendable {
@@ -136,6 +145,41 @@ enum VoBLEPairingRecovery {
     }
 }
 
+/// Owns expensive pairing crypto and blocking Keychain I/O, never CB objects.
+actor VoBLEPairingWorker {
+    struct Prepared: Sendable {
+        let publicKey: Data
+        let nonce: Data
+        let transcript: VoBLEPairingTranscript
+        let material: VoBLEPairingMaterial
+        let reconnectTag: Data?
+    }
+    private let store: any VoBLEPairingStoring
+    init(store: any VoBLEPairingStoring) { self.store = store }
+
+    func prepare(identity: String, androidPublic: Data, androidNonce: Data) throws -> Prepared {
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        var nonce = Data(count: 32)
+        let status = nonce.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        guard status == errSecSuccess else { throw VoBLECentralError.authenticationFailed }
+        let publicKey = privateKey.publicKey.rawRepresentation
+        let transcript = VoBLEPairingTranscript(androidIdentity: identity,
+            androidPublicKey: androidPublic, iphonePublicKey: publicKey,
+            androidNonce: androidNonce, iphoneNonce: nonce)
+        let material = try VoBLESessionAuthenticator.derivePairing(
+            privateKey: privateKey.rawRepresentation, peerPublicKey: androidPublic, transcript: transcript)
+        let stored = try store.load(identity: identity)
+        let tag = try stored.map {
+            try VoBLESessionAuthenticator.reconnectTag(pairingKey: $0.pairingKey, transcript: transcript)
+        }
+        return Prepared(publicKey: publicKey, nonce: nonce, transcript: transcript,
+                        material: material, reconnectTag: tag)
+    }
+
+    func save(_ peer: VoBLEStoredPeer) throws { try store.save(peer) }
+    func revoke(identity: String) throws { try store.revoke(identity: identity) }
+}
+
 @MainActor
 final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralControlling, VoBLEMediaWriting {
     static let serviceUUID = CBUUID(string: "7e57a000-7a17-4d9f-9a3c-41a17b1e0001")
@@ -187,6 +231,9 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     private(set) var audioUplink: CBCharacteristic?
     private(set) var audioDownlink: CBCharacteristic?
     private var diagnostics: CBCharacteristic?
+    private var discoveryRetries = 0
+    private var currentService: CBService?
+    private var discoveredRequiredCharacteristics = false
     private var pairingSubscribed = false
     private var pairingStarted = false
     private var pairingAttempt: PairingAttempt?
@@ -200,13 +247,18 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     private var pendingCommands: [String: PendingCommand] = [:]
     private var connectionTimeoutTask: Task<Void, Never>?
     private var cancellationObservationTask: Task<Void, Never>?
-    private let pairingStore: any VoBLEPairingStoring
+    private let pairingWorker: VoBLEPairingWorker
+    private var pairingTask: Task<Void, Never>?
+    private var queuedPairingMessages = 0
+    private var connectionRevision: UInt64 = 0
     private let peripheralPreferenceKey = "airsim.voble.peripheral-id"
     private var explicitPairingPeripheral: UUID?
     private var deviceInformationRevision: UInt64 = 0
+    private var applicationIsBackground = UIApplication.shared.applicationState == .background
+    private var systemReconnecting = false
 
     init(pairingStore: any VoBLEPairingStoring = VoBLEPairingStore()) {
-        self.pairingStore = pairingStore
+        self.pairingWorker = VoBLEPairingWorker(store: pairingStore)
         super.init()
     }
 
@@ -222,6 +274,23 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
                 CBCentralManagerOptionShowPowerAlertKey: true,
             ])
         } else if central?.state == .poweredOn { restoreOrScan() }
+    }
+
+    // Recreate the restoration manager on a background launch without showing
+    // first-use permission prompts. Fresh authentication is still mandatory.
+    func restoreInBackgroundIfAuthorized() {
+        guard UIApplication.shared.applicationState == .background,
+              CBManager.authorization == .allowedAlways else { return }
+        setApplicationIsBackground(true)
+        start()
+    }
+
+    func setApplicationIsBackground(_ value: Bool) {
+        applicationIsBackground = value
+        connectionTimeoutTask?.cancel(); connectionTimeoutTask = nil
+        if !value, !systemReconnecting, state == .connecting, let peripheral {
+            scheduleConnectionTimeout(for: peripheral)
+        }
     }
 
     func stop() {
@@ -271,12 +340,14 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
             }
             let resumeScanning = enabled
             stop()
-            try pairingStore.revoke(identity: identity)
+            let revision = connectionRevision
+            try await pairingWorker.revoke(identity: identity)
+            guard connectionRevision == revision else { return }
             UserDefaults.standard.removeObject(forKey: peripheralPreferenceKey)
             recoverableIdentity = nil
             if resumeScanning { start() }
         } else {
-            try pairingStore.revoke(identity: identity)
+            try await pairingWorker.revoke(identity: identity)
         }
     }
 
@@ -292,20 +363,33 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
 
     func revokeCurrentPeer() {
         guard let identity = activePeer?.identity ?? pairingAttempt?.androidIdentity else { return }
-        try? pairingStore.revoke(identity: identity)
-        UserDefaults.standard.removeObject(forKey: peripheralPreferenceKey)
-        activePeer = nil; authenticatedIdentity = nil; recoverableIdentity = nil
-        VoBLEPairingConnectionReset.perform(on: self, resumeScanning: enabled)
+        clearCredentialAndRetry(identity: identity)
     }
 
     func clearLocalCredentialAndRetry() {
         guard let identity = activePeer?.identity
                 ?? pairingAttempt?.androidIdentity
                 ?? recoverableIdentity else { return }
-        try? pairingStore.revoke(identity: identity)
-        UserDefaults.standard.removeObject(forKey: peripheralPreferenceKey)
+        clearCredentialAndRetry(identity: identity)
+    }
+
+    private func clearCredentialAndRetry(identity: String) {
+        let resumeScanning = enabled
+        stop()
         recoverableIdentity = nil
-        VoBLEPairingConnectionReset.perform(on: self, resumeScanning: enabled)
+        UserDefaults.standard.removeObject(forKey: peripheralPreferenceKey)
+        let revision = connectionRevision
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                // Serial with any in-flight save; deletion must win over it.
+                try await self.pairingWorker.revoke(identity: identity)
+                guard self.connectionRevision == revision else { return }
+                if resumeScanning { self.start() }
+            } catch {
+                if self.connectionRevision == revision { self.errorMessage = error.localizedDescription }
+            }
+        }
     }
 
     func unpairCurrentPeer() async throws {
@@ -315,12 +399,16 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
             guard response.success else {
                 throw VoBLECentralError.bluetooth(response.detail.isEmpty ? response.code : response.detail)
             }
-            try pairingStore.revoke(identity: identity)
+            let resumeScanning = enabled
+            stop()
+            let revision = connectionRevision
+            try await pairingWorker.revoke(identity: identity)
+            guard connectionRevision == revision else { return }
             UserDefaults.standard.removeObject(forKey: peripheralPreferenceKey)
             activePeer = nil
             authenticatedIdentity = nil
             recoverableIdentity = nil
-            VoBLEPairingConnectionReset.perform(on: self, resumeScanning: enabled)
+            if resumeScanning { start() }
         } catch {
             errorMessage = error.localizedDescription
             throw error
@@ -391,6 +479,13 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     private func restoreOrScan() {
         guard enabled, reconnectBarrier.permitsConnection,
               let central, central.state == .poweredOn else { return }
+        if let peripheral, peripheral.state == .connected || peripheral.state == .connecting || systemReconnecting {
+            if peripheral.state == .connected, state == .connecting {
+                apply(.connected)
+                peripheral.discoverServices([Self.serviceUUID])
+            }
+            return
+        }
         // Scan current advertisements instead of reconnecting from the cached peripheral record.
         discoveredPeers.removeAll(); apply(.bluetoothPoweredOn)
         central.scanForPeripherals(withServices: [Self.serviceUUID], options: [
@@ -421,13 +516,16 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
             apply(.connected)
             value.discoverServices([Self.serviceUUID])
         } else {
-            central?.connect(value)
+            var options: [String: Any] = [:]
+            if #available(iOS 17.0, *) { options[CBConnectPeripheralOptionEnableAutoReconnect] = true }
+            central?.connect(value, options: options)
             scheduleConnectionTimeout(for: value)
         }
     }
 
     private func scheduleConnectionTimeout(for value: CBPeripheral) {
         connectionTimeoutTask?.cancel()
+        guard !applicationIsBackground, !systemReconnecting else { return }
         let started = ContinuousClock.now
         connectionTimeoutTask = Task { [weak self, weak value] in
             do { try await Task.sleep(for: .seconds(VoBLEConnectionTimeoutPolicy.timeout)) }
@@ -436,7 +534,9 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
             let duration = started.duration(to: .now).components
             let elapsed = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
             guard VoBLEConnectionTimeoutPolicy.shouldExpire(state: self.state,
-                      enabled: self.enabled, elapsed: elapsed) else { return }
+                      enabled: self.enabled, elapsed: elapsed,
+                      isBackground: self.applicationIsBackground,
+                      systemReconnecting: self.systemReconnecting) else { return }
 #if DEBUG
             print("[AirSIM VoBLE Connection] connect_timeout; falling back to scan")
 #endif
@@ -502,6 +602,9 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     }
 
     private func resetConnection(keepingPeripheral: Bool = false) {
+        connectionRevision &+= 1
+        pairingTask?.cancel(); pairingTask = nil; queuedPairingMessages = 0
+        systemReconnecting = false
         connectionTimeoutTask?.cancel(); connectionTimeoutTask = nil
         pairing = nil; controlRX = nil; controlTX = nil; audioUplink = nil; audioDownlink = nil
         diagnostics = nil; capability = nil; pairingSubscribed = false; pairingStarted = false
@@ -510,17 +613,28 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
         sessionID.removeAll(); pairingReassembler = VoBLEMessageReassembler()
         controlReassembler = VoBLEMessageReassembler(); replayWindow = VoBLEReplayWindow()
         writeBatches.removeAll(); if !keepingPeripheral { peripheral = nil }
+        discoveryRetries = 0; currentService = nil; discoveredRequiredCharacteristics = false
+    }
+
+    private func invalidateServices() {
+        failPending(with: VoBLECentralError.disconnected)
+        onDisconnected?()
+        resetConnection(keepingPeripheral: true)
+        apply(.servicesInvalidated)
     }
 
     private func apply(_ event: VoBLEConnectionEvent) {
         let previous = state
-        reducer.apply(event); state = reducer.state
+        reducer.apply(event)
+        if state != reducer.state { state = reducer.state }
 #if DEBUG
         let label: String
         if case .failed = state { label = "failed" } else { label = String(describing: state) }
         print("[AirSIM VoBLE Connection] state=\(label) enabled=\(enabled) waitingDisconnect=\(!reconnectBarrier.permitsConnection)")
 #endif
-        if case let .failed(message) = state { errorMessage = message } else { errorMessage = nil }
+        let message: String?
+        if case let .failed(value) = state { message = value } else { message = nil }
+        if errorMessage != message { errorMessage = message }
         if state == .ready, previous != .ready { onReady?() }
     }
 
@@ -529,7 +643,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     }
 
     private func beginPairingIfPossible() {
-        guard pairingSubscribed, !pairingStarted, let pairing else { return }
+        guard discoveredRequiredCharacteristics, pairingSubscribed, !pairingStarted, let pairing else { return }
         pairingStarted = true
         do {
             try enqueueMessage(JSONSerialization.data(withJSONObject: ["op": "begin"]),
@@ -537,7 +651,23 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
         } catch { failAuthentication(error.localizedDescription) }
     }
 
-    private func handlePairingMessage(_ data: Data) {
+    private func enqueuePairingMessage(_ data: Data) {
+        guard queuedPairingMessages < 16 else {
+            failAuthentication("蓝牙配对消息过多，请重新连接")
+            return
+        }
+        queuedPairingMessages += 1
+        let previous = pairingTask
+        let revision = connectionRevision
+        pairingTask = Task { [weak self] in
+            await previous?.value
+            guard let self, !Task.isCancelled, self.connectionRevision == revision else { return }
+            await self.handlePairingMessage(data, revision: revision)
+            if self.connectionRevision == revision { self.queuedPairingMessages -= 1 }
+        }
+    }
+
+    private func handlePairingMessage(_ data: Data, revision: UInt64) async {
         do {
             guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw VoBLECentralError.invalidResponse }
             if object["ready"] as? Bool == true {
@@ -547,7 +677,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
                         message: Data("AirSIM/VoBLE/v1/ready\(attempt.challengeID)".utf8),
                         tag: confirmation, key: attempt.material.pairingKey
                       ) else { throw VoBLECentralError.authenticationFailed }
-                try finishPairing()
+                try await finishPairing(revision: revision)
                 return
             }
             if object["ok"] as? Bool == false {
@@ -578,24 +708,20 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
                 apply(.disconnected(nil))
                 return
             }
-            let privateKey = Curve25519.KeyAgreement.PrivateKey()
-            let publicData = privateKey.publicKey.rawRepresentation
-            let iphoneNonce = try randomData(count: 32)
-            let transcript = VoBLEPairingTranscript(
-                androidIdentity: identity, androidPublicKey: androidPublic,
-                iphonePublicKey: publicData, androidNonce: androidNonce, iphoneNonce: iphoneNonce)
-            let material = try VoBLESessionAuthenticator.derivePairing(
-                privateKey: privateKey.rawRepresentation, peerPublicKey: androidPublic, transcript: transcript)
+            let prepared = try await pairingWorker.prepare(
+                identity: identity, androidPublic: androidPublic, androidNonce: androidNonce)
+            guard !Task.isCancelled, connectionRevision == revision, enabled else { return }
             let attempt = PairingAttempt(
-                challengeID: challengeID, androidIdentity: identity, iphonePublic: publicData,
-                iphoneNonce: iphoneNonce, transcript: transcript, material: material)
+                challengeID: challengeID, androidIdentity: identity, iphonePublic: prepared.publicKey,
+                iphoneNonce: prepared.nonce, transcript: prepared.transcript, material: prepared.material)
             pairingAttempt = attempt
             recoverableIdentity = identity
-            if let stored = try pairingStore.load(identity: identity) {
-                sendPairingConfirmation(attempt: attempt, reconnectTag:
-                    try VoBLESessionAuthenticator.reconnectTag(pairingKey: stored.pairingKey, transcript: transcript))
+            if let tag = prepared.reconnectTag {
+                sendPairingConfirmation(attempt: attempt, reconnectTag: tag)
             } else { try sendPairingPreparation(attempt) }
-        } catch { failAuthentication(error.localizedDescription) }
+        } catch {
+            if !Task.isCancelled, connectionRevision == revision { failAuthentication(error.localizedDescription) }
+        }
     }
 
     private func sendPairingPreparation(_ attempt: PairingAttempt) throws {
@@ -622,14 +748,16 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
         } catch { failAuthentication(error.localizedDescription) }
     }
 
-    private func finishPairing() throws {
+    private func finishPairing(revision: UInt64) async throws {
         guard let attempt = pairingAttempt, let peripheral else { throw VoBLECentralError.invalidResponse }
         if !PairedAndroidDeviceStore.permits(attempt.androidIdentity) {
             guard explicitPairingPeripheral == peripheral.identifier else { throw VoBLECentralError.authenticationFailed }
             PairedAndroidDeviceStore.allowPairing(attempt.androidIdentity)
         }
         let peer = VoBLEStoredPeer(identity: attempt.androidIdentity, pairingKey: attempt.material.pairingKey, createdAt: Date())
-        try pairingStore.save(peer); activePeer = peer; authenticatedIdentity = peer.identity
+        try await pairingWorker.save(peer)
+        guard !Task.isCancelled, connectionRevision == revision, enabled else { return }
+        activePeer = peer; authenticatedIdentity = peer.identity
         recoverableIdentity = peer.identity
         sessionID = try randomData(count: 16); replayWindow = VoBLEReplayWindow()
         UserDefaults.standard.removeObject(forKey: peripheralPreferenceKey)
@@ -720,6 +848,8 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
 
 extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        // Restoration can arrive before the manager finishes leaving .unknown.
+        if central.state == .unknown || central.state == .resetting { return }
         if central.state != .poweredOn {
             cancellationObservationTask?.cancel(); cancellationObservationTask = nil
             reconnectBarrier = VoBLEReconnectBarrier()
@@ -732,7 +862,16 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
     }
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         guard enabled else { return }
-        // Restored object identities do not prove the device's current presence or SIM information.
+        let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? [])
+            .filter { PairedAndroidDeviceStore.permitsPeripheral($0.identifier.uuidString) }
+        if let value = restored.first(where: { $0.state == .connected })
+            ?? restored.first(where: { $0.state == .connecting }) {
+            // Adopt the OS object, not a separately retrieved/cached instance.
+            // It remains unavailable for dialing until fresh GATT authentication.
+            resetConnection()
+            peripheral = value; value.delegate = self
+            apply(.restored(value.identifier))
+        }
         restoreOrScan()
     }
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
@@ -741,7 +880,9 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
         let peer = VoBLEDiscoveredPeer(id: peripheral.identifier,
             name: (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? "AirSIM Android",
             signal: RSSI.intValue)
-        if let index = discoveredPeers.firstIndex(where: { $0.id == peer.id }) { discoveredPeers[index] = peer }
+        if let index = discoveredPeers.firstIndex(where: { $0.id == peer.id }) {
+            if discoveredPeers[index] != peer { discoveredPeers[index] = peer }
+        }
         else { discoveredPeers.append(peer) }
         if self.peripheral == nil, PairedAndroidDeviceStore.permitsPeripheral(peer.id.uuidString) {
             connect(peripheral, restored: false)
@@ -753,6 +894,7 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
             return
         }
         connectionTimeoutTask?.cancel(); connectionTimeoutTask = nil
+        systemReconnecting = false
         apply(.connected); peripheral.discoverServices([Self.serviceUUID])
     }
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -778,8 +920,8 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
         resetConnection(keepingPeripheral: isReconnecting)
         onDisconnected?()
         if isReconnecting {
+            systemReconnecting = true
             apply(.restored(peripheral.identifier))
-            scheduleConnectionTimeout(for: peripheral)
         }
         else {
             apply(.disconnected(error?.localizedDescription))
@@ -789,18 +931,58 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
 }
 
 extension VoBLECentralController: @preconcurrency CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        guard acceptsCallback(from: peripheral),
+              invalidatedServices.contains(where: { $0.uuid == Self.serviceUUID }) else { return }
+        invalidateServices()
+        peripheral.discoverServices([Self.serviceUUID])
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard acceptsCallback(from: peripheral) else { return }
         if let error { apply(.authenticationFailed(error.localizedDescription)); return }
         guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
             apply(.authenticationFailed("未发现 AirSIM 蓝牙服务")); return
         }
+        currentService = service
         peripheral.discoverCharacteristics([Self.capabilityUUID, Self.pairingUUID, Self.controlRXUUID,
             Self.controlTXUUID, Self.audioUplinkUUID, Self.audioDownlinkUUID, Self.diagnosticsUUID], for: service)
     }
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard acceptsCallback(from: peripheral) else { return }
+        guard acceptsCallback(from: peripheral), currentService === service else { return }
         if let error { apply(.authenticationFailed(error.localizedDescription)); return }
+        pairing = nil; controlRX = nil; controlTX = nil; audioUplink = nil; audioDownlink = nil
+        let required: [(CBUUID, CBCharacteristicProperties, String)] = [
+            (Self.pairingUUID, [.write, .indicate], "配对"),
+            (Self.controlRXUUID, .write, "控制接收"),
+            (Self.controlTXUUID, .indicate, "控制通知"),
+            (Self.audioUplinkUUID, .writeWithoutResponse, "音频上行"),
+            (Self.audioDownlinkUUID, .notify, "音频下行")
+        ]
+        let values = service.characteristics ?? []
+        let missing = required.compactMap { uuid, properties, name in
+            values.contains(where: { $0.uuid == uuid && $0.properties.contains(properties) }) ? nil : name
+        }
+        guard missing.isEmpty else {
+            let attempt = discoveryRetries + 1
+            Task { await AgentVerboseTraceRecorder.shared.recordEvent(
+                source: "APP", category: "bluetooth", phase: "service_discovery",
+                title: "VoBLE 服务发现", fields: ["attempt": String(attempt), "missing": missing.joined(separator: ",")],
+                isFailure: true
+            ) }
+            if discoveryRetries < 2 {
+                let retries = discoveryRetries + 1
+                invalidateServices()
+                discoveryRetries = retries
+                // A bounded rediscovery; never weaken required authentication or
+                // silently accept an incomplete/old GATT database.
+                peripheral.discoverServices([Self.serviceUUID])
+            } else {
+                apply(.authenticationFailed("AirSIM 蓝牙特征不完整：缺少\(missing.joined(separator: "、"))；请确认安卓 App 版本并重新连接"))
+            }
+            return
+        }
+        discoveredRequiredCharacteristics = true
         for value in service.characteristics ?? [] {
             switch value.uuid {
             case Self.capabilityUUID: capability = value; peripheral.readValue(for: value)
@@ -817,22 +999,25 @@ extension VoBLECentralController: @preconcurrency CBPeripheralDelegate {
             apply(.authenticationFailed("AirSIM 蓝牙特征不完整")); return
         }
         apply(.characteristicsReady)
+        beginPairingIfPossible()
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         guard acceptsCallback(from: peripheral) else { return }
+        guard VoBLECharacteristicCallbackPolicy.accepts(characteristic,
+            current: [pairing, controlTX, audioDownlink, diagnostics]) else { return }
         if let error { apply(.authenticationFailed(error.localizedDescription)); return }
-        if characteristic.uuid == Self.pairingUUID { pairingSubscribed = characteristic.isNotifying; beginPairingIfPossible() }
-        else if characteristic.uuid == Self.controlTXUUID { apply(.controlSubscription(characteristic.isNotifying)) }
+        if characteristic === pairing { pairingSubscribed = characteristic.isNotifying; beginPairingIfPossible() }
+        else if characteristic === controlTX { apply(.controlSubscription(characteristic.isNotifying)) }
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard acceptsCallback(from: peripheral) else { return }
         guard error == nil, let value = characteristic.value else { return }
         do {
-            if characteristic.uuid == Self.pairingUUID, let message = try pairingReassembler.append(value) {
-                guard message.type == .pairing else { throw VoBLECentralError.invalidResponse }; handlePairingMessage(message.payload)
-            } else if characteristic.uuid == Self.controlTXUUID, let message = try controlReassembler.append(value) {
+            if characteristic === pairing, let message = try pairingReassembler.append(value) {
+                guard message.type == .pairing else { throw VoBLECentralError.invalidResponse }; enqueuePairingMessage(message.payload)
+            } else if characteristic === controlTX, let message = try controlReassembler.append(value) {
                 guard message.type == .control else { throw VoBLECentralError.invalidResponse }; handleControlMessage(message.payload)
-            } else if characteristic.uuid == Self.audioDownlinkUUID {
+            } else if characteristic === audioDownlink {
                 onAudioDownlinkFragment?(value)
             }
         } catch { errorMessage = error.localizedDescription }
@@ -840,6 +1025,7 @@ extension VoBLECentralController: @preconcurrency CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         guard acceptsCallback(from: peripheral) else { return }
         guard !writeBatches.isEmpty else { return }
+        guard writeBatches.first?.characteristic === characteristic else { return }
         if let error { writeBatches.removeAll(); failAuthentication(error.localizedDescription); return }
         writeBatches[0].index += 1
         if writeBatches[0].index >= writeBatches[0].fragments.count { writeBatches.removeFirst() }

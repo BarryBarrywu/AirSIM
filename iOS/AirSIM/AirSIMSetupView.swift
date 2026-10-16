@@ -341,7 +341,11 @@ struct AirSIMSettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("项目", value: "AirSIM · Samsung")
+                    LabeledContent("项目", value: "AirSIM")
+                    LabeledContent("版本", value: AppInformation.version)
+                        .textSelection(.enabled)
+                    Link("GitHub 仓库", destination: AppInformation.repositoryURL)
+                    Link("版本发布与下载", destination: AppInformation.releasesURL)
                     Picker("外观", selection: $settings.appearance) {
                         ForEach(AppAppearance.allCases) { appearance in
                             Text(appearance.title).tag(appearance)

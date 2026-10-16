@@ -44,6 +44,13 @@ public final class BridgeLog {
         }
     }
 
+    /** Bounded local diagnostic evidence; no identifiers, content or PCM are supplied by this caller. */
+    public static void watchdog(String message) {
+        String safe = DebugRedactor.sanitize(message);
+        Log.v(TAG, safe);
+        append("VERBOSE", safe);
+    }
+
     public static void info(String message) {
         String safe = DebugRedactor.sanitize(message);
         Log.i(TAG, safe);

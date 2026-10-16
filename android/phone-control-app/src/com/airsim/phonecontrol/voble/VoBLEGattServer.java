@@ -66,6 +66,7 @@ public final class VoBLEGattServer implements AutoCloseable {
     private BluetoothGattCharacteristic audioDownlink;
     private BluetoothGattCharacteristic diagnostics;
     private AdvertiseCallback advertiseCallback;
+    private long generation;
 
     private record Outbound(BluetoothGattCharacteristic characteristic, byte[] value, boolean confirm) {}
 
@@ -82,23 +83,47 @@ public final class VoBLEGattServer implements AutoCloseable {
         BluetoothManager manager = context.getSystemService(BluetoothManager.class);
         adapter = manager == null ? null : manager.getAdapter();
         if (adapter == null || !adapter.isEnabled() || adapter.getBluetoothLeAdvertiser() == null) return false;
-        server = manager.openGattServer(context, callback);
+        long token = ++generation;
+        server = manager.openGattServer(context, callback(token));
         if (server == null) return false;
         BluetoothGattService service = createService();
         if (!server.addService(service)) {
             close();
             return false;
         }
+        return true;
+    }
+
+    @SuppressLint("MissingPermission")
+    private synchronized void advertise(long token) {
+        if (server == null || generation != token || advertiseCallback != null) return;
         AdvertiseSettings settings = new AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setConnectable(true).setTimeout(0).setTxPowerLevel(
                         AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).build();
         AdvertiseData data = new AdvertiseData.Builder()
                 .setIncludeDeviceName(false).addServiceUuid(new ParcelUuid(SERVICE_UUID)).build();
-        advertiseCallback = new AdvertiseCallback() {};
-        adapter.getBluetoothLeAdvertiser().startAdvertising(settings, data, advertiseCallback);
-        return true;
+        advertiseCallback = new AdvertiseCallback() {
+            @Override public void onStartSuccess(AdvertiseSettings ignored) {
+                if (isCurrent(token)) com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_ready");
+            }
+            @Override public void onStartFailure(int code) {
+                synchronized (VoBLEGattServer.this) {
+                    if (!isCurrent(token)) return;
+                    com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_failed code=" + code);
+                    close();
+                }
+            }
+        };
+        try {
+            adapter.getBluetoothLeAdvertiser().startAdvertising(settings, data, advertiseCallback);
+        } catch (RuntimeException error) {
+            close();
+            com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_exception type=" + error.getClass().getSimpleName());
+        }
     }
+
+    private synchronized boolean isCurrent(long token) { return server != null && generation == token; }
 
     public boolean hasBluetoothPermissions() {
         return Build.VERSION.SDK_INT < 31
@@ -244,9 +269,22 @@ public final class VoBLEGattServer implements AutoCloseable {
         return value;
     }
 
-    private final BluetoothGattServerCallback callback = new BluetoothGattServerCallback() {
+    private BluetoothGattServerCallback callback(long token) { return new BluetoothGattServerCallback() {
+        @Override public void onServiceAdded(int status, BluetoothGattService service) {
+            synchronized (VoBLEGattServer.this) {
+                if (!isCurrent(token) || !SERVICE_UUID.equals(service.getUuid())) return;
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    com.airsim.phonecontrol.BridgeLog.info("voble_gatt_service_failed code=" + status);
+                    close();
+                    return;
+                }
+                com.airsim.phonecontrol.BridgeLog.info("voble_gatt_service_ready characteristics=" + service.getCharacteristics().size());
+                advertise(token);
+            }
+        }
         @Override @SuppressLint("MissingPermission") public void onConnectionStateChange(
                 BluetoothDevice device, int status, int newState) {
+            if (!isCurrent(token)) return;
             String id = device.getAddress();
             if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
                 devices.put(id, device);
@@ -263,12 +301,14 @@ public final class VoBLEGattServer implements AutoCloseable {
         }
 
         @Override public void onMtuChanged(BluetoothDevice device, int mtu) {
+            if (!isCurrent(token)) return;
             negotiatedMtus.put(device.getAddress(), Math.max(23, mtu));
         }
 
         @Override @SuppressLint("MissingPermission") public void onCharacteristicReadRequest(
                 BluetoothDevice device, int requestId, int offset,
                 BluetoothGattCharacteristic characteristic) {
+            if (!isCurrent(token)) return;
             byte[] value = characteristic.getValue();
             if (value == null) value = new byte[0];
             if (offset < 0 || offset > value.length) {
@@ -282,6 +322,7 @@ public final class VoBLEGattServer implements AutoCloseable {
         @Override @SuppressLint("MissingPermission") public void onCharacteristicWriteRequest(
                 BluetoothDevice device, int requestId, BluetoothGattCharacteristic characteristic,
                 boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
+            if (!isCurrent(token)) return;
             int status = preparedWrite || offset != 0 || value == null
                     ? BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED : BluetoothGatt.GATT_SUCCESS;
             if (status == BluetoothGatt.GATT_SUCCESS) {
@@ -297,6 +338,7 @@ public final class VoBLEGattServer implements AutoCloseable {
         }
 
         @Override public void onNotificationSent(BluetoothDevice device, int status) {
+            if (!isCurrent(token)) return;
             String id = device.getAddress();
             synchronized (VoBLEGattServer.this) {
                 ArrayDeque<Outbound> queue = outbound.get(id);
@@ -317,6 +359,7 @@ public final class VoBLEGattServer implements AutoCloseable {
         @Override @SuppressLint("MissingPermission") public void onDescriptorWriteRequest(
                 BluetoothDevice device, int requestId, BluetoothGattDescriptor descriptor,
                 boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
+            if (!isCurrent(token)) return;
             int status = preparedWrite || offset != 0 || !CCCD_UUID.equals(descriptor.getUuid())
                     ? BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED : BluetoothGatt.GATT_SUCCESS;
             if (status == BluetoothGatt.GATT_SUCCESS) {
@@ -333,7 +376,7 @@ public final class VoBLEGattServer implements AutoCloseable {
             }
             if (responseNeeded) server.sendResponse(device, requestId, status, offset, null);
         }
-    };
+    }; }
 
     private void acceptMessage(String deviceId, byte[] fragment, int expectedType) {
         try {
@@ -353,6 +396,7 @@ public final class VoBLEGattServer implements AutoCloseable {
     }
 
     @Override @SuppressLint("MissingPermission") public synchronized void close() {
+        ++generation;
         if (adapter != null && advertiseCallback != null && adapter.getBluetoothLeAdvertiser() != null) {
             adapter.getBluetoothLeAdvertiser().stopAdvertising(advertiseCallback);
         }

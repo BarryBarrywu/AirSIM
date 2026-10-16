@@ -598,7 +598,7 @@ enum CloudCallControlClient {
     ) throws -> URLRequest {
         guard let url = RelayEndpoint.url(
             base: credentials.relayURL,
-            path: "/v1/calls/\(envelope.callUUID)/actions"
+            path: "/v2/calls/\(envelope.callUUID)/actions"
         ) else { throw CloudCallControlClientError.invalidRelayURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -624,7 +624,7 @@ enum CloudCallControlClient {
     ) throws -> URLRequest {
         guard let url = RelayEndpoint.url(
             base: credentials.relayURL,
-            path: "/v1/calls/\(envelope.callUUID)/actions/\(envelope.commandID)"
+            path: "/v2/calls/\(envelope.callUUID)/actions/\(envelope.commandID)"
         ) else { throw CloudCallControlClientError.invalidRelayURL }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"

@@ -66,7 +66,8 @@ enum LiveActivityStateBuilder {
                 cloudOnline: agent?.cloudOnline
             )
         }
-        guard let call else {
+        guard let call, call.endedAt == nil,
+              ["incoming", "waiting", "dialing", "alerting", "connecting", "active", "held"].contains(call.state) else {
             let cloudOnly = cloudOnline && !moduleOnline
             return .init(
                 callID: "",

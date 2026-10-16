@@ -45,6 +45,7 @@ public final class VoBLEMediaSession implements Closeable {
     private final InetSocketAddress endpoint;
     private final BridgeFactory bridgeFactory;
     private final DownlinkSink downlink;
+    private final java.util.function.Consumer<VoBLEMediaSession> onFailure;
     private VoBLEProtocol.AudioReassembler uplinkReassembler =
             new VoBLEProtocol.AudioReassembler();
     private final VoBLEAudioQueue uplinkQueue = new VoBLEAudioQueue(8);
@@ -61,9 +62,15 @@ public final class VoBLEMediaSession implements Closeable {
 
     public VoBLEMediaSession(
             InetSocketAddress endpoint, BridgeFactory bridgeFactory, DownlinkSink downlink) {
+        this(endpoint, bridgeFactory, downlink, ignored -> {});
+    }
+
+    public VoBLEMediaSession(InetSocketAddress endpoint, BridgeFactory bridgeFactory,
+            DownlinkSink downlink, java.util.function.Consumer<VoBLEMediaSession> onFailure) {
         this.endpoint = endpoint;
         this.bridgeFactory = bridgeFactory;
         this.downlink = downlink;
+        this.onFailure = java.util.Objects.requireNonNull(onFailure);
     }
 
     public synchronized void start(Identity call, byte[] key) throws IOException {
@@ -179,9 +186,15 @@ public final class VoBLEMediaSession implements Closeable {
     }
 
     private void stopFromPump() {
-        running = false;
-        VoBLEPCMBridgeSession active = bridge;
-        if (active != null) try { active.close(); } catch (IOException ignored) {}
+        synchronized (this) {
+            if (!running) return;
+            running = false;
+            VoBLEPCMBridgeSession active = bridge;
+            if (active != null) try { active.close(); } catch (IOException ignored) {}
+        }
+        // Release the exact failed owner once, outside the media lock. A surviving
+        // GATT control connection must not keep Android output muted after PCM EOF.
+        onFailure.accept(this);
     }
 
     @Override public synchronized void close() { stop(); }

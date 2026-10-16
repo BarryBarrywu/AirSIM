@@ -1,5 +1,17 @@
 # AirSIM iOS 与 watchOS
 
+当前应用发布为 `0.9.7 (91)`，见 [Apps v0.9.7.2](../docs/releases/0.9.7.2.md)。包含下述候选功能及蓝牙 UI／挂断实时活动修复；公开 full unsigned IPA 包含 Watch，sideload unsigned IPA 不含 Watch、保留 Live Activity，两者均须自行重签。维护者另经 Xcode 上传 production 推送环境版本到 TestFlight，不能将 GitHub IPA 或本机安装视为上传／审核成功。下文旧候选和 build 81 为历史基线。
+
+另有未发布的 [Relay 多安卓定向命令](../docs/relay-agent-routing.md)适配：操作开始时快照目标，通话控制不随选择变化，结果查询退避且可取消；需要 Relay 和目标安卓明确支持 v2，不自动退回 v1。不新增常驻状态查询。
+
+工作区候选构建为 `0.9.7 (85)`，尚未发布或上传 TestFlight；下文 build 81 是已发布基线。候选版在「设置 → 关于」读取本安装包版本号与 build，并提供 GitHub 仓库和版本发布页入口。联系人按系统完整姓名格式读取 given / middle / family name；旧格式缓存首次获得通讯录权限后自动更新一次，读取失败保留本机副本、下次重试，手动下拉刷新仍可更新联系人。
+
+build 85 针对 [Issue #2 的同网恢复](../docs/vowlan-network-return.md)：Wi-Fi 路径变化后重新发现并认证 VoWLAN；自动模式空闲时回到优先链路，固定云端不变、通话途中不切换，不新增 Relay 定时查询。系统挂起与锁屏行为仍须真机验收。
+
+build 84 新增短信单条、会话及多选删除，仅删除 iOS AirSIM 本机记录，不操作安卓系统短信；原子保存脱敏删除标记防止旧同步回流。[使用与验收边界](../docs/sms-deletion-audio-watchdog.md)。
+
+build 83 新增[手动 IP＋配对端口](../docs/manual-ip-pairing.md)，可绕过 Bonjour 发现，支持局域网 IPv4 及 Tailscale `100.64.0.0/10`。两端 App 都需更新；不需要修改 Linux Agent 或 Relay。真实 Tailscale 两端配对、短信、通话音频仍待真机验收。
+
 该目录包含面向三星 Android 电话端的 iPhone、Apple Watch、Live Activity 与共享模型。客户端可通过 VoWLAN 或 VoBLE 直连三星手机，也可通过独立 Cloudflare Relay 使用远程通话与短信。
 
 当前应用构建为 `0.9.7 (81)`，随 [Apps v0.9.7.1](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1) 提供 unsigned IPA；维护者另行通过 Xcode 上传 production 构建至 TestFlight，上传/处理/审核状态需分别核对。配套 AVF Agent 为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者 `com.eric3u.airsim` 构建使用 `https://airsim-push.remotepilot.site`；自行更换 Bundle ID 后必须使用自己的 Relay 和 APNs 凭据。
@@ -107,6 +119,18 @@ Relay 地址通过 `AIRSIM_PUSH_RELAY_URL` 注入，APNs 环境通过 `AIRSIM_AP
 新安装需要重新完成三星配对、通知授权、CallKit/PushKit 注册和 Watch 配套安装。
 
 GitHub Release 中的 `AirSIM-iOS-<version>-unsigned.ipa` 是供重签的 arm64 构建产物，不包含 `_CodeSignature` 或 `embedded.mobileprovision`，不能直接安装。不能只签主 App：必须同步替换并签署 Watch App 与 Live Activity Extension 的 Bundle ID、entitlements 和 provisioning profile。公开 Release 不应上传包含开发设备 UDID 的 development/ad hoc IPA。
+
+### 干净打包与侧载候选包
+
+从 `CODE_SIGNING_ALLOWED=NO` 构建的 `.xcarchive` 或 `.app` 创建 unsigned IPA（输出目录需已存在，文件不可覆盖）：
+
+```sh
+sh iOS/scripts/package-unsigned.sh /absolute/path/AirSIM.xcarchive /absolute/path/AirSIM-full-unsigned.ipa full
+sh iOS/scripts/package-unsigned.sh /absolute/path/AirSIM.xcarchive /absolute/path/AirSIM-sideload-unsigned.ipa sideload
+sh iOS/scripts/test-package-unsigned.sh
+```
+
+`full` 保留 Watch 与 Live Activity；`sideload` 仅从临时副本移除 Watch，仍保留 Live Activity，不修改源归档。两种包均排除 AppleDouble（`._*`）、`__MACOSX`、签名目录和 provisioning profile。脚本拒绝已签名代码，不将开发签名包冒充 unsigned 包。候选包仍需侧载工具为主 App 和 Live Activity 扩展重签、匹配 Bundle ID 与权限；需要 Apple Watch 时使用完整包或正式 TestFlight。移除 Watch 和清理 ZIP 不等同于已确认修复某一侧载工具的“无法加载”，应以实际重签安装与启动验证为准。
 
 ## 安全与隐私
 

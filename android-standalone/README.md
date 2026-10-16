@@ -1,5 +1,17 @@
 # AirSIM Android Standalone
 
+当前发布版：[0.9.7.2（91）](../docs/releases/0.9.7.2.md)，推荐 Android 10–13 用户升级。包含下述候选改动、VoBLE 解码通话 ID 归属修正及三星接通后最低音量策略；最低档不代表静音，91 实际降音量与双向语音效果仍待真机复验。正式 APK 沿用原发布证书，不能覆盖不同证书的调试包。以下旧候选记录保留用于追溯。
+
+工作区候选构建为 `0.9.7.1 (86)`，尚未发布；build 81 仍为下文正式发布基线。候选版在「设置 → 关于」显示实际安装 APK 的版本号与 versionCode，并提供 GitHub 仓库与版本发布页入口。
+
+build 86 将 Shizuku 本机通话静音绑定到已确认的唯一远程通话和就绪 PCM 链路，而不是仅依赖“远端静默”设置。VoWLAN／VoBLE／Standalone 云端接管后自动静音，通话结束、链路中断或服务销毁时恢复原状态；不修改麦克风和 PCM 增益。蓝牙 PCM 中断但控制连接尚在线时也释放静音。[行为、日志和真机验收边界](../docs/remote-call-local-output-mute.md)。
+
+build 85 在后台 VoWLAN 前台服务观察 Wi-Fi 变化，合并网络通知后重发发现广播，不要求打开安卓界面、不为广播恢复重启现有通话 Socket；支持断线后取得相同 IP 的情况。[同网恢复机制与真机验收边界](../docs/vowlan-network-return.md)。
+
+build 84 新增远程通话音频 Watchdog：每 2 秒复检系统静音状态，绑定已确认的远程通话 ID，有限次修复后复检；“Debug 诊断 → 保存音频 Watchdog TXT”可保存脱敏 VERBOSE 日志。[安全限制与测试说明](../docs/sms-deletion-audio-watchdog.md)。
+
+build 83 新增[手动 IP＋配对端口](../docs/manual-ip-pairing.md)，可通过局域网或 Tailscale IPv4 配对，不依赖广播。通话控制和 PCM 仍经 Android 的认证网关，Linux／Shell 内部接口不对外开放。真实 Tailscale 两端验收尚未执行。
+
 AirSIM Android Standalone 是推荐的 Android 端部署方式：它把原本运行在 Android AVF Linux 中的 Agent 合并进 Android 前台服务，形成单一 APK。安装后不再需要 Linux Terminal、Debian、AVF 私网、`airsim-installerd`，也不再监听 Agent / installer 的 `8575`、`8576` 端口。
 
 **[Android 10–13 修复版 0.9.7.1（81），推荐安装](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)**。正式签名构建沿用原证书与包名，可保留数据覆盖升级；不要先卸载。其他证书的调试版/重签版不能直接覆盖。本版不更新 Linux AVF Agent 或 Relay；iOS build 81 另行通过 Xcode 上传 TestFlight。
@@ -147,3 +159,6 @@ adb install -r android-standalone/build/android/AirSIM-Android-Standalone-debug.
 - 日志不得包含完整短信、电话号码、Push token、配对密钥或 Relay 密钥；
 - APK 不包含 APNs 私钥、Cloudflare token、Android 发布私钥或 Apple 签名身份；
 - 本项目仅限 [PolyForm Noncommercial License 1.0.0](../LICENSE) 允许的非商业用途。
+# 未发布：Relay 命令路由
+
+工作区新增 Agent 定向云端命令、稳定连接后才重置的退避，以及 WSS / HTTP 共用冷却；不改变正常心跳或本地通路。[协议与升级顺序](../docs/relay-agent-routing.md)。未安装或发布本轮构建。

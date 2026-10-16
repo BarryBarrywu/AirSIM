@@ -24,6 +24,7 @@ enum VoIPPushPayloadError: LocalizedError {
 }
 
 struct IncomingVoIPCall: Equatable, Sendable {
+    let agentID: String?
     let callID: String
     let uuid: UUID
     let generation: UInt64
@@ -55,6 +56,7 @@ struct IncomingVoIPCall: Equatable, Sendable {
         if let expiresAt, expiresAt <= now { throw VoIPPushPayloadError.expired }
 
         callID = rawCallID
+        agentID = userInfo["agent_id"] as? String
         self.uuid = uuid
         generation = Self.positiveUInt64(from: userInfo["generation"]) ?? 1
         number = Self.nonEmpty(userInfo["number"] as? String)
@@ -85,7 +87,8 @@ struct IncomingVoIPCall: Equatable, Sendable {
         secret: String,
         mediaURL: URL,
         generation: UInt64 = 1,
-        mediaTransport: CloudMediaTransport = .legacyPCM
+        mediaTransport: CloudMediaTransport = .legacyPCM,
+        agentID: String? = nil
     ) throws {
         guard !outgoingCallID.isEmpty, secret.count >= 24,
               var components = URLComponents(url: mediaURL, resolvingAgainstBaseURL: false),
@@ -100,6 +103,7 @@ struct IncomingVoIPCall: Equatable, Sendable {
             throw VoIPPushPayloadError.invalidCallUUID
         }
         callID = outgoingCallID
+        self.agentID = agentID
         self.uuid = uuid
         self.generation = max(1, generation)
         self.number = number
@@ -119,6 +123,7 @@ struct IncomingVoIPCall: Equatable, Sendable {
         number: String?
     ) {
         callID = bluetoothCallID
+        agentID = nil
         self.uuid = uuid
         self.generation = max(1, generation)
         self.number = number
@@ -513,6 +518,7 @@ enum CloudCommandError: LocalizedError {
 
 private struct CloudCommandEnqueueResponse: Decodable {
     struct Call: Decodable {
+        let agentID: String?
         let callID: String
         let callUUID: String
         let generation: UInt64?
@@ -521,6 +527,7 @@ private struct CloudCommandEnqueueResponse: Decodable {
         let mediaTransport: CloudMediaTransport?
         enum CodingKeys: String, CodingKey {
             case callID = "call_id"
+            case agentID = "agent_id"
             case callUUID = "call_uuid"
             case generation
             case callSecret = "call_secret"
@@ -1298,23 +1305,26 @@ final class VoIPPushController: NSObject {
 
     func startCloudOutgoingCall(
         number: String,
+        target: CloudCommandTarget,
         mediaTransport: CloudMediaTransport? = nil,
         timeout: TimeInterval = 25
     ) async throws -> IncomingVoIPCall {
         let commandID = UUID()
+        guard let registration = currentRegistration() else { throw CloudCommandError.unavailable }
         let enqueue = try await enqueueCloudCommand(
+            target: target, registration: registration,
             commandID: commandID,
             type: "dial",
             number: number,
             message: nil,
             mediaTransport: mediaTransport
         )
-        guard enqueue.accepted, let call = enqueue.call,
+        guard enqueue.accepted, let call = enqueue.call, call.agentID == target.agentID,
               let uuid = UUID(uuidString: call.callUUID),
               let mediaURL = URL(string: call.mediaURL) else {
             throw CloudCommandError.invalidResponse
         }
-        let outcome = try await waitForCloudCommand(commandID: commandID, timeout: timeout)
+        let outcome = try await waitForCloudCommand(commandID: commandID, target: target, registration: registration, timeout: timeout)
         guard outcome.status == "completed", outcome.result?.dialing == true else {
             throw CloudCommandError.failed(outcome.error ?? "模块未能开始拨号")
         }
@@ -1325,90 +1335,102 @@ final class VoIPPushController: NSObject {
             secret: call.callSecret,
             mediaURL: mediaURL,
             generation: call.generation ?? 1,
-            mediaTransport: call.mediaTransport ?? .legacyPCM
+            mediaTransport: call.mediaTransport ?? .legacyPCM,
+            agentID: call.agentID
         )
     }
 
-    func sendCloudSMS(to number: String, message: String) async throws -> SMSSendResult {
+    func sendCloudSMS(to number: String, message: String, target: CloudCommandTarget) async throws -> SMSSendResult {
         let commandID = UUID()
+        guard let registration = currentRegistration() else { throw CloudCommandError.unavailable }
         let enqueue = try await enqueueCloudCommand(
+            target: target, registration: registration,
             commandID: commandID,
             type: "send_sms",
             number: number,
             message: message
         )
         guard enqueue.accepted else { throw CloudCommandError.invalidResponse }
-        let outcome = try await waitForCloudCommand(commandID: commandID, timeout: 5 * 60)
+        let outcome = try await waitForCloudCommand(commandID: commandID, target: target, registration: registration, timeout: 5 * 60)
         guard outcome.status == "completed", outcome.result?.sent == true else {
             throw CloudCommandError.failed(outcome.error ?? "模块发送短信失败")
         }
         return SMSSendResult(sent: true, segments: outcome.result?.segments)
     }
 
-    func sendCloudDTMF(_ digit: String) async throws {
+    func sendCloudDTMF(_ digit: String, call: IncomingVoIPCall) async throws {
+        guard let agentID = call.agentID, CloudAgentRouting.validID(agentID),
+              let registration = currentRegistration() else { throw CloudCommandError.unavailable }
+        let target = CloudCommandTarget(agentID: agentID, routingVersion: 1)
         let commandID = UUID()
         let enqueue = try await enqueueCloudCommand(
+            target: target, registration: registration,
             commandID: commandID,
             type: "dtmf",
             number: digit,
-            message: nil
+            message: nil,
+            call: call
         )
         guard enqueue.accepted else { throw CloudCommandError.invalidResponse }
-        let outcome = try await waitForCloudCommand(commandID: commandID, timeout: 15)
+        let outcome = try await waitForCloudCommand(commandID: commandID, target: target, registration: registration, timeout: 15)
         guard outcome.status == "completed", outcome.result?.sent == true else {
             throw CloudCommandError.failed(outcome.error ?? "模块发送 DTMF 失败")
         }
     }
 
     private func enqueueCloudCommand(
+        target: CloudCommandTarget,
+        registration: AgentPushRegistration,
         commandID: UUID,
         type: String,
         number: String,
         message: String?,
-        mediaTransport: CloudMediaTransport? = nil
+        mediaTransport: CloudMediaTransport? = nil,
+        call: IncomingVoIPCall? = nil
     ) async throws -> CloudCommandEnqueueResponse {
         guard CloudModePreference.isEnabled() else { throw CloudCommandError.cloudModeDisabled }
-        guard let registration = currentRegistration(),
-              let url = RelayEndpoint.url(base: registration.relayURL, path: "v1/commands/enqueue") else {
+        try Task.checkCancellation()
+        guard target.routingVersion == 1, CloudAgentRouting.validID(target.agentID),
+              let url = RelayEndpoint.url(base: registration.relayURL, path: "v2/commands/enqueue") else {
             throw CloudCommandError.unavailable
         }
-        var body: [String: String] = [
+        var body: [String: Any] = [
             "device_id": registration.deviceID,
             "device_secret": registration.deviceSecret,
             "command_id": commandID.uuidString.lowercased(),
             "type": type,
             "number": number,
+            "target_agent_id": target.agentID,
         ]
+        if let call {
+            body.merge(CloudAgentRouting.callIdentity(call)) { _, new in new }
+        }
         if let message { body["message"] = message }
         if let mediaTransport { body["media_transport"] = mediaTransport.rawValue }
         return try await relayRequest(url: url, body: body, as: CloudCommandEnqueueResponse.self)
     }
 
-    private func waitForCloudCommand(commandID: UUID, timeout: TimeInterval) async throws -> CloudCommandResultResponse {
-        guard let registration = currentRegistration(),
-              let url = RelayEndpoint.url(base: registration.relayURL, path: "v1/commands/result") else {
+    private func waitForCloudCommand(commandID: UUID, target: CloudCommandTarget, registration: AgentPushRegistration, timeout: TimeInterval) async throws -> CloudCommandResultResponse {
+        guard let url = RelayEndpoint.url(base: registration.relayURL, path: "v2/commands/result") else {
             throw CloudCommandError.unavailable
         }
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            let response = try await relayRequest(
+        return try await CloudAgentRouting.poll(timeout: timeout, request: {
+            try await self.relayRequest(
                 url: url,
                 body: [
                     "device_id": registration.deviceID,
                     "device_secret": registration.deviceSecret,
                     "command_id": commandID.uuidString.lowercased(),
+                    "target_agent_id": target.agentID,
                 ],
                 as: CloudCommandResultResponse.self
             )
-            if response.status == "completed" || response.status == "failed" { return response }
-            try await Task.sleep(for: .milliseconds(500))
-        }
-        throw CloudCommandError.timeout
+        }, isTerminal: { $0.status == "completed" || $0.status == "failed" })
     }
 
     private func relayRequest<Response: Decodable>(
         url: URL,
-        body: [String: String],
+        body: [String: Any],
         as type: Response.Type
     ) async throws -> Response {
         var request = URLRequest(url: url)
@@ -1416,7 +1438,7 @@ final class VoIPPushController: NSObject {
         request.timeoutInterval = 10
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 12

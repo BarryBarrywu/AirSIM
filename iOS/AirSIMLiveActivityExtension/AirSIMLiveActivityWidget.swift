@@ -346,7 +346,7 @@ struct AirSIMLiveActivityWidget: Widget {
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     HStack(spacing: IslandActionLayout.buttonSpacing) {
-                        if state.transport == .bluetooth,
+                        if AirSIMLiveActivityActionRouting.opensApp(for: state.transport),
                            let url = AirSIMLiveActivityActionURL.make(
                             action: .reject, callID: state.callID) {
                             Link(destination: url) {
@@ -374,7 +374,7 @@ struct AirSIMLiveActivityWidget: Widget {
                             ))
                         }
 
-                        if state.transport == .bluetooth,
+                        if AirSIMLiveActivityActionRouting.opensApp(for: state.transport),
                            let url = AirSIMLiveActivityActionURL.make(
                             action: .answer, callID: state.callID) {
                             Link(destination: url) {
@@ -407,7 +407,7 @@ struct AirSIMLiveActivityWidget: Widget {
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    if state.transport == .bluetooth,
+                    if AirSIMLiveActivityActionRouting.opensApp(for: state.transport),
                        let url = AirSIMLiveActivityActionURL.make(
                         action: .hangup, callID: state.callID) {
                         Link(destination: url) {

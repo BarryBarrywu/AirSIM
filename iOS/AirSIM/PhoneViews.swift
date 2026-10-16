@@ -795,6 +795,10 @@ struct MessagesView: View {
     @State private var conversationPath: [String] = []
     @State private var showingComposer = false
     @State private var showingClearConfirmation = false
+    @State private var editMode: EditMode = .inactive
+    @State private var selectedConversations: Set<String> = []
+    @State private var pendingDeletion: Set<String> = []
+    @State private var showingDeleteConfirmation = false
 
     private var conversations: [(sender: String, messages: [SMSMessage])] {
         Dictionary(grouping: model.messages, by: \.sender)
@@ -804,7 +808,7 @@ struct MessagesView: View {
 
     var body: some View {
         NavigationStack(path: $conversationPath) {
-            List {
+            List(selection: $selectedConversations) {
                 if conversations.isEmpty {
                     EmptyStateView(title: L10n.t("暂无短信"), systemImage: "message")
                         .listRowBackground(Color.clear)
@@ -824,10 +828,17 @@ struct MessagesView: View {
                         .alignmentGuide(.listRowSeparatorLeading) { _ in
                             PhoneListMetrics.separatorLeading
                         }
+                        .tag(conversation.sender)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                requestDelete(Set(conversation.messages.map(\.id)))
+                            } label: { Label("删除会话", systemImage: "trash") }
+                        }
                     }
                 }
             }
             .listStyle(.plain)
+            .environment(\.editMode, $editMode)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, PhoneListMetrics.rowHeight)
             .phoneReportsTabBarCompactState()
@@ -839,10 +850,25 @@ struct MessagesView: View {
             .toolbar {
                 phoneMorphingToolbarItem(placement: .topBarLeading, id: "top-action-leading-more") {
                     Menu {
+                        Button(editMode.isEditing ? "完成选择" : "选择会话") {
+                            editMode = editMode.isEditing ? .inactive : .active
+                            selectedConversations = []
+                        }
+                        if editMode.isEditing {
+                            Button("删除所选会话", role: .destructive) {
+                                requestDelete(Set(model.messages.filter {
+                                    selectedConversations.contains($0.sender)
+                                }.map(\.id)))
+                            }
+                            .disabled(selectedConversations.isEmpty)
+                        }
                         Button { Task { await model.refreshMessages() } } label: {
                             Label(L10n.t("刷新"), systemImage: "arrow.clockwise")
                         }
-                        Button(role: .destructive) { showingClearConfirmation = true } label: {
+                        Button(role: .destructive) {
+                            pendingDeletion = Set(model.messages.map(\.id))
+                            showingClearConfirmation = true
+                        } label: {
                             Label(L10n.t("清空全部短信"), systemImage: "trash")
                         }
                     } label: {
@@ -873,14 +899,22 @@ struct MessagesView: View {
             }
             .confirmationDialog(L10n.t("清空全部短信"), isPresented: $showingClearConfirmation, titleVisibility: .visible) {
                 Button(L10n.t("删除"), role: .destructive) {
-                    Task {
-                        try? await model.api.clearModuleSMS()
-                        model.clearLocalMessages()
-                    }
+                    model.deleteMessages(ids: pendingDeletion)
+                    pendingDeletion = []
                 }
                 Button(L10n.t("取消"), role: .cancel) {}
             } message: {
-                Text("这会删除本机短信以及尚未交付的模块短信，无法恢复。")
+                Text("仅删除此 iPhone 上 AirSIM 内的短信记录，不删除安卓系统短信，无法恢复。")
+            }
+            .confirmationDialog("删除短信记录？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+                Button("删除", role: .destructive) {
+                    model.deleteMessages(ids: pendingDeletion)
+                    selectedConversations = []
+                    pendingDeletion = []
+                }
+                Button("取消", role: .cancel) { pendingDeletion = [] }
+            } message: {
+                Text("仅删除此 iPhone 上的所选记录，不删除安卓系统短信。新收到的短信不受影响。")
             }
         }
     }
@@ -889,6 +923,12 @@ struct MessagesView: View {
         guard let sender = pendingConversation else { return }
         conversationPath = [sender]
         pendingConversation = nil
+    }
+
+    private func requestDelete(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        pendingDeletion = ids
+        showingDeleteConfirmation = true
     }
 
     private struct MessageConversationRow: View {
@@ -940,6 +980,8 @@ private struct MessageThreadView: View {
     @EnvironmentObject private var model: AppModel
     let sender: String
     @State private var reply = ""
+    @State private var pendingDeletion: String?
+    @State private var showingDeleteConfirmation = false
 
     private var messages: [SMSMessage] {
         model.messages
@@ -978,6 +1020,12 @@ private struct MessageThreadView: View {
                                 if !message.isOutgoing { Spacer(minLength: 48) }
                             }
                             .id(message.id)
+                            .contextMenu {
+                                Button("删除短信", role: .destructive) {
+                                    pendingDeletion = message.id
+                                    showingDeleteConfirmation = true
+                                }
+                            }
                         }
                     }
                     .padding()
@@ -1001,6 +1049,13 @@ private struct MessageThreadView: View {
         }
         .navigationTitle(model.contacts.displayName(for: sender))
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("删除这条短信？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let id = pendingDeletion { model.deleteMessages(ids: [id]) }
+                pendingDeletion = nil
+            }
+            Button("取消", role: .cancel) { pendingDeletion = nil }
+        } message: { Text("仅删除此 iPhone 上 AirSIM 内的记录，不删除安卓系统短信。") }
     }
 }
 

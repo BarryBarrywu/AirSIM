@@ -172,6 +172,12 @@ enum AirSIMLiveActivityAction: String, Equatable, Sendable {
     case hangup
 }
 
+enum AirSIMLiveActivityActionRouting {
+    static func opensApp(for transport: AirSIMCallActivityAttributes.ContentState.Transport?) -> Bool {
+        transport == .bluetooth || transport == .vowlan
+    }
+}
+
 enum AirSIMLiveActivityActionURL {
     static func make(action: AirSIMLiveActivityAction, callID: String) -> URL? {
         guard !callID.isEmpty else { return nil }

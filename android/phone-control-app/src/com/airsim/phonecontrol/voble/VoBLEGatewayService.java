@@ -85,7 +85,9 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     private VoBLEPairingManager pairingManager;
     private VoBLEGattServer gatt;
     private VoBLECallController calls;
-    private VoBLEMediaSession media;
+    private final Object mediaLifecycleLock = new Object();
+    private volatile boolean destroyed;
+    private volatile VoBLEMediaSession media;
     private VoBLEMediaSession.Identity mediaIdentity;
     private volatile SessionContext session;
 
@@ -330,6 +332,17 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         }
         if (generation == null) return;
         boolean terminal = calls.observeCall(callId, generation, state);
+        synchronized (mediaLifecycleLock) {
+            VoBLEMediaSession current = media;
+            if (!destroyed && !terminal && current != null && mediaIdentity != null
+                    && mediaIdentity.generation() == generation && calls.ownsCall(callId, generation)) {
+                synchronized (current) {
+                    // A queued Telecom event must not re-register an owner after the
+                    // PCM failure callback has already released it but before cleanup.
+                    if (current.ready()) RemoteAudioSessionRegistry.ownCall(current, callId);
+                }
+            }
+        }
         if ("ended".equals(state) && !terminal) return;
         SessionContext target = session;
         if (target != null && channel.isReady(target.deviceId)) {
@@ -369,13 +382,37 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                         endpoint,
                         address -> VoBLEPCMBridgeSession.open(
                                 address, VoBLEPCMBridgeSession.socketConnector()),
-                        packet -> gatt.notifyAudioPacket(deviceId, packet));
+                        packet -> gatt.notifyAudioPacket(deviceId, packet),
+                        failed -> {
+                            RemoteAudioSessionRegistry.releaseCall(failed);
+                            try {
+                                controlQueue.execute(() -> {
+                                    // Delayed failure from an old call cannot stop its replacement.
+                                    if (media == failed) stopMedia("", 0);
+                                });
+                            } catch (java.util.concurrent.RejectedExecutionException destroyed) {
+                                // Service teardown already releases/cleans up its current media.
+                            }
+                        });
                 VoBLEMediaSession.Identity identity = new VoBLEMediaSession.Identity(
                         envelope.callId(), envelope.generation());
                 next.start(identity, mediaKey);
-                media = next;
-                mediaIdentity = identity;
-                RemoteAudioSessionRegistry.setVoBLE(true);
+                synchronized (mediaLifecycleLock) {
+                    synchronized (next) {
+                        // Socket reads may complete after shutdownNow; publication
+                        // and service teardown must share the same lifecycle lock.
+                        if (destroyed || !next.ready()) {
+                            next.close();
+                            throw new java.io.IOException("PCM gateway stopped during startup");
+                        }
+                        media = next;
+                        mediaIdentity = identity;
+                        if (CallRepository.callIDs().contains(envelope.callId())) {
+                            RemoteAudioSessionRegistry.ownCall(next, envelope.callId());
+                        }
+                        RemoteAudioSessionRegistry.setVoBLE(true);
+                    }
+                }
                 diagnostics = new VoBLEDiagnostics.Snapshot(
                         RuntimeMode.agentLabel(this), true, true, "G.711-mu/8000/mono",
                         0, 0, 0, "");
@@ -391,21 +428,24 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     }
 
     private void stopMedia(String callId, long generation) {
-        VoBLEMediaSession.Identity identity = mediaIdentity;
-        if (identity != null && callId != null && !callId.isEmpty()
-                && (!identity.callId().equals(callId) || identity.generation() != generation)) return;
-        VoBLEMediaSession active = media;
-        media = null;
-        mediaIdentity = null;
-        RemoteAudioSessionRegistry.setVoBLE(false);
-        if (active != null) {
-            VoBLEMediaSession.Stats stats = active.stats();
-            diagnostics = new VoBLEDiagnostics.Snapshot(
-                    RuntimeMode.agentLabel(this), session != null, false,
-                    "G.711-mu/8000/mono", stats.downlinkFrames(), stats.uplinkFrames(),
-                    stats.droppedFrames(), "");
-            publishDiagnostics();
-            active.close();
+        synchronized (mediaLifecycleLock) {
+            VoBLEMediaSession.Identity identity = mediaIdentity;
+            if (identity != null && callId != null && !callId.isEmpty()
+                    && (!identity.callId().equals(callId) || identity.generation() != generation)) return;
+            VoBLEMediaSession active = media;
+            if (active != null) RemoteAudioSessionRegistry.releaseCall(active);
+            media = null;
+            mediaIdentity = null;
+            RemoteAudioSessionRegistry.setVoBLE(false);
+            if (active != null) {
+                VoBLEMediaSession.Stats stats = active.stats();
+                diagnostics = new VoBLEDiagnostics.Snapshot(
+                        RuntimeMode.agentLabel(this), session != null, false,
+                        "G.711-mu/8000/mono", stats.downlinkFrames(), stats.uplinkFrames(),
+                        stats.droppedFrames(), "");
+                publishDiagnostics();
+                active.close();
+            }
         }
     }
 
@@ -526,12 +566,15 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     }
 
     @Override public void onDestroy() {
-        instance = null;
+        synchronized (mediaLifecycleLock) {
+            destroyed = true;
+            stopMedia("", 0);
+        }
+        if (instance == this) instance = null;
         pendingPairingCode = "";
         diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(this));
         controlQueue.shutdownNow();
         mediaQueue.shutdownNow();
-        stopMedia("", 0);
         if (gatt != null) gatt.close();
         super.onDestroy();
     }

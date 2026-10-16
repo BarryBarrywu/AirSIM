@@ -283,6 +283,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
     private func persistRemoteSMS(_ pushed: IncomingRemoteSMS) -> Bool {
         // 超长内容在 APNs payload 中只带预览，等待下次与 Agent 同步完整正文，避免本地出现两条。
         guard !pushed.contentTruncated else { return false }
+        guard !historyStore.visibleMessages([pushed.message]).isEmpty else { return false }
         var messages = historyStore.loadMessages()
         guard !messages.contains(where: { $0.deliveryID == pushed.deliveryID }) else { return false }
         messages.append(pushed.message)

@@ -56,6 +56,8 @@ public final class MainActivity extends Activity {
     private static final int OPTIONAL_SMS_REQUEST = 103;
     private static final int CALL_ACCOUNT_PERMISSION_REQUEST = 104;
     private static final int SHIZUKU_SETUP_REQUEST = 105;
+    private static final int DIAGNOSTIC_TXT_REQUEST = 106;
+    private static final java.util.concurrent.ExecutorService DIAGNOSTIC_WORKER = Executors.newSingleThreadExecutor();
     private static final String SHIZUKU_STARTUP_CHECKED = "shizuku_startup_checked";
     private static final String OPTIONAL_SMS_PROMPTED = "optional_sms_prompted";
     private static final java.util.concurrent.ExecutorService SMS_SCAN_WORKER =
@@ -524,6 +526,19 @@ public final class MainActivity extends Activity {
         actions.addView(export, weightedWithStart(5));
         root.addView(actions, matchWithTop(12));
 
+        TextView watchdogExport = secondaryButton("保存音频 Watchdog TXT");
+        watchdogExport.setOnClickListener(ignored -> {
+            Intent document = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            document.addCategory(Intent.CATEGORY_OPENABLE);
+            document.setType("text/plain");
+            document.putExtra(Intent.EXTRA_TITLE, "AirSIM-audio-watchdog-" + System.currentTimeMillis() + ".txt");
+            try { startActivityForResult(document, DIAGNOSTIC_TXT_REQUEST); }
+            catch (RuntimeException error) { toast("无法打开文件保存窗口，请使用复制日志"); }
+        });
+        root.addView(watchdogExport, matchWithTop(8));
+        root.addView(label("远程通话时每 2 秒复检静音状态，受控修复后再次验证。脱敏 VERBOSE 快照自动保存在本机；系统标志不能保证实际扬声器无声。",
+                12, MUTED, Gravity.START), matchWithTop(8));
+
         LinearLayout live = card(SURFACE, 20);
         live.setOrientation(LinearLayout.HORIZONTAL);
         live.setGravity(Gravity.CENTER_VERTICAL);
@@ -736,8 +751,31 @@ public final class MainActivity extends Activity {
             toast(enabled ? "Debug 日志已开启" : "Debug 日志已关闭");
         });
         root.addView(debugEnabled, matchWithTop(14));
+        root.addView(sectionTitle("关于"), matchWithTop(22));
+        LinearLayout aboutCard = card(SURFACE, 22);
+        aboutCard.setOrientation(LinearLayout.VERTICAL);
+        aboutCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        aboutCard.addView(label("AirSIM · " + RuntimeMode.agentLabel(this), 16, TEXT, Gravity.START));
+        TextView version = label("版本 " + AppInformation.version(this), 14, MUTED, Gravity.START);
+        version.setTextIsSelectable(true);
+        aboutCard.addView(version, matchWithTop(6));
+        TextView repository = secondaryButton("GitHub 仓库");
+        repository.setOnClickListener(ignored -> openProjectURL(AppInformation.REPOSITORY_URL));
+        aboutCard.addView(repository, matchWithTop(12));
+        TextView releases = secondaryButton("版本发布与下载");
+        releases.setOnClickListener(ignored -> openProjectURL(AppInformation.RELEASES_URL));
+        aboutCard.addView(releases, matchWithTop(10));
+        root.addView(aboutCard, matchWithTop(10));
         refreshShizukuStatus();
         return scroll(root);
+    }
+
+    private void openProjectURL(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (android.content.ActivityNotFoundException ignored) {
+            toast("没有可打开网页的浏览器");
+        }
     }
 
     private void openPairingPage() {
@@ -1671,7 +1709,10 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (pairingCodeView != null) pairingCodeView.setText(
                             MainScreenPresentation.formatPairingCode(code));
-                    if (pairingStatus != null) pairingStatus.setText("等待 iPhone 连接…\n" + address);
+                    if (pairingStatus != null) {
+                        pairingStatus.setText("等待 iPhone 自动发现或手动地址配对…\n" + address);
+                        pairingStatus.setTextIsSelectable(true);
+                    }
                     startPairingCountdown();
                 });
             }
@@ -2075,6 +2116,23 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == DIAGNOSTIC_TXT_REQUEST) {
+            if (result == RESULT_OK && data != null && data.getData() != null) {
+                Uri destination = data.getData();
+                DIAGNOSTIC_WORKER.execute(() -> {
+                    try (java.io.OutputStream output = getContentResolver().openOutputStream(destination, "wt")) {
+                        if (output == null) throw new java.io.IOException("document unavailable");
+                        String report = AudioWatchdogReport.compose(AppInformation.version(this), Build.VERSION.SDK_INT,
+                                Build.MANUFACTURER, Build.MODEL, BridgeLog.read());
+                        output.write(report.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        runOnUiThread(() -> toast("Watchdog TXT 已保存"));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> toast("保存 TXT 失败，请重试或使用复制日志"));
+                    }
+                });
+            }
+            return;
+        }
         refreshStatus();
         if (request == ROLE_REQUEST) {
             continueAfterSystemRoleRequest();

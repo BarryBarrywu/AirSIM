@@ -1,8 +1,18 @@
 # AirSIM 三星 Android 控制 App
 
+工作区候选构建为 `0.9.7.1 (86)`，尚未发布。Standalone 与 AVF Bridge 共享「设置 → 关于」：从实际安装 APK 读取版本号与 versionCode，可打开 GitHub 仓库和版本发布页；不依赖 Agent、Relay 或网络查询版本。
+
+build 86 的本机通话静音只由已确认远程通话和就绪媒体触发，不再仅因默认 `remote_silent` 设置静音所有原生通话。链路失效或挂断恢复先前状态，蓝牙 PCM 中断主动释放所属会话，静音与恢复结果均记录到 VERBOSE TXT。[行为及验收边界](../../docs/remote-call-local-output-mute.md)。
+
+build 85 在 VoWLAN 前台服务通过正常权限 `ACCESS_NETWORK_STATE` 监听 Wi-Fi 网络和地址变化，重发 NSD 广播并隔离过期注册回调，不因仅重发广播关闭现有控制／PCM Socket。不要求 Wi-Fi 已验证可上网，不更改 Linux Agent 或 Relay。[机制与验收边界](../../docs/vowlan-network-return.md)。
+
+build 84 提供绑定远程通话身份的音频 Watchdog、Shizuku 受控静音复检及真正的 TXT 导出；无法确认归属的旧 AVF 云端不自动修复，不把系统静音标志当成物理扬声器无声证据。[使用与边界](../../docs/sms-deletion-audio-watchdog.md)。
+
+build 83 的[手动地址配对](../../docs/manual-ip-pairing.md)复用现有加密 claim，新增限时公开会话元数据读取与已认证的实际网关端口回传。配对页显示当前地址／随机配对端口；Tailscale 用户填本机 Tailscale IPv4。通话网关分别绑定 Wi-Fi、指定 VPN IPv4 或回环代理入口，不绑定公网／通配地址；回环入口仍需 HMAC 与 PCM 认证，不得代理 Linux `8575/8576` 或将 Shell `7580` 开放到外网。
+
 该目录包含 AirSIM Android 端的共享实现以及旧 AVF 兼容 Manifest。新安装推荐使用根目录的 [Android Standalone APK](../../android-standalone/README.md)，由同一 APK 内置 Agent；只有兼容旧部署时才使用这里的 AVF 版构建入口。
 
-当前正式应用版本为 [`v0.9.7.1`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.1)（Android `versionCode 81`），包含 Android 10–13 兼容性修复，推荐升级；新安装优先 Standalone。配套 Linux AVF Agent 保持 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
+当前正式应用版本为 [`v0.9.7.2`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.7.2)（Android `versionCode 91`），包含 Android 10–13 兼容性修复及后续稳定性改动，推荐升级；新安装优先 Standalone。三星最低音量策略不保证完全静音，实际效果待复验，见[发布说明](../../docs/releases/0.9.7.2.md)。配套 Linux AVF Agent 保持 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)。维护者云端模式使用 `https://airsim-push.remotepilot.site`，不得改用 DJOneHub 的 `https://push.remotepilot.site`。自行签名的 Apple 客户端需要部署与其 Bundle ID、APNs 凭据匹配的独立 Relay。
 
 ## 主要职责
 
@@ -95,7 +105,7 @@ AirSIM 会识别小米、Redmi、OPPO、OnePlus、realme、vivo、iQOO 和荣耀
 
 ## 通话与音频策略
 
-普通来电默认使用 `remote_silent`：三星端保持受控静音，由 iPhone 或 Apple Watch 呈现来电并承载音频。紧急通话始终交回系统预装电话 App。Shizuku 服务以 shell UID 运行音频桥，并在通话结束时恢复先前的系统音量状态。
+来电通知呈现默认使用 `remote_silent`。本机通话声音仅在唯一的已确认远程通话具有就绪 PCM 所有者、且正在拨号／通话／保持时由 Shizuku 受控静音；未接听、普通本机通话或多通话不盲目静音。媒体中断、通话结束或服务销毁时恢复原音量与静音状态。旧 AVF 云端无法提供精确媒体归属时不自动静音，不能再依赖通知模式跳过身份检查。紧急通话始终交回系统预装电话 App。
 
 作为默认电话 App，AirSIM 还提供独立锁屏来电界面和通知接听/拒接/挂断入口；它不展示短信或设置内容。来电通知使用新的高优先级渠道，避免既有低优先级前台服务渠道无法升级的问题。系统若未授予全屏来电权限，会退化为可操作的横幅通知；是否亮屏以及锁屏操作仍需在每种目标机型上实测。
 
@@ -114,3 +124,6 @@ iPhone 经 VoWLAN 或云端 Relay 提交发信请求后，AVF Agent 把 `send_sm
 - 旧版 AirSIM 保存的 `:7575` 地址会迁移到 `:8575`；`7575` 可能属于同机 DJOneHub，不再视为 AirSIM 在线证据。未发布端口迁移版 Agent 前，不能用旧版在线包做共存安装。
 - Android 管理端只提交签名的 `airsim-avf-agent_*_arm64.deb`，芯片厂商差异由 App 的能力探测处理，不选择不同 Debian 包。
 - “检查并安装最新 Agent”从 `kai-wu-cortex/AirSIM` 的最新 GitHub Release 选择唯一的 `airsim-avf-agent_*_arm64.deb` 及同名 `.sig`；Release 缺包、缺签名、多包或非 HTTPS 下载都会被拒绝。
+# 未发布：Relay 命令路由
+
+共享源码新增定向命令、严格关闭帧解析和可取消的重连代次；SIM / 名称 / token 更新不替换命令连接。[兼容与验收边界](../../docs/relay-agent-routing.md)。本轮未安装或发布。

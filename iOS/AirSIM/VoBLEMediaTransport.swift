@@ -225,8 +225,20 @@ protocol VoBLEMediaWriting: AnyObject {
 /// callbacks arrive on the main actor, but a 20 ms media cadence must never make
 /// SwiftUI and CallKit process every audio frame synchronously.
 private final class VoBLEMediaCodecWorker: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.example.airsim.voble.media-codec", qos: .userInteractive)
+    struct Snapshot: Sendable {
+        var dropped = 0
+        var summary = "received=0 replay=0 late=0 invalid=0 skipped=0 concealed=0"
+        var jitterTarget = 4
+    }
+
+    struct ReceivedFragment: Sendable {
+        let data: Data
+        let now: Date
+    }
+
+    private let queue: DispatchQueue
     private var identity: VoBLEMediaSessionIdentity?
+    private var epoch: UInt64 = 0
     private var mediaKey = Data()
     private var sequence: UInt32 = 0
     private var timestamp: UInt32 = 0
@@ -240,28 +252,32 @@ private final class VoBLEMediaCodecWorker: @unchecked Sendable {
     private var invalidDrops = 0
     private var concealed = 0
 
-    func start(identity: VoBLEMediaSessionIdentity, mediaKey: Data) {
-        queue.sync {
-            self.identity = identity; self.mediaKey = mediaKey
+    init(queue: DispatchQueue) { self.queue = queue }
+
+    func start(identity: VoBLEMediaSessionIdentity, epoch: UInt64, mediaKey: Data) {
+        queue.async { [self] in
+            self.identity = identity; self.epoch = epoch; self.mediaKey = mediaKey
             sequence = 0; timestamp = 0; downlink = VoBLEAudioReassembler()
             jitter.reset(); receivedSequences.removeAll(); dropped = 0
             received = 0; replayDrops = 0; jitterDrops = 0; invalidDrops = 0; concealed = 0
         }
     }
 
-    func stop(identity candidate: VoBLEMediaSessionIdentity) {
-        queue.sync {
-            guard candidate == identity else { return }
+    func stop(identity candidate: VoBLEMediaSessionIdentity, epoch: UInt64) {
+        queue.async { [self] in
+            guard candidate == identity, self.epoch == epoch else { return }
             identity = nil; mediaKey.removeAll(); jitter.reset(); receivedSequences.removeAll()
         }
     }
 
     func encode(
+        identity candidate: VoBLEMediaSessionIdentity, epoch: UInt64,
         pcm: Data, discontinuity: Bool, maximumPacketLength: Int,
-        completion: @escaping @Sendable ([Data]?) -> Void
+        completion: @escaping @Sendable ([Data]?, Snapshot?) -> Void
     ) {
         queue.async { [self] in
-            guard identity != nil, pcm.count == 320 else { completion(nil); return }
+            guard candidate == identity, self.epoch == epoch else { completion(nil, nil); return }
+            guard pcm.count == 320 else { completion(nil, snapshot); return }
             do {
                 let compressed = VoBLEMULaw.encode(pcm)
                 let sealed = try VoBLEMediaCipher.seal(
@@ -273,102 +289,155 @@ private final class VoBLEMediaCodecWorker: @unchecked Sendable {
                     sampleTimestamp: timestamp, payload: sealed.payload,
                     authenticationTag: sealed.authenticationTag)
                 sequence &+= 1; timestamp &+= 160
-                completion(try packet.encodedFragments(maximumPacketLength: maximumPacketLength))
+                completion(try packet.encodedFragments(maximumPacketLength: maximumPacketLength), snapshot)
             } catch {
                 dropped += 1
-                completion(nil)
+                completion(nil, snapshot)
             }
         }
     }
 
-    func receive(_ fragment: Data, now: Date) {
+    func receive(
+        _ fragments: [ReceivedFragment], identity candidate: VoBLEMediaSessionIdentity, epoch: UInt64,
+        completion: @escaping @Sendable (Snapshot?) -> Void
+    ) {
         queue.async { [self] in
-            guard identity != nil else { return }
-            do {
-                guard let packet = try downlink.append(fragment, now: now) else { return }
-                guard !receivedSequences.contains(packet.sequence) else {
-                    dropped += 1; replayDrops += 1; return
-                }
-                let compressed = try VoBLEMediaCipher.open(
-                    .init(payload: packet.payload, authenticationTag: packet.authenticationTag),
-                    key: mediaKey, direction: .downlink, streamID: packet.streamID,
-                    sequence: packet.sequence, timestamp: packet.sampleTimestamp)
-                receivedSequences.insert(packet.sequence)
-                received += 1
-                if receivedSequences.count > 256, let oldest = receivedSequences.min() {
-                    receivedSequences.remove(oldest)
-                }
-                if packet.flags.contains(.discontinuity) { jitter.noteDiscontinuity() }
-                if !jitter.insert(sequence: packet.sequence, pcm: VoBLEMULaw.decode(compressed)) {
-                    dropped += 1; jitterDrops += 1
-                }
-            } catch { dropped += 1; invalidDrops += 1 }
+            guard candidate == identity, self.epoch == epoch else { completion(nil); return }
+            for fragment in fragments { receive(fragment.data, now: fragment.now) }
+            completion(snapshot)
         }
     }
 
-    func dequeue() -> VoBLEPlaybackFrame? {
-        queue.sync {
-            let frame = jitter.dequeue()
-            if frame?.concealed == true { concealed += 1 }
-            return frame
+    private func receive(_ fragment: Data, now: Date) {
+        do {
+            guard let packet = try downlink.append(fragment, now: now) else { return }
+            guard !receivedSequences.contains(packet.sequence) else {
+                dropped += 1; replayDrops += 1; return
+            }
+            let compressed = try VoBLEMediaCipher.open(
+                .init(payload: packet.payload, authenticationTag: packet.authenticationTag),
+                key: mediaKey, direction: .downlink, streamID: packet.streamID,
+                sequence: packet.sequence, timestamp: packet.sampleTimestamp)
+            receivedSequences.insert(packet.sequence)
+            received += 1
+            if receivedSequences.count > 256, let oldest = receivedSequences.min() {
+                receivedSequences.remove(oldest)
+            }
+            if packet.flags.contains(.discontinuity) { jitter.noteDiscontinuity() }
+            if !jitter.insert(sequence: packet.sequence, pcm: VoBLEMULaw.decode(compressed)) {
+                dropped += 1; jitterDrops += 1
+            }
+        } catch { dropped += 1; invalidDrops += 1 }
+    }
+
+    func dequeue(
+        maximumFrames: Int, identity candidate: VoBLEMediaSessionIdentity, epoch: UInt64,
+        completion: @escaping @Sendable ([VoBLEPlaybackFrame], Snapshot?) -> Void
+    ) {
+        queue.async { [self] in
+            guard candidate == identity, self.epoch == epoch else { completion([], nil); return }
+            var frames: [VoBLEPlaybackFrame] = []
+            for _ in 0..<maximumFrames {
+                guard let frame = jitter.dequeue() else { break }
+                if frame.concealed { concealed += 1 }
+                frames.append(frame)
+            }
+            completion(frames, snapshot)
         }
     }
-    func droppedCount() -> Int { queue.sync { dropped } }
-    func diagnosticSummary() -> String {
-        queue.sync {
-            "received=\(received) replay=\(replayDrops) late=\(jitterDrops) invalid=\(invalidDrops) skipped=\(jitter.skippedFrames) concealed=\(concealed)"
-        }
+
+    private var snapshot: Snapshot {
+        Snapshot(dropped: dropped,
+                 summary: "received=\(received) replay=\(replayDrops) late=\(jitterDrops) invalid=\(invalidDrops) skipped=\(jitter.skippedFrames) concealed=\(concealed)",
+                 jitterTarget: jitter.targetFrames)
     }
-    func jitterTarget() -> Int { queue.sync { jitter.targetFrames } }
 }
 
 @MainActor
 final class VoBLEGATTMediaTransport {
     private struct QueuedFrame { var fragments: [Data] }
+    private struct CapturedFrame {
+        let pcm: Data
+        let discontinuity: Bool
+    }
     private let writer: any VoBLEMediaWriting
     private var identity: VoBLEMediaSessionIdentity?
-    private var mediaKey = Data()
+    private var epoch: UInt64 = 0
     private var queued: [QueuedFrame] = []
+    private var captured: [CapturedFrame] = []
+    private var downlink: [VoBLEMediaCodecWorker.ReceivedFragment] = []
+    private var playback: [VoBLEPlaybackFrame] = []
+    // These flags span session replacements: a blocked old request must not
+    // allow every new session to enqueue another unbounded batch of work.
+    private var encoding = false
+    private var receiving = false
+    private var requestingPlayback = false
+    private var encodingEpoch: UInt64?
+    private var diagnostics = VoBLEMediaCodecWorker.Snapshot()
     private var localDroppedFrameCount = 0
-    private let codec = VoBLEMediaCodecWorker()
+    private let codec: VoBLEMediaCodecWorker
 
-    init(writer: any VoBLEMediaWriting) { self.writer = writer }
+    init(writer: any VoBLEMediaWriting,
+         codecQueue: DispatchQueue = DispatchQueue(label: "com.example.airsim.voble.media-codec", qos: .userInteractive)) {
+        self.writer = writer
+        codec = VoBLEMediaCodecWorker(queue: codecQueue)
+    }
     var queuedFrameCount: Int { queued.count }
     var isRunning: Bool { identity != nil }
-    var droppedFrameCount: Int { localDroppedFrameCount + codec.droppedCount() }
-    var diagnosticSummary: String { codec.diagnosticSummary() }
-    var jitterTargetFrames: Int { codec.jitterTarget() }
+    var droppedFrameCount: Int { localDroppedFrameCount + diagnostics.dropped }
+    var diagnosticSummary: String { diagnostics.summary }
+    var jitterTargetFrames: Int { diagnostics.jitterTarget }
 
     func start(identity: VoBLEMediaSessionIdentity, mediaKey: Data) throws {
         guard !identity.callID.isEmpty, identity.generation > 0, mediaKey.count == 32 else {
             throw VoBLEPairingError.invalidKey
         }
-        self.identity = identity; self.mediaKey = mediaKey
-        queued.removeAll(); localDroppedFrameCount = 0
-        codec.start(identity: identity, mediaKey: mediaKey)
+        epoch &+= 1
+        self.identity = identity
+        queued.removeAll(); captured.removeAll(); downlink.removeAll(); playback.removeAll()
+        localDroppedFrameCount = 0; diagnostics = .init()
+        codec.start(identity: identity, epoch: epoch, mediaKey: mediaKey)
     }
 
     func stop(identity candidate: VoBLEMediaSessionIdentity) {
         guard candidate == identity else { return }
-        identity = nil; mediaKey.removeAll(); queued.removeAll()
-        codec.stop(identity: candidate)
+        codec.stop(identity: candidate, epoch: epoch)
+        epoch &+= 1
+        identity = nil; queued.removeAll(); captured.removeAll(); downlink.removeAll(); playback.removeAll()
     }
 
     func enqueueCapturedPCM(_ pcm: Data) {
         guard identity != nil, pcm.count == 320 else { return }
-        let discontinuity = queued.count >= 8
-        if discontinuity { queued.removeFirst(); localDroppedFrameCount += 1 }
+        let discontinuity = queued.count + captured.count + (encodingEpoch == epoch ? 1 : 0) >= 8
+        if discontinuity {
+            if !queued.isEmpty { queued.removeFirst() }
+            else if !captured.isEmpty { captured.removeFirst() }
+            localDroppedFrameCount += 1
+        }
+        captured.append(CapturedFrame(pcm: pcm, discontinuity: discontinuity))
+        encodeNext()
+    }
+
+    private func encodeNext() {
+        guard !encoding, let identity, !captured.isEmpty else { return }
+        let frame = captured.removeFirst()
+        let epoch = epoch
+        encoding = true; encodingEpoch = epoch
         let maximumLength = writer.maximumWriteLength
-        codec.encode(pcm: pcm, discontinuity: discontinuity, maximumPacketLength: maximumLength) {
-            [weak self] fragments in
+        codec.encode(identity: identity, epoch: epoch, pcm: frame.pcm,
+                     discontinuity: frame.discontinuity, maximumPacketLength: maximumLength) {
+            [weak self] fragments, snapshot in
             Task { @MainActor in
-                guard let self, self.identity != nil else { return }
-                guard let fragments else { self.localDroppedFrameCount += 1; return }
-                if self.queued.count >= 8 {
-                    self.queued.removeFirst(); self.localDroppedFrameCount += 1
+                guard let self else { return }
+                self.encoding = false; self.encodingEpoch = nil
+                if self.identity == identity, self.epoch == epoch {
+                    if let snapshot { self.diagnostics = snapshot }
+                    if let fragments {
+                        self.queued.append(QueuedFrame(fragments: fragments))
+                        self.drain()
+                    }
                 }
-                self.queued.append(QueuedFrame(fragments: fragments))
-                self.drain()
+                self.encodeNext()
             }
         }
     }
@@ -377,10 +446,57 @@ final class VoBLEGATTMediaTransport {
 
     func receiveDownlinkFragment(_ fragment: Data, now: Date = Date()) {
         guard identity != nil else { return }
-        codec.receive(fragment, now: now)
+        guard fragment.count <= VoBLEAudioPacket.headerLength + 255 else {
+            localDroppedFrameCount += 1; return
+        }
+        if downlink.count >= 64 { downlink.removeFirst(); localDroppedFrameCount += 1 }
+        downlink.append(.init(data: fragment, now: now))
+        receiveNext()
     }
 
-    func dequeuePlayback() -> VoBLEPlaybackFrame? { codec.dequeue() }
+    private func receiveNext() {
+        guard !receiving, let identity, !downlink.isEmpty else { return }
+        let fragments = downlink
+        downlink.removeAll(keepingCapacity: true)
+        let epoch = epoch
+        receiving = true
+        codec.receive(fragments, identity: identity, epoch: epoch) { [weak self] snapshot in
+            Task { @MainActor in
+                guard let self else { return }
+                self.receiving = false
+                if self.identity == identity, self.epoch == epoch {
+                    if let snapshot { self.diagnostics = snapshot }
+                    self.requestPlayback()
+                }
+                self.receiveNext()
+            }
+        }
+    }
+
+    func dequeuePlayback() -> VoBLEPlaybackFrame? {
+        let frame = playback.isEmpty ? nil : playback.removeFirst()
+        requestPlayback()
+        return frame
+    }
+
+    private func requestPlayback() {
+        guard !requestingPlayback, let identity, playback.count < 3 else { return }
+        let epoch = epoch
+        requestingPlayback = true
+        codec.dequeue(maximumFrames: 3 - playback.count, identity: identity, epoch: epoch) {
+            [weak self] frames, snapshot in
+            Task { @MainActor in
+                guard let self else { return }
+                self.requestingPlayback = false
+                if self.identity == identity, self.epoch == epoch {
+                    if let snapshot { self.diagnostics = snapshot }
+                    self.playback.append(contentsOf: frames)
+                } else if self.identity != nil {
+                    self.requestPlayback()
+                }
+            }
+        }
+    }
 
     private func drain() {
         while writer.canSendWriteWithoutResponse, !queued.isEmpty {

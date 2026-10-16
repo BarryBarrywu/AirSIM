@@ -20,7 +20,7 @@ enum AirSIMConnectionMode: String, CaseIterable, Codable, Identifiable, Sendable
 
     var detail: String {
         switch self {
-        case .vowlan: return "仅使用同一 Wi-Fi 或手机热点，不连接 Relay"
+        case .vowlan: return "使用 Wi-Fi、手机热点或手动 VPN 地址直连，不连接 Relay"
         case .bluetooth: return "仅使用蓝牙控制与通话音频，不依赖 Wi-Fi 或 Relay"
         case .cloud: return "仅使用 Relay、PushKit 与 CallKit"
         case .automatic: return "按 VoWLAN、蓝牙、云端的可用性自动选择"
