@@ -92,7 +92,7 @@ final class LocalHistoryStore {
 
     private static func deletionKeys(_ message: SMSMessage) -> Set<String> {
         // Hash legacy fingerprints: an SMS id can itself contain the number and complete body.
-        let legacy = "\(message.sender)\u{0}\(Int64(message.timestamp.timeIntervalSince1970.rounded(.down)))\u{0}\(message.content)\u{0}\(message.direction?.rawValue ?? "incoming")"
+        let legacy = message.scopedIdentity("\(message.sender)\u{0}\(Int64(message.timestamp.timeIntervalSince1970.rounded(.down)))\u{0}\(message.content)\u{0}\(message.direction?.rawValue ?? "incoming")")
         return Set([message.id, legacy].map {
             SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined()
         })

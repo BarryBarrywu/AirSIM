@@ -9,6 +9,28 @@ import SwiftUI
 
 @MainActor
 final class AudioGraphAndVerboseRegressionTests: XCTestCase {
+    func testIdenticalSMSFromKnownDevicesRemainDistinctAndDeleteIndependently() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for withDelivery in [true, false] {
+            func message(_ source: String?) throws -> SMSMessage {
+                var body: [String: Any] = ["sender":"fixture", "content":"same", "timestamp":1000]
+                if withDelivery { body["delivery_id"] = "same-wire-id" }
+                if let source { body["source_agent_id"] = source }
+                return try JSONDecoder().decode(SMSMessage.self, from: JSONSerialization.data(withJSONObject: body))
+            }
+            let a = try message("A"), b = try message("B"), legacy = try message(nil)
+            XCTAssertNotEqual(a.id, b.id)
+            let store = LocalHistoryStore(directoryURL: directory.appendingPathComponent(String(withDelivery)))
+            XCTAssertTrue(store.saveMessages([a,b,legacy]))
+            XCTAssertEqual(store.loadMessages().count, 3, "unknown legacy provenance must not be guessed")
+            XCTAssertTrue(store.deleteMessages(ids: [a.id], from: [a,b,legacy]))
+            XCTAssertEqual(Set(store.loadMessages().map(\.id)), [b.id, legacy.id])
+            XCTAssertTrue(store.saveMessages([a,b,legacy]))
+            XCTAssertEqual(Set(store.loadMessages().map(\.id)), [b.id, legacy.id])
+        }
+    }
+
     func testCloudHangupAcceptsAndroidConfirmationWithoutRequiringLegacyModemField() throws {
         let receipt = try JSONDecoder().decode(CloudCallControlReceipt.self, from: Data(
             #"{"command_id":"fixture","status":"completed","result":{"ended":true,"android_confirmed":true}}"#.utf8))

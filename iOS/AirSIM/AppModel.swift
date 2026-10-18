@@ -379,6 +379,7 @@ final class AppModel: ObservableObject {
             guard let self, self.presentedDeviceCall == key else { return }
             self.presentOwnedCall(key, state: .ended)
         }
+        router.onTerminationSettled = { [weak self] in self?.releaseInactiveLocalTransports() }
         return router
     }()
     private var presentedDeviceCall: DeviceCallKey?
@@ -604,8 +605,7 @@ final class AppModel: ObservableObject {
             updateOwnedPrimaryAlerts(nil)
             clearLockedTransport()
             let policy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
-            if !policy.startsBluetooth { vobleHub.stop() }
-            if !policy.startsVoWLAN { localDevices.stop() }
+            releaseInactiveLocalTransports()
             callKit.setEnabled(policy.usesCallKit)
             backgroundStandby.resumeAfterCall()
         } else {
@@ -1557,15 +1557,29 @@ final class AppModel: ObservableObject {
         setConnectionMode(next)
     }
 
+    private func releaseInactiveLocalTransports() {
+        guard !deviceCallRouter.hasPendingTermination else { return }
+        let policy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
+        if !policy.startsBluetooth, !(deviceCalls.active != nil && currentCallTransport == .bluetooth) {
+            vobleHub.stop()
+        }
+        if !policy.startsVoWLAN, !(deviceCalls.active != nil && currentCallTransport == .vowlan) {
+            localDevices.stop()
+        }
+    }
+
     func setConnectionMode(_ mode: AirSIMConnectionMode) {
         ConnectionModePreference.set(mode)
         eventStreamSupported = nil
         let policy = ConnectionModeRuntimePolicy(mode: mode)
         if policy.startsVoWLAN { localDevices.start() }
-        else { localDevices.stop(except: currentCallTransport == .vowlan ? deviceCalls.active?.agentID : nil) }
-        let preserveBLE = deviceCalls.active != nil && currentCallTransport == .bluetooth && !policy.startsBluetooth
+        else if !deviceCallRouter.hasPendingTermination {
+            localDevices.stop(except: currentCallTransport == .vowlan ? deviceCalls.active?.agentID : nil)
+        }
+        let preserveBLE = (deviceCallRouter.hasPendingTermination
+            || (deviceCalls.active != nil && currentCallTransport == .bluetooth)) && !policy.startsBluetooth
         _ = vobleMode.activate(mode, preservingActiveBluetooth: preserveBLE)
-        if preserveBLE { vobleHub.stop(except: deviceCalls.active?.agentID) }
+        if preserveBLE, !deviceCallRouter.hasPendingTermination { vobleHub.stop(except: deviceCalls.active?.agentID) }
         cloudStatusRefreshTask?.cancel()
         cloudStatusRefreshTask = nil
         cloudStatusRefreshGeneration &+= 1
@@ -2547,10 +2561,18 @@ final class AppModel: ObservableObject {
             guard let currentAgent = verifiedVoWLANAPI() ?? reportingAgent else {
                 throw CallKitBridgeError.noReachableTransport
             }
+            let producer = reportingAgent ?? currentAgent
+            // Snapshot a verified producer before suspension; never trust an
+            // inbox-supplied device label or the selection after the await.
+            let producerID = localDevices.agentIDs.first { localDevices.api(for: $0)?.route == producer.route }
             let fetched = try await AgentSMSInboxFetch.fetch(
                 reportingAgent: reportingAgent, discoveredAgent: currentAgent
             )
-            let remoteMessages = fetched.messages
+            let remoteMessages = fetched.messages.map { original in
+                var message = original
+                message.sourceAgentID = producerID
+                return message
+            }
             let existingIDs = Set(messages.map(\.id))
             let newlyReceived = remoteMessages
                 .filter { !existingIDs.contains($0.id) }

@@ -129,6 +129,35 @@ final class VoBLEMultiDeviceTests: XCTestCase {
         model.stop()
     }
 
+    func testModeExitKeepsAuthenticatedCentralUntilHangupCommandCompletes() async throws {
+        let previous = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.bluetooth)
+        defer { ConnectionModePreference.set(previous) }
+        let io = RadioIOProbe(), id = UUID()
+        let hub = VoBLEDeviceHub(radio: VoBLERadioController(io: io), pairingStore: MemoryPairings())
+        let session = hub.prepare(peripheralID: id)
+        authenticate(session.central, as: "A")
+        let backend = ModeExitBackend()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            deviceBackend: { _, _ in backend }, bluetoothHub: hub)
+        hub.start()
+        _ = try await model.deviceCallRouter.dial(agentID: "A", number: "fixture", mode: .bluetooth)
+        model.setConnectionMode(.vowlan)
+        backend.onEnd = {
+            XCTAssertEqual(session.central.state, .ready, "end must reach an authenticated live transport")
+            XCTAssertFalse(io.cancelled.contains(id), "UI retirement must not disconnect before sending")
+            XCTAssertNil(model.deviceCalls.active, "presentation still retires before network I/O")
+            model.setConnectionMode(.cloud)
+            model.setConnectionMode(.vowlan)
+            await Task.yield()
+            XCTAssertEqual(session.central.state, .ready, "keep the lane until the command reply")
+        }
+        await model.hangup()
+        XCTAssertEqual(session.central.state, .stopped)
+        XCTAssertFalse(hub.radio.scanning)
+        model.stop()
+    }
+
     func testBluetoothToggleDoesNotRestoreOnlyFirstPeer() {
         let ids = [UUID(), UUID()]
         let io = RadioIOProbe()
@@ -191,11 +220,12 @@ final class VoBLEMultiDeviceTests: XCTestCase {
 @MainActor
 private final class ModeExitBackend: DeviceCallBackend {
     let epoch: UInt64 = 1
+    var onEnd: () async -> Void = {}
     func dial(number: String, operationID: String, systemUUID: UUID) async throws -> DeviceBackendCall {
         .init(callID: "fixture", backendID: "fixture", generation: nil)
     }
     func answer(callID: String, generation: UInt64?) async throws {}
-    func end(callID: String, generation: UInt64?, reject: Bool) async throws {}
+    func end(callID: String, generation: UInt64?, reject: Bool) async throws { await onEnd() }
     func dtmf(_ digits: String, callID: String, generation: UInt64?) async throws {}
 }
 

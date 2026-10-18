@@ -67,9 +67,12 @@ final class DeviceCallActionRouter {
     private var targets: [DeviceCallKey: Target] = [:]
     private var pendingDials = Set<DeviceCallKey>()
     private var earlyEvents: [DeviceCallKey: [DeviceCallEvent]] = [:]
+    private var pendingTerminations = Set<DeviceCallKey>()
+    var hasPendingTermination: Bool { !pendingTerminations.isEmpty }
     var systemUUID: () -> UUID = { UUID() }
     var onActivate: ((LockedDeviceCallRoute) -> Void)?
     var onFinish: ((DeviceCallKey) -> Void)?
+    var onTerminationSettled: (() -> Void)?
     init(context: DeviceCallContext,
          backend: @escaping (String, CallTransport) -> (any DeviceCallBackend)?) {
         self.context = context; self.backend = backend
@@ -227,7 +230,13 @@ final class DeviceCallActionRouter {
     }
     func end(_ key: DeviceCallKey, rejectIfRinging: Bool) async throws {
         guard let target = targets[key], context.registry.latestEvent(for: key)?.state.isTerminal == false else { return }
+        pendingTerminations.insert(key)
+        defer {
+            pendingTerminations.remove(key)
+            onTerminationSettled?()
+        }
         // Retire presentation before I/O. A delayed active event cannot revive it.
+        // The control lane must survive this tombstone until the captured end finishes.
         finished(key)
         try await target.backend.end(callID: target.identity.backendID, generation: target.identity.generation, reject: rejectIfRinging)
     }

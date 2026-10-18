@@ -254,18 +254,26 @@ struct SMSMessage: Codable, Equatable, Sendable, Identifiable {
     var deliveryID: String?
     /// 旧模块没有方向字段，缺省按收到的短信展示；发送成功后由 App 标记为 outgoing。
     var direction: SMSDirection? = nil
+    /// Known authenticated producer. Legacy records remain explicitly unscoped.
+    var sourceAgentID: String? = nil
 
     var isOutgoing: Bool { direction == .outgoing }
 
     /// 新版 Agent 用 delivery_id 对齐 APNs 与本地同步；旧版仍回退到内容指纹。
     var id: String {
-        if let deliveryID, !deliveryID.isEmpty { return "delivery:\(deliveryID)" }
-        return "\(sender)\u{0}\(timestamp.timeIntervalSince1970)\u{0}\(content)\u{0}\(direction?.rawValue ?? SMSDirection.incoming.rawValue)"
+        if let deliveryID, !deliveryID.isEmpty { return scopedIdentity("delivery:\(deliveryID)") }
+        return scopedIdentity("\(sender)\u{0}\(timestamp.timeIntervalSince1970)\u{0}\(content)\u{0}\(direction?.rawValue ?? SMSDirection.incoming.rawValue)")
+    }
+
+    func scopedIdentity(_ value: String) -> String {
+        guard let sourceAgentID, !sourceAgentID.isEmpty else { return value }
+        return "source:\(sourceAgentID.utf8.count):\(sourceAgentID)\u{0}\(value)"
     }
 
     enum CodingKeys: String, CodingKey {
         case sender, content, code, timestamp, direction
         case deliveryID = "delivery_id"
+        case sourceAgentID = "source_agent_id"
     }
 }
 
@@ -274,7 +282,7 @@ enum SMSHistoryPolicy {
     /// Prefer authoritative delivery IDs without multiplying the same legacy record on each save.
     static func deduplicated(_ records: [SMSMessage]) -> [SMSMessage] {
         func legacyKey(_ message: SMSMessage) -> String {
-            "\(message.sender)\u{0}\(Int64(message.timestamp.timeIntervalSince1970.rounded(.down)))\u{0}\(message.content)\u{0}\(message.direction?.rawValue ?? "incoming")"
+            message.scopedIdentity("\(message.sender)\u{0}\(Int64(message.timestamp.timeIntervalSince1970.rounded(.down)))\u{0}\(message.content)\u{0}\(message.direction?.rawValue ?? "incoming")")
         }
         let authoritativeLegacyKeys = Set(records.filter { $0.deliveryID?.isEmpty == false }.map(legacyKey))
         var byID: [String: SMSMessage] = [:]

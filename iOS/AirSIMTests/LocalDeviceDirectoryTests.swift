@@ -9,6 +9,34 @@ import WatchConnectivity
 final class LocalDeviceDirectoryTests: XCTestCase {
     private let aSecret = Data(repeating: 0x41, count: 32)
     private let bSecret = Data(repeating: 0x42, count: 32)
+    func testSMSIngestionCapturesAuthenticatedProducerAndAcknowledgesRawDeliveryIDs() async throws {
+        let a = try AuthenticatedHealthPeer(agentID: "A", secret: aSecret)
+        let b = try AuthenticatedHealthPeer(agentID: "B", secret: bSecret)
+        defer { a.stop(); b.stop() }
+        let ae = try await a.start(), be = try await b.start()
+        let aBoundary = SMSProducerBoundary(), bBoundary = SMSProducerBoundary()
+        let directory = LocalDeviceDirectory(credentials: MemoryWLANCredentials(), apiFactory: { route in
+            AirSIMAPI(route: route, transport: route.baseURL.port == Int(ae.controlPort) ? aBoundary : bBoundary)
+        }, healthTransport: AuthenticatedHealthPeer.transport)
+        try await directory.verifyPairing(agentID: "A", endpoint: ae, credential: VoWLANCredential(secret: aSecret))
+        try await directory.verifyPairing(agentID: "B", endpoint: be, credential: VoWLANCredential(secret: bSecret))
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.vowlan); AndroidAgentBindingPreference.set("B")
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        let store = LocalHistoryStore(directoryURL: path)
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            localDirectory: directory, historyStore: store)
+        defer { model.stop() }
+        await model.loadMessagesFromAgent(silently: true, reportingAgent: directory.api(for: "A"))
+        await model.loadMessagesFromAgent(silently: true, reportingAgent: directory.api(for: "B"))
+        XCTAssertEqual(model.messages.count, 2)
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(store.loadMessages())) as? [[String:Any]])
+        XCTAssertEqual(Set(rows.compactMap { $0["source_agent_id"] as? String }), ["A","B"])
+        XCTAssertEqual(aBoundary.acks, [["same-wire-id"]])
+        XCTAssertEqual(bBoundary.acks, [["same-wire-id"]])
+    }
     func testUnboundLegacyPairingMigratesOnlyWithFreshIdentityProof() async throws {
         let peer = try AuthenticatedHealthPeer(agentID: "A", secret: aSecret)
         defer { peer.stop() }
@@ -486,6 +514,25 @@ private struct HistoryAckGateTransport: AirSIMHTTPTransport {
             return WiredHTTPResponse(statusCode: 200, body: try JSONSerialization.data(withJSONObject: json))
         }
         return response
+    }
+}
+
+private final class SMSProducerBoundary: AirSIMHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var captured: [[String]] = []
+    var acks: [[String]] { lock.withLock { captured } }
+    func send(_ request: URLRequest, uploadFileURL: URL?) async throws -> WiredHTTPResponse {
+        if request.url?.path == "/api/sms" {
+            return .init(statusCode: 200, body: Data(
+                #"[{"sender":"fixture","content":"same","timestamp":"2026-10-18T00:00:00Z","delivery_id":"same-wire-id","source_agent_id":"untrusted"}]"#.utf8))
+        }
+        if request.url?.path == "/api/sms/ack" {
+            let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String:Any]
+            lock.withLock { captured.append(body?["ids"] as? [String] ?? []) }
+            return .init(statusCode: 200, body: Data("{}".utf8))
+        }
+        try await Task.sleep(for: .seconds(30))
+        throw CancellationError()
     }
 }
 
