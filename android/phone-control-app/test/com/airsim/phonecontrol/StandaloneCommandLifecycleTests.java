@@ -37,7 +37,9 @@ public final class StandaloneCommandLifecycleTests {
             var pool=Executors.newSingleThreadExecutor();
             try {
                 var future=pool.submit(()-> { try {
-                    StandaloneWebSocket.connect(URI.create("wss://relay.example/connect"),"test-only",
+                    // The injected socket performs no real I/O; a numeric host also
+                    // prevents InetSocketAddress from consulting external DNS here.
+                    StandaloneWebSocket.connect(URI.create("wss://127.0.0.1/connect"),"test-only",
                         value->state.attach(epoch,value),()->socket);
                     throw new AssertionError("cancelled attempt succeeded");
                 } catch(IOException expected) {} return null; });
