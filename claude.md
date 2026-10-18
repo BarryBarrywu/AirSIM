@@ -1,5 +1,7 @@
 # AirSIM 全项目 Claude 部署辅助
 
+2026-10-19 发布准备：Apps `v0.9.8.1`，Android `0.9.8.1 (95)`、Apple `0.9.8 (95)`，见 `docs/releases/0.9.8.1.md`。本轮用户已授权提交推送、应用 Release和Xcode TestFlight上传；不部署 Relay／新增 workflow／发布新 Linux Agent，不设 Apps 为Latest。下文旧候选状态为历史记录。
+
 2026-10-18 应用发布准备：Apps `v0.9.8`，Android／Apple `0.9.8 (92)`，见 `docs/releases/0.9.8.md`。推荐 Android 10–13 安装 Standalone；本地双通道与设备归属、配对／Verbose 和云端挂断确认修复仍须按说明区分测试与真机验收。本次不部署 Relay、不新增 workflow、不发布新 Linux Agent 二进制；TestFlight 状态以 Apple 实际回执为准。以下旧基线保留追溯。
 
 工作区候选 build 85 的 Wi-Fi 返回恢复见 `docs/vowlan-network-return.md`：安卓网络变化重发 NSD 并隔离旧回调，iOS 有限次重新发现认证。固定云端不变、通话中不换链路、不新增 Relay 查询定时器。未安装／发布／锁屏真机验收，不承诺系统挂起或 OEM 强停后的即时恢复。
@@ -131,3 +133,6 @@ xcodebuild -project iOS/AirSIM.xcodeproj -scheme AirSIM \
 # 2026-10-16 应用发布更新
 
 Apps `v0.9.7.2`：Android `0.9.7.2 (91)`、iOS `0.9.7 (91)`，见 `docs/releases/0.9.7.2.md`。推荐 Android 10–13 升级 Standalone。三星最低音量物理效果待复验；不随本次应用发布部署 Relay 或发布 Linux Agent。上文旧基线保留追溯。
+# 工作区补充：应用更新（2026-10-19，未发布）
+
+iOS／Android 首次安装或升级后的离线说明、设置重看与应用新版检查见 `docs/app-updates.md`。与 AVF Linux Agent 的 Latest／Debian 更新独立，每日自动尝试包含失败、手动可重试，不自动下载、安装或发布。发布时维护包内说明，Android 同版本比较需资产名含 `-buildNN`，不能借用 iOS build。

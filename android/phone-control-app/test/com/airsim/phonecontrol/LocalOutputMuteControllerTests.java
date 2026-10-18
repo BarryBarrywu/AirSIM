@@ -4,6 +4,9 @@ import java.io.IOException;
 
 public final class LocalOutputMuteControllerTests {
     public static void main(String[] args) throws Exception {
+        captureCoupledDeviceNeverMutesOrUsesZeroVolume();
+        captureSafeFailuresRestoreOriginalState();
+        unrelatedVendorsKeepExistingOutputBehavior();
         minimumVolumeIsAppliedAndRestored();
         minimumVolumePreservesExistingMuteAndRejectsIgnoredWrites();
         Platform audio = new Platform();
@@ -61,6 +64,72 @@ public final class LocalOutputMuteControllerTests {
         check(volumeUnmutes.muted && volumeUnmutes.volume == 4,
                 "restoring volume must not cancel a pre-existing mute");
         System.out.println("LocalOutputMuteControllerTests passed");
+    }
+
+    private static void captureSafeFailuresRestoreOriginalState() throws Exception {
+        Platform ignoredVolume = new Platform(); ignoredVolume.ignoreVolume = true;
+        LocalOutputMuteController volume = new LocalOutputMuteController(ignoredVolume,
+                LocalOutputMuteController.strategyForManufacturer(" ZHENQING "));
+        try { volume.setMuted(true); throw new AssertionError("ignored capture-safe reduction must fail"); }
+        catch (IOException expected) { }
+        check(ignoredVolume.volume == 4 && !ignoredVolume.muted && !volume.isVerifiedMinimum(),
+                "failed volume verification must roll back without claiming capture-safe success");
+
+        Platform ignoredUnmute = new Platform(); ignoredUnmute.muted = true; ignoredUnmute.supportsMute = false;
+        LocalOutputMuteController unmute = new LocalOutputMuteController(ignoredUnmute,
+                LocalOutputMuteController.strategyForManufacturer("Zhenqing"));
+        try { unmute.setMuted(true); throw new AssertionError("ignored capture unmute must fail"); }
+        catch (IOException expected) { }
+        check(ignoredUnmute.volume == 4 && ignoredUnmute.muted && !unmute.isVerifiedMinimum(),
+                "failed unmute must restore the original user mute and volume");
+
+        Platform retry = new Platform(); retry.muted = true; retry.unmuteOnVolume = true;
+        LocalOutputMuteController controller = new LocalOutputMuteController(retry,
+                LocalOutputMuteController.strategyForManufacturer("Zhenqing"));
+        controller.setMuted(true); retry.rejectVolume = true;
+        try { controller.setMuted(false); throw new AssertionError("failed restoration must surface"); }
+        catch (IOException expected) { }
+        retry.rejectVolume = false; controller.setMuted(false);
+        check(retry.volume == 4 && retry.muted,
+                "capture-safe restoration retry must restore the first snapshot and mute bit last");
+    }
+
+    private static void unrelatedVendorsKeepExistingOutputBehavior() throws Exception {
+        for (String vendor : new String[]{null, "", "other", "UNISOC", "samsung"}) {
+            Platform audio = new Platform(); audio.minimum = 0;
+            LocalOutputMuteController controller = new LocalOutputMuteController(audio,
+                    LocalOutputMuteController.strategyForManufacturer(vendor));
+            controller.setMuted(true);
+            if ("samsung".equals(vendor)) check(!audio.muted && audio.volume == 0,
+                    "Samsung must retain its existing OS-minimum policy, including zero minimum");
+            else check(audio.muted && audio.volume == 4,
+                    "one reported OEM must not change the mute policy of every chipset/vendor");
+            controller.setMuted(false);
+        }
+    }
+
+    private static void captureCoupledDeviceNeverMutesOrUsesZeroVolume() throws Exception {
+        // This fixture models the mute/zero-volume coupling observed in the TYH123U log,
+        // not a claim that all UNISOC HALs behave identically.
+        for (int minimum : new int[]{0, 1, 2}) {
+            for (boolean originalMuted : new boolean[]{false, true}) {
+                Platform audio = new Platform(); audio.minimum = minimum; audio.muted = originalMuted;
+                LocalOutputMuteController controller = new LocalOutputMuteController(audio,
+                        LocalOutputMuteController.strategyForManufacturer("Zhenqing"));
+                controller.setMuted(true);
+                check(!audio.muted && audio.volume == (minimum == 2 ? 2 : 1),
+                        "capture-coupled device must retain an unmuted, lowest nonzero voice stream");
+                check(audio.policyPreparations == 0 && !controller.isVerifiedMuted(),
+                        "capture-safe reduction must never apply the native mute policy");
+                audio.volume = 3; audio.muted = true;
+                controller.setMuted(true);
+                check(!audio.muted && audio.volume == (minimum == 2 ? 2 : 1),
+                        "watchdog reapply must clear mute drift, not destroy capture again");
+                controller.setMuted(false);
+                check(audio.volume == 4 && audio.muted == originalMuted,
+                        "hangup must restore original volume and original mute after repeated reduction");
+            }
+        }
     }
 
     private static void minimumVolumeIsAppliedAndRestored() throws Exception {

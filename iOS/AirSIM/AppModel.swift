@@ -686,6 +686,11 @@ final class AppModel: ObservableObject {
     private var nextAudioDiagnosticRefresh = Date.distantPast
     private var nextModuleMetadataRefresh = Date.distantPast
     private var lastCloudStatusRefresh = Date.distantPast
+    // Query scheduling can be rearmed/cancelled without invalidating a received
+    // Relay result. Never use the query sentinel as connectivity evidence.
+    private var lastCloudStatusReceivedAt = Date.distantPast
+    private let cloudStatusFetcher: @MainActor () async throws -> CloudAgentStatus
+    private let cloudStatusNow: () -> Date
     private var cloudStatusRefreshTask: Task<Void, Never>?
     private var cloudStatusRefreshGeneration = 0
     private var audioWarmupCallID: String?
@@ -740,8 +745,8 @@ final class AppModel: ObservableObject {
     }
 
     var pairedAndroidAgents: [AndroidAgentPresentation] {
-        let cloudStatus = cloudAgentDirectory ?? cloudAgentStatus
-        let cloudStatusIsFresh = Date().timeIntervalSince(lastCloudStatusRefresh) <= 90
+        let cloudStatus = cloudStatusForPresentation
+        let cloudStatusIsFresh = cloudStatus != nil
         var values: [String: AndroidAgentPresentation] = [:]
 
         for agent in cloudStatus?.agents ?? [] {
@@ -996,6 +1001,17 @@ final class AppModel: ObservableObject {
         return (try? cloudTarget(status: status, bound: boundAgentID)) != nil
     }
 
+    private var cloudStatusForPresentation: CloudAgentStatus? {
+        guard CloudModePreference.isEnabled(),
+              lastCloudStatusReceivedAt != .distantPast else { return nil }
+        // Idle background does not poll Relay. Keep its last confirmed snapshot
+        // instead of turning missing observations into an invented offline result.
+        // Foreground entry/dial/explicit diagnostics still obtain fresh status;
+        // this presentation cache never authorizes a carrier command by itself.
+        guard !appIsActive || cloudStatusNow().timeIntervalSince(lastCloudStatusReceivedAt) <= 90 else { return nil }
+        return cloudAgentDirectory ?? cloudAgentStatus
+    }
+
     private func cloudTarget(status: CloudAgentStatus, bound: String?) throws -> CloudCommandTarget {
         try CloudAgentRouting.select(boundAgentID: bound,
             agents: status.agents.filter { PairedAndroidDeviceStore.permits($0.agentID) },
@@ -1010,17 +1026,18 @@ final class AppModel: ObservableObject {
                 appIsForeground: isForeground,
                 beforeLiveActivityCall: beforeBackgroundCall
               ) else { return }
-        lastCloudStatusRefresh = Date()
+        lastCloudStatusRefresh = cloudStatusNow()
         // A previous foreground's online result must not become fresh again while this request is pending.
         cloudAgentDirectory = nil
         cloudAgentStatus = nil
         let generation = cloudStatusRefreshGeneration
         cloudStatusRefreshTask = Task { [weak self] in
-            let status = try? await VoIPPushController.shared.fetchCloudAgentStatus()
+            let status = try? await self?.cloudStatusFetcher()
             guard let self, !Task.isCancelled,
                   generation == self.cloudStatusRefreshGeneration else { return }
             self.cloudAgentDirectory = status
             self.cloudAgentStatus = status
+            self.lastCloudStatusReceivedAt = status == nil ? .distantPast : self.cloudStatusNow()
             self.rememberVerifiedDevices()
             if !self.isOnline && !self.vowlan.availability.isOnlineForDisplay {
                 self.connectionSummary = ModuleConnectionPolicy.summary(
@@ -1043,14 +1060,17 @@ final class AppModel: ObservableObject {
     func refreshCloudStatusForDiagnostics() async -> CloudAgentStatus? {
         guard CloudModePreference.isEnabled() else {
             cloudAgentStatus = nil
+            cloudAgentDirectory = nil
+            lastCloudStatusReceivedAt = .distantPast
             return nil
         }
         do {
-            let status = try await VoIPPushController.shared.fetchCloudAgentStatusForDiagnostics()
+            let status = try await cloudStatusFetcher()
             cloudAgentStatus = status
             cloudAgentDirectory = status
+            lastCloudStatusReceivedAt = cloudStatusNow()
             rememberVerifiedDevices()
-            lastCloudStatusRefresh = Date()
+            lastCloudStatusRefresh = cloudStatusNow()
             if !vowlan.availability.isOnlineForDisplay {
                 connectionSummary = ModuleConnectionPolicy.summary(
                     localControlReachable: false,
@@ -1061,6 +1081,8 @@ final class AppModel: ObservableObject {
             return status
         } catch {
             cloudAgentStatus = nil
+            cloudAgentDirectory = nil
+            lastCloudStatusReceivedAt = .distantPast
             if !vowlan.availability.isOnlineForDisplay {
                 connectionSummary = .offline
             }
@@ -1108,7 +1130,13 @@ final class AppModel: ObservableObject {
          localDirectory: LocalDeviceDirectory? = nil,
          bluetoothHub: VoBLEDeviceHub? = nil,
          callKitController: CallKitController? = nil,
-         historyStore: LocalHistoryStore? = nil) {
+         historyStore: LocalHistoryStore? = nil,
+         cloudStatusFetcher: @escaping @MainActor () async throws -> CloudAgentStatus = {
+             try await VoIPPushController.shared.fetchCloudAgentStatus()
+         },
+         cloudStatusNow: @escaping () -> Date = Date.init) {
+        self.cloudStatusFetcher = cloudStatusFetcher
+        self.cloudStatusNow = cloudStatusNow
         self.audio = audioController ?? AudioSessionController()
         self.historyStore = historyStore ?? LocalHistoryStore()
         self.callKit = callKitController ?? .shared
@@ -1587,6 +1615,7 @@ final class AppModel: ObservableObject {
         if !policy.startsCloud {
             cloudAgentStatus = nil
             cloudAgentDirectory = nil
+            lastCloudStatusReceivedAt = .distantPast
         }
         callKit.setEnabled(policy.usesCallKit || deviceCalls.active != nil)
         VoIPPushController.shared.setLocalModeEnabled(!policy.startsCloud)
@@ -1971,9 +2000,7 @@ final class AppModel: ObservableObject {
             lastSuccessfulLocalAPI = nil
             audio.stopCallTone()
             await awaitCloudStatusForLiveActivity(call: nil)
-            let cloudStatus = CloudModePreference.isEnabled() &&
-                Date().timeIntervalSince(lastCloudStatusRefresh) <= 90
-                ? (cloudAgentDirectory ?? cloudAgentStatus) : nil
+            let cloudStatus = cloudStatusForPresentation
             guard !Task.isCancelled, generation == pollingGeneration else { return }
             cloudAgentStatus = cloudStatus
             connectionSummary = ModuleConnectionPolicy.summary(
@@ -3428,11 +3455,12 @@ extension AppModel: CallKitActionHandling {
                 }
             ) {
                 // Dialing is an explicit event: check once immediately before cloud routing.
-                let status = try await VoIPPushController.shared.fetchCloudAgentStatus()
+                let status = try await self.cloudStatusFetcher()
                 guard self.outgoingAttemptID == attempt, !Task.isCancelled else { throw CancellationError() }
                 self.cloudAgentStatus = status
                 self.cloudAgentDirectory = status
-                self.lastCloudStatusRefresh = Date()
+                self.lastCloudStatusReceivedAt = self.cloudStatusNow()
+                self.lastCloudStatusRefresh = self.cloudStatusNow()
                 let target = try self.cloudTarget(status: status, bound: boundAtStart)
                 return try await VoIPPushController.shared.startCloudOutgoingCall(number: number, target: target)
             }

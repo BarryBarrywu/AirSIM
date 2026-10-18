@@ -85,6 +85,7 @@ public final class MainActivity extends Activity {
     private HealthTile pcmHealthTile;
     private LiveStatusPoller pcmStatusPoller;
     private boolean resumed;
+    private AppUpdatePresenter appUpdates;
 
     private EditText endpoint;
     private EditText token;
@@ -152,6 +153,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        appUpdates = new AppUpdatePresenter(this, () -> resumed && startupSetupCompleted
+                && !startupSetupPending && !startupSetupInFlight && CallRepository.firstId().isEmpty());
         shizukuStartupPolicy = new ShizukuStartupPolicy(
                 state != null && state.getBoolean(SHIZUKU_STARTUP_CHECKED, false));
         pcmStatusPoller = new LiveStatusPoller(() -> {
@@ -759,6 +762,13 @@ public final class MainActivity extends Activity {
         TextView version = label("版本 " + AppInformation.version(this), 14, MUTED, Gravity.START);
         version.setTextIsSelectable(true);
         aboutCard.addView(version, matchWithTop(6));
+        TextView notes = secondaryButton("当前版本更新内容");
+        notes.setOnClickListener(ignored -> appUpdates.showNotes(() -> {}));
+        aboutCard.addView(notes, matchWithTop(10));
+        TextView appCheck = secondaryButton("检查应用更新");
+        appCheck.setOnClickListener(ignored -> appUpdates.check(true));
+        aboutCard.addView(appCheck, matchWithTop(10));
+        aboutCard.addView(description(appUpdates.status()), matchWithTop(6));
         TextView repository = secondaryButton("GitHub 仓库");
         repository.setOnClickListener(ignored -> openProjectURL(AppInformation.REPOSITORY_URL));
         aboutCard.addView(repository, matchWithTop(12));
@@ -1123,6 +1133,7 @@ public final class MainActivity extends Activity {
         if (isFinishing() || isDestroyed() || startupSetupInFlight) return;
         startupSetupPending = true;
         if (!resumed) return;
+        if (appUpdates.showStartupNotes(this::continueStartupSetup)) return;
         ShizukuBridgeManager shizuku = ShizukuBridgeManager.get(this);
         ShizukuBridgeManager.StartupSnapshot snapshot = shizuku.startupSnapshot();
         ShizukuStartupPolicy.Prompt prompt = shizukuStartupPolicy.inspect(
@@ -1877,8 +1888,11 @@ public final class MainActivity extends Activity {
 	}
 
 	private void maybeShowCrashReportPrompt() {
-		if (crashPromptShown || !resumed || startupSetupInFlight || isFinishing() || isDestroyed()
-                || !CrashReportStore.hasReport(getFilesDir())) return;
+		if (!resumed || startupSetupInFlight || isFinishing() || isDestroyed()) return;
+        if (crashPromptShown || !CrashReportStore.hasReport(getFilesDir())) {
+            appUpdates.foreground();
+            return;
+        }
 		crashPromptShown = true;
 		new AlertDialog.Builder(this)
 				.setTitle("检测到上次闪退")
@@ -1886,6 +1900,7 @@ public final class MainActivity extends Activity {
 				.setPositiveButton("发送", (ignored, which) -> shareCrashReport())
 				.setNeutralButton("查看", (ignored, which) -> showPage(Page.DEBUG))
 				.setNegativeButton("稍后", null)
+				.setOnDismissListener(ignored -> appUpdates.foreground())
 				.show();
 	}
 
@@ -2168,6 +2183,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         resumed = false;
+        if (appUpdates != null) appUpdates.pause();
         if (pcmStatusPoller != null) pcmStatusPoller.stop();
         handler.removeCallbacks(voBLEAuthenticationRefresh);
         super.onPause();
@@ -2187,6 +2203,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (appUpdates != null) appUpdates.destroy();
         handler.removeCallbacks(startupSetup);
         if (shizukuStartupDialog != null) {
             shizukuStartupDialog.setOnDismissListener(null);

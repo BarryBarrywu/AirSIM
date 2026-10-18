@@ -1,5 +1,13 @@
 # AirSIM 三星 Android 控制 App
 
+2026-10-19 发布准备：[Apps v0.9.8.1](../../docs/releases/0.9.8.1.md)，共享 APK `0.9.8.1 (95)`。Standalone 推荐用于新安装；AVF Bridge 不等于 Linux Agent 更新。本版包含应用更新说明／检测、PCM 失败清理和诊断及臻情兼容策略，实际 OEM 音频仍需验证。
+
+0.9.8.1 新增应用更新入口：首次安装／升级启动展示包内版本说明；「设置 → 关于」可重看和检查对应 Standalone／AVF Bridge APK 的新版。每日自动检查有界，与「检查并安装最新 Agent」的 Debian 更新完全分开，不自动下载、安装或卸载 App。[行为与维护约定](../../docs/app-updates.md)。
+
+未发布安卓候选 `0.9.8.1（94）`：共享 PCM 桥在启动失败时及时释放已创建端点，原始失败阶段／错误码穿过 Shizuku 快照保留到 Watchdog TXT；保留 93 的臻情分支，不改变其他厂商静音策略。华为 Android 10 的真实音频能力仍待验证。[依据与限制](../../docs/android-pcm-startup-failures.md)。
+
+未发布安卓候选 `0.9.8.1（93）`：共享的 Shizuku 输出策略增加臻情 Zhenqing 的最低非零音量兼容分支，避免已观察到的静音后下行 PCM 近乎全零；Watchdog 同时校验未静音与目标音量，结束后恢复原状态。不改 iOS／Relay／PCM 增益，不代表全部紫光展锐设备已验收。[依据与真机验证边界](../../docs/zhenqing-android13-call-audio.md)。
+
 本轮应用版本：[0.9.8（92）](../../docs/releases/0.9.8.md)，优先使用 Standalone，推荐 Android 10–13 用户升级。共享源码包含下述双通道协议与配对修复；Linux Agent 仍未发布新二进制，旧 AVF 需具备 `canonical_call_ids` 才能使用新的归属 VoWLAN 拨号。后文较早“未发布”说明为开发追溯，不代表本轮全场景真机验收。
 
 未发布双通道开发：`/v1/health` 增加 `identity_proof`，使用本次已认证请求的 nonce 与 `agent_id` 生成 HMAC；新多设备目录必须验证该证明才合并 VoWLAN／VoBLE 身份。旧 iOS 可忽略新增字段；旧 Android 不具备新多设备身份验证能力，需要升级 APK。原请求签名、时间戳与防重放检查保留，不涉及 Relay 修改。本轮功能仍在开发，尚未安装或发布。

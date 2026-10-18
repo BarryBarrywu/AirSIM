@@ -84,6 +84,13 @@ assert_contains "$ROOT/src/com/airsim/phonecontrol/MainActivity.java" \
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
+"$JAVAC" --release 17 -d "$OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/AppUpdatePolicy.java \
+  "$ROOT"/src/com/airsim/phonecontrol/AppUpdateSession.java \
+  "$ROOT"/test/com/airsim/phonecontrol/AppUpdatePolicyTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/AppUpdateSessionTests.java
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.AppUpdatePolicyTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.AppUpdateSessionTests
 "$JAVAC" --release 17 -cp "$CRYPTO_JAR" -d "$OUT" \
   "$ROOT"/src/com/airsim/phonecontrol/RelayHTTPException.java \
   "$ROOT"/src/com/airsim/phonecontrol/CloudCallTarget.java \

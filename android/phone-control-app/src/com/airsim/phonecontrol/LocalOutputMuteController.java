@@ -4,7 +4,14 @@ import java.io.IOException;
 
 /** One remote-call mute cycle; the backend runs with Shizuku shell/root identity. */
 final class LocalOutputMuteController {
-    enum Strategy { MUTE, MINIMUM_VOLUME }
+    enum Strategy { MUTE, MINIMUM_VOLUME, MINIMUM_NONZERO_VOLUME }
+    static Strategy strategyForManufacturer(String manufacturer) {
+        String name = manufacturer == null ? "" : manufacturer.trim();
+        // TYH123U/API 33 diagnostics show near-zero VOICE_DOWNLINK during stream mute.
+        // Keep this workaround scoped to the reported vendor, not every UNISOC device.
+        if ("zhenqing".equalsIgnoreCase(name)) return Strategy.MINIMUM_NONZERO_VOLUME;
+        return "samsung".equalsIgnoreCase(name) ? Strategy.MINIMUM_VOLUME : Strategy.MUTE;
+    }
     interface Backend {
         boolean isMuted() throws Exception;
         int volume() throws Exception;
@@ -31,7 +38,16 @@ final class LocalOutputMuteController {
     }
     boolean isVerifiedMuted() { return verifiedMuted; }
     boolean isVerifiedMinimum() { return verifiedMinimum; }
-    boolean usesMinimumVolume() { return strategy == Strategy.MINIMUM_VOLUME; }
+    boolean usesMinimumVolume() { return strategy != Strategy.MUTE; }
+    private boolean requiresUnmutedCapture() { return strategy == Strategy.MINIMUM_NONZERO_VOLUME; }
+    static String policyName(Strategy strategy) {
+        return switch (strategy) {
+            case MUTE -> "mute";
+            case MINIMUM_VOLUME -> "minimum_volume";
+            case MINIMUM_NONZERO_VOLUME -> "minimum_nonzero_volume";
+        };
+    }
+    String policyName() { return policyName(strategy); }
     int targetMinimumVolume() { return targetMinimum; }
     String setMuted(boolean muted) throws Exception {
         if (!muted) return restore();
@@ -42,7 +58,7 @@ final class LocalOutputMuteController {
             if (usesMinimumVolume()) {
                 int minimum = backend.minimumVolume();
                 if (minimum < 0 || minimum > 1000) throw new IOException("invalid call minimum volume");
-                targetMinimum = minimum;
+                targetMinimum = requiresUnmutedCapture() ? Math.max(1, minimum) : minimum;
             } else { backend.prepareOutputMute(originalMuted); }
             previousMuted = originalMuted;
             previousVolume = originalVolume;
@@ -51,14 +67,19 @@ final class LocalOutputMuteController {
         try {
             if (usesMinimumVolume()) {
                 verifiedMinimum = false;
-                // Samsung's mute flags may not affect the cellular earpiece.
-                // Write its supported audible minimum explicitly, never PCM gain.
+                // Samsung: OS minimum. Capture-coupled HAL: lowest NONZERO unmuted
+                // stream, otherwise suppressing the earpiece also suppresses VOICE_DOWNLINK.
+                // Neither path changes PCM gain or the microphone.
                 backend.setVolume(targetMinimum);
-                if (previousMuted && !backend.isMuted()) backend.setMuted(true);
-                if (backend.volume() != targetMinimum || (previousMuted && !backend.isMuted()))
+                if (requiresUnmutedCapture()) {
+                    if (backend.isMuted()) backend.setMuted(false);
+                } else if (previousMuted && !backend.isMuted()) backend.setMuted(true);
+                if (backend.volume() != targetMinimum || (requiresUnmutedCapture()
+                        ? backend.isMuted() : previousMuted && !backend.isMuted()))
                     throw new IOException("系统未接受最低通话音量");
                 verifiedMinimum = true;
-                return "local_output_minimum_volume minimum_volume=" + targetMinimum
+                return "local_output_" + policyName() + " minimum_volume=" + targetMinimum
+                    + (requiresUnmutedCapture() ? " capture_stream_unmuted=true" : "")
                     + " volume_verified=true acoustic_check=unavailable";
             }
             // A previous call's framework flag is not proof that this call's HAL is muted.

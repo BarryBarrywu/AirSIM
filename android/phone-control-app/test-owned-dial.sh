@@ -20,3 +20,7 @@ test "$(shasum -a 256 "$JSON_JAR" | awk '{print $1}')" = 3cf6cd6892e32e2b4c1c39e
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANControlGateway.java \
   "$ROOT"/test/com/airsim/phonecontrol/OwnedDialGatewayTests.java
 "$TASK_JAVA_HOME/bin/java" -cp "$OUT:$BASE:$BUILT:$JSON_JAR:$ANDROID_JAR" com.airsim.phonecontrol.OwnedDialGatewayTests
+"$TASK_JAVA_HOME/bin/javac" --release 17 -cp "$BASE:$ANDROID_JAR:$JSON_JAR" -d "$OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/AppReleaseClient.java \
+  "$ROOT"/test/com/airsim/phonecontrol/AppReleaseClientTests.java
+"$TASK_JAVA_HOME/bin/java" -cp "$OUT:$BASE:$JSON_JAR:$ANDROID_JAR" com.airsim.phonecontrol.AppReleaseClientTests

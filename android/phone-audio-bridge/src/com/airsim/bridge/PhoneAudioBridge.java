@@ -161,7 +161,8 @@ public final class PhoneAudioBridge {
             client.setSoTimeout(3_000);
             streamCallAudio(client, started, stats);
         } catch (Throwable error) {
-            emit(started, "session_error", Map.of(
+            emit(started, "session_error", error instanceof AudioStartupFailure failure
+                ? failure.diagnosticFields() : Map.of(
                 "error_class", error.getClass().getName(),
                 "error_message", safeMessage(error),
                 "result", "error"));
@@ -172,103 +173,119 @@ public final class PhoneAudioBridge {
 
     private static void streamCallAudio(Socket client, long started, BridgeStats stats)
             throws Exception {
-        stats.resetAudio();
-        int recordBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING);
-        int trackBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING);
-        if (recordBufferSize <= 0 || trackBufferSize <= 0) {
-            throw new IllegalStateException("invalid Android audio buffer sizes");
-        }
-
-        AudioRecord recorder = new AudioRecord(
-            captureSource(), SAMPLE_RATE, CHANNEL_IN, ENCODING,
-            Math.max(recordBufferSize, BridgeProtocol.FRAME_BYTES * 10));
-        AudioAttributes.Builder attributeBuilder = new AudioAttributes.Builder()
-            .setUsage(playbackUsage())
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH);
-        boolean samsungTagAvailable = tryAddSamsungVoiceTxTag(attributeBuilder);
-        AudioDeviceInfo telephonyTx = samsungTagAvailable ? null : findTelephonyTxDevice();
-        PlaybackRoute playbackRoute = playbackRoute(
-            samsungTagAvailable, telephonyTx != null);
-        if (playbackRoute == PlaybackRoute.UNSUPPORTED) {
-            recorder.release();
-            throw new IllegalStateException(
-                "neither Samsung VOICE_TX nor Android Telephony Tx is available");
-        }
-        AudioTrack track = new AudioTrack.Builder()
-            .setAudioAttributes(attributeBuilder.build())
-            .setAudioFormat(new AudioFormat.Builder()
-                .setEncoding(ENCODING)
-                .setSampleRate(SAMPLE_RATE)
-                .setChannelMask(CHANNEL_OUT)
-                .build())
-            .setBufferSizeInBytes(Math.max(trackBufferSize, BridgeProtocol.FRAME_BYTES * 10))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build();
+        // Only the synchronous handshake callback mutates this phase holder.
+        String[] phase = {"buffer_sizes"};
         try {
-            if (playbackRoute == PlaybackRoute.TELEPHONY_DEVICE
-                    && !track.setPreferredDevice(telephonyTx)) {
-                throw new IllegalStateException("Android Telephony Tx route was rejected");
+            stats.resetAudio();
+            emit(started, "audio_initializing", Map.of("result", "starting"));
+            int recordBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING);
+            int trackBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING);
+            if (recordBufferSize <= 0 || trackBufferSize <= 0) {
+                throw new IllegalStateException("invalid Android audio buffer sizes");
             }
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-                throw new IllegalStateException("VOICE_DOWNLINK AudioRecord initialization failed");
-            }
-            if (track.getState() != AudioTrack.STATE_INITIALIZED) {
-                throw new IllegalStateException("VOICE_TX AudioTrack initialization failed");
-            }
-            emit(started, "audio_initialized", Map.of(
-                "audio_session_id", recorder.getAudioSessionId(),
-                "capture_source", "voice_downlink",
-                "playback_route", playbackRoute.name().toLowerCase(),
-                "record_buffer_bytes", recordBufferSize,
-                "track_buffer_bytes", trackBufferSize,
-                "result", "ok"));
 
-            // Transport READY is emitted only after the actual audio endpoints
-            // start. A successful TCP/HELLO is not evidence of usable call audio.
-            BridgeProtocol.acceptHandshake(client.getInputStream(), client.getOutputStream(), () -> {
-                recorder.startRecording();
-                track.play();
-                if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-                    throw new IOException("VOICE_DOWNLINK AudioRecord did not start");
+            phase[0] = "create_capture";
+            AudioRecord recorder = new AudioRecord(
+                captureSource(), SAMPLE_RATE, CHANNEL_IN, ENCODING,
+                Math.max(recordBufferSize, BridgeProtocol.FRAME_BYTES * 10));
+            try (AudioEndpointLease capture = new AudioEndpointLease(() -> {
+                    if (recorder.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) recorder.stop();
+                }, recorder::release)) {
+                phase[0] = "create_attributes";
+                AudioAttributes.Builder attributeBuilder = new AudioAttributes.Builder()
+                    .setUsage(playbackUsage())
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH);
+                phase[0] = "select_uplink_route";
+                boolean samsungTagAvailable = tryAddSamsungVoiceTxTag(attributeBuilder);
+                AudioDeviceInfo telephonyTx = samsungTagAvailable ? null : findTelephonyTxDevice();
+                PlaybackRoute playbackRoute = playbackRoute(
+                    samsungTagAvailable, telephonyTx != null);
+                if (playbackRoute == PlaybackRoute.UNSUPPORTED) {
+                    throw new IllegalStateException(
+                        "neither Samsung VOICE_TX nor Android Telephony Tx is available");
                 }
-            });
-            emit(started, "client_ready", Map.of("result", "audio_initialized", "route_verified", false));
-
-            AtomicBoolean running = new AtomicBoolean(true);
-            Runnable stop = () -> {
-                if (running.compareAndSet(true, false)) {
-                    try {
-                        client.close();
-                    } catch (IOException ignored) {
+                phase[0] = "create_playback";
+                AudioTrack track = new AudioTrack.Builder()
+                    .setAudioAttributes(attributeBuilder.build())
+                    .setAudioFormat(new AudioFormat.Builder()
+                        .setEncoding(ENCODING)
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(CHANNEL_OUT)
+                        .build())
+                    .setBufferSizeInBytes(Math.max(trackBufferSize, BridgeProtocol.FRAME_BYTES * 10))
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build();
+                try (AudioEndpointLease playback = new AudioEndpointLease(() -> {
+                        if (track.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) track.stop();
+                    }, track::release)) {
+                    phase[0] = "bind_uplink_route";
+                    if (playbackRoute == PlaybackRoute.TELEPHONY_DEVICE
+                            && !track.setPreferredDevice(telephonyTx)) {
+                        throw new IllegalStateException("Android Telephony Tx route was rejected");
                     }
+                    phase[0] = "validate_capture";
+                    if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                        throw new IllegalStateException("VOICE_DOWNLINK AudioRecord initialization failed");
+                    }
+                    phase[0] = "validate_playback";
+                    if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                        throw new IllegalStateException("VOICE_TX AudioTrack initialization failed");
+                    }
+                    emit(started, "audio_initialized", Map.of(
+                        "audio_session_id", recorder.getAudioSessionId(),
+                        "capture_source", "voice_downlink",
+                        "playback_route", playbackRoute.name().toLowerCase(),
+                        "record_buffer_bytes", recordBufferSize,
+                        "track_buffer_bytes", trackBufferSize,
+                        "result", "ok"));
+
+                    // Transport READY is emitted only after the actual audio endpoints
+                    // start. A successful TCP/HELLO is not evidence of usable call audio.
+                    phase[0] = "handshake";
+                    BridgeProtocol.acceptHandshake(client.getInputStream(), client.getOutputStream(), () -> {
+                        phase[0] = "start_capture";
+                        recorder.startRecording();
+                        phase[0] = "start_playback";
+                        track.play();
+                        phase[0] = "verify_capture";
+                        if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                            throw new IOException("VOICE_DOWNLINK AudioRecord did not start");
+                        }
+                        phase[0] = "send_ready";
+                    });
+                    emit(started, "client_ready", Map.of("result", "audio_initialized", "route_verified", false));
+
+                    phase[0] = "stream_audio";
+                    AtomicBoolean running = new AtomicBoolean(true);
+                    Runnable stop = () -> {
+                        if (running.compareAndSet(true, false)) {
+                            try {
+                                client.close();
+                            } catch (IOException ignored) {
+                            }
+                        }
+                    };
+                    Thread downlink = new Thread(
+                        () -> captureDownlink(recorder, client, stats, running, stop),
+                        "airsim-phone-downlink");
+                    Thread uplink = new Thread(
+                        () -> playUplink(track, playbackRoute, client, started, stats, running, stop),
+                        "airsim-phone-uplink");
+                    Thread reporter = new Thread(
+                        () -> reportStats(started, stats, running),
+                        "airsim-phone-stats");
+                    downlink.start();
+                    uplink.start();
+                    reporter.start();
+                    downlink.join();
+                    uplink.join();
+                    running.set(false);
+                    reporter.interrupt();
+                    reporter.join();
                 }
-            };
-            Thread downlink = new Thread(
-                () -> captureDownlink(recorder, client, stats, running, stop),
-                "airsim-phone-downlink");
-            Thread uplink = new Thread(
-                () -> playUplink(track, playbackRoute, client, started, stats, running, stop),
-                "airsim-phone-uplink");
-            Thread reporter = new Thread(
-                () -> reportStats(started, stats, running),
-                "airsim-phone-stats");
-            downlink.start();
-            uplink.start();
-            reporter.start();
-            downlink.join();
-            uplink.join();
-            running.set(false);
-            reporter.interrupt();
-            reporter.join();
-        } finally {
-            if (recorder.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                recorder.stop();
             }
-            if (track.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
-                track.stop();
-            }
-            recorder.release();
-            track.release();
+        } catch (Exception | LinkageError error) {
+            throw new AudioStartupFailure(phase[0], error);
         }
     }
 
@@ -442,7 +459,9 @@ public final class PhoneAudioBridge {
             }
         } catch (NoSuchMethodException | IllegalAccessException
                 | InvocationTargetException | ClassCastException error) {
-            return null;
+            // A denied/unavailable OEM query is not evidence of an empty device list.
+            // Keep its cause so diagnostics can distinguish permissions from no Tx sink.
+            throw new IllegalStateException("Android Telephony Tx device query failed", error);
         }
         return null;
     }

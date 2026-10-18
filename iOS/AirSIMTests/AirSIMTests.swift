@@ -8,6 +8,86 @@ import SwiftUI
 @testable import AirSIM
 
 @MainActor
+final class CloudStandbyLifecycleRegressionTests: XCTestCase {
+    private func status(online: Bool) throws -> CloudAgentStatus {
+        try JSONDecoder().decode(CloudAgentStatus.self, from: Data("""
+        {"cloud_online":\(online),"active_agent_id":"standby-fixture","cellular_state":"registered",
+         "capabilities":{"agent_command_routing":1},"agents":[{"agent_id":"standby-fixture",
+         "device_name":"Fixture Android","agent_kind":"standalone","cloud_online":\(online),
+         "command_routing_version":1}]}
+        """.utf8))
+    }
+
+    func testBackgroundAndLongLockDoNotTurnConfirmedCloudStandbyOffline() async throws {
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        let online = try status(online: true)
+        var requests = 0, now = Date()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            cloudStatusFetcher: { requests += 1; return online }, cloudStatusNow: { now })
+        defer { model.stop() }
+        _ = await model.refreshCloudStatusForDiagnostics()
+        XCTAssertEqual(model.currentAndroidAgent?.cloudOnline, true)
+        model.didEnterBackground()
+        XCTAssertEqual(model.currentAndroidAgent?.cloudOnline, true, "background query rearming must not expire a received result")
+        now.addTimeInterval(600)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        while model.connectionMessage?.contains("模块云端在线") != true,
+              model.connectionMessage?.hasPrefix("模块本地与云端均不可达") != true,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.connectionSummary, .cloudOnly)
+        XCTAssertEqual(model.cloudAgentStatus?.cloudOnline, true)
+        XCTAssertEqual(model.currentAndroidAgent?.cloudOnline, true)
+        let state = LiveActivityStateBuilder.make(call: nil, callerName: nil, moduleOnline: false,
+            cloudOnline: model.cloudAgentStatus?.cloudOnline == true, transport: .cloud,
+            radio: nil, idleStartedAt: now)
+        XCTAssertEqual(state.phase, .cloudStandby)
+        XCTAssertEqual(requests, 1, "idle background updates must not request Relay again")
+    }
+
+    func testFreshOfflineResultReplacesBackgroundOnlineSnapshot() async throws {
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        var reply = try status(online: true)
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            cloudStatusFetcher: { reply })
+        defer { model.stop() }
+        _ = await model.refreshCloudStatusForDiagnostics()
+        model.didEnterBackground()
+        reply = try status(online: false)
+        _ = await model.refreshCloudStatusForDiagnostics()
+        XCTAssertEqual(model.connectionSummary, .offline)
+        XCTAssertEqual(model.cloudAgentStatus?.cloudOnline, false)
+        XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline })
+    }
+
+    func testFailedExplicitQueryDoesNotReviveOldOnlineDirectory() async throws {
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        let online = try status(online: true)
+        var shouldFail = false
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            cloudStatusFetcher: {
+                if shouldFail { throw URLError(.notConnectedToInternet) }
+                return online
+            })
+        defer { model.stop() }
+        _ = await model.refreshCloudStatusForDiagnostics()
+        model.didEnterBackground()
+        shouldFail = true
+        _ = await model.refreshCloudStatusForDiagnostics()
+        XCTAssertNil(model.cloudAgentStatus)
+        XCTAssertNil(model.cloudAgentDirectory)
+        XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline })
+    }
+}
+
+@MainActor
 final class AudioGraphAndVerboseRegressionTests: XCTestCase {
     func testIdenticalSMSFromKnownDevicesRemainDistinctAndDeleteIndependently() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

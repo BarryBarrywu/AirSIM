@@ -5,6 +5,8 @@ import java.util.List;
 
 public final class RemoteAudioWatchdogTests {
     public static void main(String[] args) throws Exception {
+        captureSafeTargetRequiresUnmutedPositiveVolume();
+        captureSafeWatchdogRepairsWithoutRemutingCapture();
         minimumVolumeTargetIsNotMistakenForUnmutedDrift();
         RemoteCallAudioScope scope = new RemoteCallAudioScope();
         Object owner = new Object();
@@ -63,6 +65,48 @@ public final class RemoteAudioWatchdogTests {
         check(report.contains("VERBOSE") && report.contains("acoustic_check=unavailable")
                 && report.contains("budget_exhausted"), "TXT must include evidence and limitations");
         System.out.println("RemoteAudioWatchdogTests passed");
+    }
+    private static void captureSafeWatchdogRepairsWithoutRemutingCapture() throws Exception {
+        int[] volume = {4}, repairs = {0}; boolean[] muted = {false};
+        LocalOutputMuteController output = new LocalOutputMuteController(new LocalOutputMuteController.Backend() {
+            public int volume() { return volume[0]; }
+            public int minimumVolume() { return 0; }
+            public boolean isMuted() { return muted[0]; }
+            public void setVolume(int value) { volume[0] = value; }
+            public void setMuted(boolean value) { muted[0] = value; }
+        }, LocalOutputMuteController.strategyForManufacturer("Zhenqing"));
+        output.setMuted(true);
+        RemoteAudioWatchdog monitor = new RemoteAudioWatchdog(new RemoteAudioWatchdog.Backend() {
+            public AudioWatchdogSnapshot probe() throws Exception {
+                return AudioWatchdogSnapshot.parse("muted=" + muted[0] + " volume=" + volume[0]
+                    + " mode=2 speaker=false pcm=true output_policy=" + output.policyName()
+                    + " minimum_volume=" + output.targetMinimumVolume());
+            }
+            public void repair(int step) throws Exception { repairs[0]++; output.setMuted(true); }
+            public void reconnect() { throw new AssertionError("valid audio snapshot must not reconnect"); }
+        }, ignored -> {});
+        monitor.tick(0, () -> true); monitor.tick(2000, () -> true);
+        check(repairs[0] == 0 && !muted[0], "healthy capture-safe output must remain unmuted");
+        muted[0] = true;
+        monitor.tick(4000, () -> true); monitor.tick(6000, () -> true);
+        check(repairs[0] == 1 && !muted[0] && volume[0] == 1,
+                "watchdog must repair mute drift by unmuting at nonzero minimum");
+        output.setMuted(false);
+        check(volume[0] == 4 && !muted[0], "watchdog repair must not overwrite restoration snapshot");
+    }
+    private static void captureSafeTargetRequiresUnmutedPositiveVolume() throws Exception {
+        String suffix = " mode=2 speaker=false pcm=true output_policy=minimum_nonzero_volume minimum_volume=1";
+        check(AudioWatchdogSnapshot.parse("muted=false volume=1" + suffix).targetSatisfied(),
+                "unmuted lowest nonzero output must not be repaired back into mute");
+        check(!AudioWatchdogSnapshot.parse("muted=true volume=1" + suffix).targetSatisfied(),
+                "matching volume with a muted capture stream is still drift");
+        check(!AudioWatchdogSnapshot.parse("muted=false volume=4" + suffix).targetSatisfied(),
+                "loud output must still be reduced");
+        check(!AudioWatchdogSnapshot.parse("muted=false volume=0" + suffix).targetSatisfied(),
+                "zero volume must never satisfy capture-safe output");
+        check(!AudioWatchdogSnapshot.parse("muted=false volume=0 mode=2 speaker=false pcm=true "
+                + "output_policy=minimum_nonzero_volume minimum_volume=0").targetSatisfied(),
+                "malformed zero target must not validate as capture-safe");
     }
     private static void minimumVolumeTargetIsNotMistakenForUnmutedDrift() throws Exception {
         int[] volume = {1}, repairs = {0};

@@ -59,6 +59,9 @@ enum PhoneTab: String, CaseIterable, Identifiable {
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var appUpdates: AppUpdateController
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var appUpdatePresentation: AppUpdatePresentation?
     @AppStorage("airsim.selected-tab") private var selectedTabRawValue = PhoneTab.dial.rawValue
     @State private var pendingSMSRecipient: String?
     @State private var pendingSMSConversation: String?
@@ -115,17 +118,43 @@ struct RootView: View {
                 .buttonStyle(.plain).padding(.horizontal)
             }
         }
-        .sheet(item: $model.focusedOtherDeviceCall) { reminder in
+        .sheet(item: $model.focusedOtherDeviceCall, onDismiss: presentAppUpdateIfIdle) { reminder in
             OtherDeviceCallSheet(reminder: reminder).environmentObject(model)
         }
         .fullScreenCover(isPresented: Binding(
-            get: { !firstConnectionComplete },
-            set: { if !$0 { firstConnectionComplete = true } }
+            get: { !firstConnectionComplete && !appUpdates.needsNotes && appUpdatePresentation == nil && appUpdateCallIdle },
+            // Completion is written only by explicit actions in the onboarding view.
+            // A call can temporarily dismiss this cover without completing pairing.
+            set: { _ in }
         )) {
             AirSIMFirstConnectionView()
                 .environmentObject(model)
         }
         .onOpenURL(perform: handleSystemCommunicationURL)
+        .sheet(item: $appUpdatePresentation, onDismiss: presentAppUpdateIfIdle) { presentation in
+            AppUpdateSheet(presentation: presentation, updates: appUpdates)
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            presentAppUpdateIfIdle()
+            if firstConnectionComplete && appUpdateCallIdle {
+                _ = await appUpdates.check(manual: false)
+                presentAppUpdateIfIdle()
+            }
+        }
+        .onChange(of: appUpdates.needsNotes) { _ in presentAppUpdateIfIdle() }
+        .onChange(of: appUpdates.pendingUpdate) { _ in presentAppUpdateIfIdle() }
+        .onChange(of: selectedTabRawValue) { _ in presentAppUpdateIfIdle() }
+        .onChange(of: firstConnectionComplete) { complete in
+            if complete && scenePhase == .active && appUpdateCallIdle {
+                Task { _ = await appUpdates.check(manual: false); presentAppUpdateIfIdle() }
+            }
+        }
+        .onChange(of: model.inAppPresentedCall?.id) { _ in handleAppUpdateCallChange() }
+        .onChange(of: model.activeCall?.id) { _ in handleAppUpdateCallChange() }
+        .onChange(of: model.remoteCall?.id) { _ in handleAppUpdateCallChange() }
+        .onChange(of: model.pendingOutgoingCall?.id) { _ in handleAppUpdateCallChange() }
+        .onChange(of: model.errorMessage) { _ in presentAppUpdateIfIdle() }
         .onAppear {
             if let info = OtherAndroidCallPresentationRequest.consume() { _ = model.openOtherDeviceCallNotification(info) }
             if let sender = IncomingSMSPresentationRequest.consume() {
@@ -163,6 +192,28 @@ struct RootView: View {
             get: { model.errorMessage?.isEmpty == false },
             set: { if !$0 { model.errorMessage = nil } }
         )
+    }
+
+    private func presentAppUpdateIfIdle() {
+        guard scenePhase == .active, appUpdatePresentation == nil,
+              appUpdateCallIdle, model.focusedOtherDeviceCall == nil,
+              model.errorMessage == nil else { return }
+        if appUpdates.needsNotes {
+            appUpdatePresentation = .notes
+        } else if firstConnectionComplete && selectedTabRawValue == PhoneTab.dial.rawValue,
+                  let candidate = appUpdates.pendingUpdate {
+            appUpdatePresentation = .result(.init(message: "发现应用新版本", candidate: candidate))
+        }
+    }
+
+    private var appUpdateCallIdle: Bool {
+        model.inAppPresentedCall == nil && model.activeCall == nil
+            && model.remoteCall == nil && model.pendingOutgoingCall == nil
+    }
+
+    private func handleAppUpdateCallChange() {
+        if !appUpdateCallIdle { appUpdatePresentation = nil }
+        else { presentAppUpdateIfIdle() }
     }
 
     private var selectedTabBinding: Binding<PhoneTab> {

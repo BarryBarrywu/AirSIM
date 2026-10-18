@@ -1,5 +1,9 @@
 # AirSIM 全项目 Codex 部署辅助
 
+2026-10-19 发布准备：Apps `v0.9.8.1`，Android `0.9.8.1 (95)`、iOS／Watch／Live Activity `0.9.8 (95)`，见 `docs/releases/0.9.8.1.md`。用户授权本轮提交推送、GitHub Release及经 Xcode 上传 TestFlight；不部署 Relay，不新增 workflow，不发布 Linux Agent。Apps 不设 Latest，保留 Agent v0.4.6；Apple 上传／处理／审核分别确认。下文旧候选状态保留历史追溯。
+
+2026-10-19 工作区应用更新功能（未发布）见 `docs/app-updates.md`：iOS／Android 首次／升级版本说明与设置重看、应用新版检查；匿名 GitHub Release 列表每日一次自动尝试，手动可重试，不访问 Relay，不自动安装，不使用 Linux Agent 的 Latest 入口。后续发布须同步维护包内摘要，Android 同版本 build 检测需 APK 文件名含 `-buildNN`；不从 iOS build 猜 Android versionCode，不自动发布或安装。
+
 2026-10-18 应用发布准备：Apps `v0.9.8`，Android／iOS／Watch／Live Activity `0.9.8 (92)`，见 `docs/releases/0.9.8.md`。包含本地双通道／多设备归属及 Android 确认挂断回执；顶部本地开关是现有模式的派生入口。推荐 Android 10–13 安装 Standalone；多安卓及最新音频／云端挂断仍待最终真机复验。不部署 Relay、不新增 workflow，不发布新 Linux Agent 二进制；TestFlight 上传与处理／审核须分别核实。下文旧基线保留追溯。
 
 2026-10-16 应用发布更新：Apps `v0.9.7.2`，Android `0.9.7.2 (91)`，iOS `0.9.7 (91)`。见 `docs/releases/0.9.7.2.md`；推荐 Android 10–13 升级 Standalone。包含后续候选功能，但三星最低音量与更多后台／OEM 场景仍待真机验收；不更新 Linux Agent 二进制，不新增 workflow，不随应用发布部署 Relay。以下较早基线保留追溯。

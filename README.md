@@ -1,12 +1,12 @@
 # AirSIM — Android 与 iPhone / Apple Watch 跨设备通话、短信和 VoWLAN
 
-[Apps v0.9.8 · build 92](docs/releases/0.9.8.md)：本地双通道、多安卓设备归属、配对与 Verbose 改进，以及云端挂断回执修复。推荐 Android 10–13 用户升级 Standalone；最新音频与挂断修复、多安卓同时待机仍待真机复验。本次不部署 Relay 或发布新 Linux Agent。
+[Apps v0.9.8.1 · build 95](docs/releases/0.9.8.1.md)：iOS／Android 更新说明与新版检测、云端后台待机状态修复、安卓 PCM 启动诊断与臻情最低非零音量兼容。推荐 Android 10–13 用户升级 Standalone；问题机型双向音频及更多后台场景仍待复验。本次不部署 Relay 或发布新 Linux Agent。
 
 [![Android Standalone](https://img.shields.io/badge/Android-Standalone%20APK-3DDC84?logo=android&logoColor=white)](android-standalone/README.md)
 [![iOS](https://img.shields.io/badge/iOS-16.3%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![watchOS](https://img.shields.io/badge/watchOS-10%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![Android AVF](https://img.shields.io/badge/Android%20AVF-Linux%20arm64-FCC624?logo=linux&logoColor=black)](module/packaging/README.md)
-[![Apps release](https://img.shields.io/badge/Apps-v0.9.8-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8)
+[![Apps release](https://img.shields.io/badge/Apps-v0.9.8.1-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.1)
 [![Android 10–13 recommended hotfix](https://img.shields.io/badge/Android%2010–13-修复版·推荐安装-3DDC84)](docs/releases/0.9.7.1-android10-13.md)
 [![AVF Agent release](https://img.shields.io/badge/AVF%20Agent-v0.4.6-0F766E)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)
 [![Cloudflare Relay](https://img.shields.io/badge/Relay-airsim--push.remotepilot.site-F38020?logo=cloudflare&logoColor=white)](https://airsim-push.remotepilot.site/healthz)
@@ -35,6 +35,8 @@ AirSIM is a source-available, noncommercial cross-device calling and messaging p
 https://t.me/+TRDazm-qnXlhNGRl
 
 ## 核心能力
+
+- **应用版本说明与更新检测（0.9.8.1）**：iOS／Android 首次安装或升级后展示离线说明，设置中可重看／手动检查应用新版；前台每日最多自动检查一次，不自动下载安装，不与 Linux Agent 更新混用。[说明](docs/app-updates.md)。
 
 - **跨设备电话**：在 iPhone 或 Apple Watch 上拨号、接听、拒接、挂断、静音并发送 DTMF，由三星 Android 手机完成运营商通话。
 - **跨设备短信**：同步短信状态、发送短信并通过 APNs 通知 Apple 客户端。
@@ -98,15 +100,15 @@ VoBLE 是与 VoWLAN、云端 Relay 并列的模式选项，不是现有 Wi-Fi �
 
 | 组件 | 当前版本或地址 |
 | --- | --- |
-| Android Standalone / AVF Bridge · Android 10–13 修复 APK | [`v0.9.8 (92)`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8)，推荐安装 Standalone |
-| iPhone / Apple Watch App | `0.9.8 (92)`，随 [v0.9.8](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8) 提供 full／sideload unsigned IPA；TestFlight 单独上传处理 |
+| Android Standalone / AVF Bridge · Android 10–13 修复 APK | [`v0.9.8.1 (95)`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.1)，推荐安装 Standalone |
+| iPhone / Apple Watch App | `0.9.8 (95)`，随 [v0.9.8.1](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.1) 提供 full／sideload unsigned IPA；TestFlight 单独上传处理 |
 | Android AVF Linux Agent | [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包版本 `0.4.6-1`） |
 | AirSIM Relay | `0.2.1` · [`https://airsim-push.remotepilot.site`](https://airsim-push.remotepilot.site/healthz) |
 | DJOneHub Relay | `https://push.remotepilot.site`（独立服务，AirSIM 不得使用） |
 
 ### 应用发布包
 
-当前版为 [Apps v0.9.8（92）](docs/releases/0.9.8.md)，包含以下旧系统修复及其后续稳定性改动。公开 IPA 需自行重签；优先选 Standalone APK。旧 AVF 的新双通道能力需要另行升级 Linux Agent，见本版兼容限制。旧版本说明保留作为历史记录。
+当前版为 [Apps v0.9.8.1（95）](docs/releases/0.9.8.1.md)，包含以下旧系统修复及其后续稳定性改动。公开 IPA 需自行重签；优先选 Standalone APK。旧 AVF 的新双通道能力需要另行升级 Linux Agent，见本版兼容限制。旧版本说明保留作为历史记录。
 
 #### Android 10–13 专用修复版
 

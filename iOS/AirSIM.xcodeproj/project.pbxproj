@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A1A990000000000000000001 /* AppReleasePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A990000000000000000001; };
+        A1A990000000000000000002 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A990000000000000000002; };
+        A1A990000000000000000003 /* AppUpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A990000000000000000003; };
 		AD0000000000000000000008 = {isa = PBXBuildFile; fileRef = BD0000000000000000000008; };
 		AD0000000000000000000009 = {isa = PBXBuildFile; fileRef = BD0000000000000000000009; };
 		AD000000000000000000000A = {isa = PBXBuildFile; fileRef = BD000000000000000000000A; };
@@ -124,6 +127,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        B1A990000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReleasePolicy.swift; sourceTree = "<group>"; };
+        B1A990000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
+        B1A990000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateView.swift; sourceTree = "<group>"; };
 		BD0000000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCallActionRouter.swift; sourceTree = "<group>"; };
 		BD0000000000000000000009 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCallActionRouterTests.swift; sourceTree = "<group>"; };
 		BD000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OtherDeviceCallReminderTests.swift; sourceTree = "<group>"; };
@@ -247,6 +253,9 @@
 				B10000000000000000000012 /* BackgroundStandbyController.swift */,
 				B10000000000000000000014 /* LiveActivityController.swift */,
 				B10000000000000000000004 /* AppSettings.swift */,
+                B1A990000000000000000001,
+                B1A990000000000000000002,
+                B1A990000000000000000003,
 				B10000000000000000000005 /* ContactStore.swift */,
 				B10000000000000000000006 /* AudioSessionController.swift */,
 				B10000000000000000000007 /* AppModel.swift */,
@@ -511,6 +520,9 @@
 				A10000000000000000000011 /* AirSIMLiveActivityShared.swift in Sources */,
 				A10000000000000000000012 /* LiveActivityController.swift in Sources */,
 				A10000000000000000000004 /* AppSettings.swift in Sources */,
+                A1A990000000000000000001,
+                A1A990000000000000000002,
+                A1A990000000000000000003,
 				A10000000000000000000005 /* ContactStore.swift in Sources */,
 				A10000000000000000000006 /* AudioSessionController.swift in Sources */,
 				A10000000000000000000007 /* AppModel.swift in Sources */,
@@ -644,7 +656,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "$(AIRSIM_PUSH_ENTITLEMENTS)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 92;
+				CURRENT_PROJECT_VERSION = 95;
 				DEVELOPMENT_TEAM = "";
 				AIRSIM_APNS_ENVIRONMENT = sandbox;
 				AIRSIM_PUSH_ENTITLEMENTS = "AirSIM/AirSIM.entitlements";
@@ -670,7 +682,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "$(AIRSIM_PUSH_ENTITLEMENTS)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 92;
+				CURRENT_PROJECT_VERSION = 95;
 				DEVELOPMENT_TEAM = "";
 				AIRSIM_APNS_ENVIRONMENT = production;
 				AIRSIM_PUSH_ENTITLEMENTS = "AirSIM/AirSIM.entitlements";
@@ -694,7 +706,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 92;
+				CURRENT_PROJECT_VERSION = 95;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AirSIMLiveActivityExtension/Info.plist;
@@ -720,7 +732,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 92;
+				CURRENT_PROJECT_VERSION = 95;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AirSIMLiveActivityExtension/Info.plist;
@@ -780,7 +792,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "AirSIMWatchApp/AirSIMWatchApp.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 92;
+				CURRENT_PROJECT_VERSION = 95;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -809,7 +821,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "AirSIMWatchApp/AirSIMWatchApp.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 92;
+				CURRENT_PROJECT_VERSION = 95;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "AirSIMWatchApp/Info.plist";

@@ -11,6 +11,7 @@ JAVA=$JAVA_HOME/bin/java
 JAR=$JAVA_HOME/bin/jar
 BUILD_DIR=$SCRIPT_DIR/build
 TEST_CLASSES=$BUILD_DIR/test-classes
+FAILURE_TEST_CLASSES=$BUILD_DIR/failure-test-classes
 PROD_CLASSES=$BUILD_DIR/classes
 DEX_DIR=$BUILD_DIR/dex
 OUTPUT_JAR=$BUILD_DIR/airsim-phone-audio-bridge.jar
@@ -22,8 +23,8 @@ for required in "$JAVAC" "$JAVA" "$JAR" "$D8" "$ANDROID_JAR"; do
     fi
 done
 
-rm -rf "$TEST_CLASSES" "$PROD_CLASSES" "$DEX_DIR" "$OUTPUT_JAR"
-mkdir -p "$TEST_CLASSES" "$PROD_CLASSES" "$DEX_DIR"
+rm -rf "$TEST_CLASSES" "$FAILURE_TEST_CLASSES" "$PROD_CLASSES" "$DEX_DIR" "$OUTPUT_JAR"
+mkdir -p "$TEST_CLASSES" "$FAILURE_TEST_CLASSES" "$PROD_CLASSES" "$DEX_DIR"
 
 find "$SCRIPT_DIR/src" -name '*.java' -type f -print | sort | sed 's/.*/"&"/' > "$BUILD_DIR/sources.args"
 find "$SCRIPT_DIR/test" -name '*.java' -type f -print | sort | sed 's/.*/"&"/' > "$BUILD_DIR/tests.args"
@@ -31,6 +32,10 @@ find "$SCRIPT_DIR/test" -name '*.java' -type f -print | sort | sed 's/.*/"&"/' >
 "$JAVAC" --release 17 -cp "$ANDROID_JAR" -d "$TEST_CLASSES" \
     @"$BUILD_DIR/sources.args" @"$BUILD_DIR/tests.args"
 "$JAVA" -cp "$TEST_CLASSES:$ANDROID_JAR" com.airsim.bridge.BridgeUnitTests
+find "$SCRIPT_DIR/test-fixtures" -name '*.java' -type f -print | sort | sed 's/.*/"&"/' > "$BUILD_DIR/failure-fixtures.args"
+"$JAVAC" --release 17 -cp "$TEST_CLASSES:$ANDROID_JAR" -d "$FAILURE_TEST_CLASSES" \
+    @"$BUILD_DIR/failure-fixtures.args"
+"$JAVA" -cp "$FAILURE_TEST_CLASSES:$TEST_CLASSES:$ANDROID_JAR" com.airsim.bridge.BridgeStartupFailureTests
 
 "$JAVAC" --release 17 -cp "$ANDROID_JAR" -d "$PROD_CLASSES" \
     @"$BUILD_DIR/sources.args"

@@ -6,6 +6,7 @@ struct AirSIMIPadApp: App {
     @UIApplicationDelegateAdaptor(AirSIMNotificationDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
     @StateObject private var settings = AppSettings()
+    @StateObject private var appUpdates = AppUpdateController()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -15,6 +16,7 @@ struct AirSIMIPadApp: App {
                 .environmentObject(model.contacts)
                 .environmentObject(model.audio)
                 .environmentObject(settings)
+                .environmentObject(appUpdates)
                 .onAppear {
                     WatchCallCoordinator.shared.configure(model: model)
                     WatchCallCoordinator.shared.start()

@@ -195,9 +195,7 @@ public final class ShizukuBridgeUserService extends Binder {
             verifyIdentity();
             if (outputMute == null && !muted) return "local_output_unchanged";
             if (outputMute == null) outputMute = new LocalOutputMuteController(audioBackend(),
-                    "samsung".equalsIgnoreCase(android.os.Build.MANUFACTURER)
-                        ? LocalOutputMuteController.Strategy.MINIMUM_VOLUME
-                        : LocalOutputMuteController.Strategy.MUTE);
+                    LocalOutputMuteController.strategyForManufacturer(android.os.Build.MANUFACTURER));
             return outputMute.setMuted(muted);
         }
     }
@@ -273,7 +271,7 @@ public final class ShizukuBridgeUserService extends Binder {
     private String outputPolicyDiagnostic() {
         LocalOutputMuteController current = outputMute;
         if (current != null && current.usesMinimumVolume())
-            return "minimum_volume minimum_volume=" + current.targetMinimumVolume();
+            return current.policyName() + " minimum_volume=" + current.targetMinimumVolume();
         return callOutputPolicyMute != null && callOutputPolicyMute.applied() ? "zero_readback" : "not_applied";
     }
 

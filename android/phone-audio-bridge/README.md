@@ -1,5 +1,7 @@
 # AirSIM 三星通话音频桥
 
+未发布候选 `0.9.8.1（94）`：端点创建后立即托管释放，播放初始化失败也不泄漏采集；原始启动异常分阶段编码并由控制 App 保留到 TXT，不再只剩 `Connection reset`。不修改采集源、PCM 增益或系统路由兜底；问题华为设备仍待真机复验。[诊断与安全边界](../../docs/android-pcm-startup-failures.md)。
+
 推荐的 [Android Standalone APK](../../android-standalone/README.md) 不依赖 AVF。只有使用旧 AVF 兼容模式时，才按[AVF 安装与无损排障指南](../../docs/AVF_INSTALL_GUIDE.md)分别验证 `8575`、`8576` 和控制令牌；PCM 桥待启动不等于 Debian 包损坏，也不应通过清除 AVF 数据处理。
 
 该组件运行在 Android 的 Shizuku `UserService` 中，以 shell UID 访问系统通话音频，并向 AirSIM 控制 App 的内置 Agent 或旧 AVF Agent 提供双向 PCM。

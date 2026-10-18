@@ -15,6 +15,8 @@ public final class BridgeUnitTests {
         testArgumentFailures();
         testHandshake();
         testReadyRequiresSuccessfulAudioStartup();
+        testEndpointCleanupPreservesStartupFailure();
+        testStartupFailureExportsOnlyStableEvidence();
         testStats();
         testNewSessionCannotReuseOldAudioEvidence();
         testSessionGate();
@@ -22,6 +24,42 @@ public final class BridgeUnitTests {
         testListenerRecoveryPolicy();
         testVoiceTxRouteTimeoutPolicy();
         System.out.println("PASS BridgeUnitTests checks=" + checks);
+    }
+
+    private static void testEndpointCleanupPreservesStartupFailure() {
+        var order = new java.util.ArrayList<String>();
+        RuntimeException original = new IllegalStateException("startup failure");
+        RuntimeException stopFailure = new IllegalStateException("stop failed");
+        try (AudioEndpointLease capture = new AudioEndpointLease(
+                    () -> order.add("capture_stop"), () -> order.add("capture_release"));
+             AudioEndpointLease playback = new AudioEndpointLease(
+                    () -> { order.add("playback_stop"); throw stopFailure; },
+                    () -> { order.add("playback_release"); throw new IllegalStateException("release failed"); })) {
+            throw original;
+        } catch (RuntimeException error) {
+            check(error == original, "cleanup masked the original startup exception");
+            check(error.getSuppressed().length == 1 && error.getSuppressed()[0] == stopFailure,
+                    "cleanup failure was not preserved as suppressed evidence");
+            check(stopFailure.getSuppressed().length == 1, "release error replaced stop error");
+        }
+        check(order.equals(java.util.List.of("playback_stop", "playback_release", "capture_stop", "capture_release")),
+                "failed playback stop/release skipped capture cleanup");
+        int[] released = {0};
+        AudioEndpointLease lease = new AudioEndpointLease(() -> {}, () -> released[0]++);
+        lease.close(); lease.close();
+        check(released[0] == 1, "cleanup released the same native endpoint twice");
+    }
+
+    private static void testStartupFailureExportsOnlyStableEvidence() {
+        var denied = new AudioStartupFailure("create_capture", new SecurityException("token=private-value"));
+        check(denied.diagnosticFields().get("error_code").equals("permission_denied"),
+                "permission rejection lost its typed startup reason");
+        check(denied.diagnosticFields().get("error_class").equals("SecurityException"),
+                "export reports wrapper class instead of actual OS error type");
+        check(!denied.diagnosticFields().toString().contains("private-value"), "arbitrary error text leaked into diagnostics");
+        var route = new AudioStartupFailure("select_uplink_route", new IllegalStateException("no sink"));
+        check(route.diagnosticFields().get("error_code").equals("telephony_tx_unavailable"),
+                "missing cellular transmit route was mislabeled as Bluetooth network failure");
     }
 
     private static void testArguments() {

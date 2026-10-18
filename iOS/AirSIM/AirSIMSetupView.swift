@@ -160,6 +160,11 @@ struct AirSIMSettingsView: View {
 
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var appUpdates: AppUpdateController
+    @Environment(\.scenePhase) private var updateScenePhase
+    @State private var appUpdatePresentation: AppUpdatePresentation?
+    @State private var appUpdateInbox = AppUpdateResultInbox()
+    @State private var updateViewVisible = false
     @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @State private var relayURL = RelayConfiguration.effectiveURL(
@@ -372,6 +377,18 @@ struct AirSIMSettingsView: View {
                     LabeledContent("项目", value: "AirSIM")
                     LabeledContent("版本", value: AppInformation.version)
                         .textSelection(.enabled)
+                    Button("当前版本更新内容") { appUpdatePresentation = .notes }
+                    Button(appUpdates.checking ? "正在检查应用更新…" : "检查应用更新") {
+                        Task {
+                            if let result = await appUpdates.check(manual: true) {
+                                appUpdateInbox.receive(result)
+                                presentManualAppUpdateIfIdle()
+                            }
+                        }
+                    }
+                    .disabled(appUpdates.checking)
+                    Text(appUpdates.status).font(.footnote).foregroundStyle(.secondary)
+                    LabeledContent("更新渠道", value: AppUpdateChannel.title)
                     Link("GitHub 仓库", destination: AppInformation.repositoryURL)
                     Link("版本发布与下载", destination: AppInformation.releasesURL)
                     Picker("外观", selection: $settings.appearance) {
@@ -382,6 +399,15 @@ struct AirSIMSettingsView: View {
                 }
             }
             .task { await model.refreshPairedDeviceInformation() }
+            .sheet(item: $appUpdatePresentation, onDismiss: presentManualAppUpdateIfIdle) { presentation in
+                AppUpdateSheet(presentation: presentation, updates: appUpdates)
+            }
+            .onAppear { updateViewVisible = true; presentManualAppUpdateIfIdle() }
+            .onChange(of: model.activeCall?.id) { _ in handleUpdateCallChange() }
+            .onChange(of: model.remoteCall?.id) { _ in handleUpdateCallChange() }
+            .onChange(of: model.pendingOutgoingCall?.id) { _ in handleUpdateCallChange() }
+            .onChange(of: updateScenePhase) { _ in presentManualAppUpdateIfIdle() }
+            .onChange(of: model.errorMessage) { _ in presentManualAppUpdateIfIdle() }
             .confirmationDialog("删除这个设备的本机配对记录？",
                 isPresented: Binding(get: { deletingDevice != nil }, set: { if !$0 { deletingDevice = nil } }),
                 titleVisibility: .visible, presenting: deletingDevice) { device in
@@ -399,10 +425,27 @@ struct AirSIMSettingsView: View {
             }
             .navigationTitle("设置")
             .onDisappear {
+                updateViewVisible = false
                 selfTestTask?.cancel()
                 selfTestTask = nil
                 if selfTestPhase == .running { selfTestPhase = .idle }
             }
+        }
+    }
+
+    private var updateCallBusy: Bool {
+        model.activeCall != nil || model.remoteCall != nil || model.pendingOutgoingCall != nil
+    }
+
+    private func handleUpdateCallChange() {
+        if updateCallBusy { appUpdatePresentation = nil }
+        else { presentManualAppUpdateIfIdle() }
+    }
+
+    private func presentManualAppUpdateIfIdle() {
+        if let result = appUpdateInbox.takeIfIdle(isActive: updateViewVisible && updateScenePhase == .active,
+            callBusy: updateCallBusy, hasModal: appUpdatePresentation != nil || model.errorMessage != nil) {
+            appUpdatePresentation = .result(result)
         }
     }
 
