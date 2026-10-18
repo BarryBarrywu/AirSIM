@@ -74,6 +74,7 @@ public final class VoWLANControlGateway implements Closeable {
                 return;
             }
             byte[] secret = VoWLANPairingStore.load(context);
+            String identityProof = null;
             try {
                 String canonical = VoWLANAuth.canonicalRequest(
                         request.method, request.path, request.body, timestamp, nonce);
@@ -82,6 +83,9 @@ public final class VoWLANControlGateway implements Closeable {
                         || !replayCache.accept(nonce, now)) {
                     respond(peer, 401, "{\"error\":\"authentication_failed\"}");
                     return;
+                }
+                if ("/v1/health".equals(request.path)) {
+                    identityProof = DirectGatewayRoutes.healthProof(secret, nonce, AndroidAgentIdentity.agentID(context));
                 }
             } finally {
                 Arrays.fill(secret, (byte) 0);
@@ -92,6 +96,8 @@ public final class VoWLANControlGateway implements Closeable {
                 output = new org.json.JSONObject()
                         .put("ok", true).put("transport", "vowlan").put("version", 1)
                         .put("agent_id", AndroidAgentIdentity.agentID(context))
+                        .put("identity_proof", identityProof)
+                        .put("canonical_call_ids", canonicalCallIDsSupported())
                         .put("agent_kind", RuntimeMode.isStandalone(context) ? "standalone" : "avf")
                         .put("device_name", AndroidAgentIdentity.deviceName())
                         .put("manufacturer", android.os.Build.MANUFACTURER)
@@ -115,6 +121,12 @@ public final class VoWLANControlGateway implements Closeable {
                 }
                 String dialNumber = "/api/calls/dial".equals(request.path)
                         ? new org.json.JSONObject(new String(request.body, StandardCharsets.UTF_8)).optString("number") : "";
+                String operationID = "/api/calls/dial".equals(request.path)
+                        ? new org.json.JSONObject(new String(request.body, StandardCharsets.UTF_8)).optString("operation_id") : "";
+                if (!operationID.isEmpty() && !canonicalCallIDsSupported()) {
+                    respond(peer, 409, "{\"error\":\"canonical_call_ids_upgrade_required\"}");
+                    return;
+                }
                 String body = request.body.length == 0 ? null : new String(request.body, StandardCharsets.UTF_8);
                 AgentClient.ForwardResponse forwarded =
                         new AgentClient(context).forwardVoWLAN(request.method, request.path, body);
@@ -133,6 +145,40 @@ public final class VoWLANControlGateway implements Closeable {
                             Thread.sleep(50);
                         } while (System.nanoTime() < deadline);
                         DirectCallOwnership.record(local, created, callLease);
+                        if (!operationID.isEmpty() && !created.isEmpty()) {
+                            // Telecom registration precedes the asynchronous Agent event.
+                            // Pin the exact created call, then wait for its backend mapping;
+                            // never return unowned success or repeat the dial command.
+                            do {
+                                AgentClient.ForwardResponse status = new AgentClient(context).forwardVoWLAN("GET", "/api/calls/status", null);
+                                org.json.JSONObject active = new org.json.JSONObject(status.payload()).optJSONObject("active");
+                                if (status.status() == 200 && active != null
+                                        && created.equals(active.optString("android_id")) && !active.optString("id").isEmpty()) {
+                                    String backendID = active.optString("id");
+                                    byte[] responseSecret = VoWLANPairingStore.load(context);
+                                    try {
+                                        output = new org.json.JSONObject(output).put("operation_id", operationID)
+                                                .put("android_id", created).put("backend_id", backendID)
+                                                .put("operation_proof", DirectGatewayRoutes.ownedDialProof(responseSecret,
+                                                        nonce, operationID, created, backendID)).toString();
+                                    } finally { Arrays.fill(responseSecret, (byte) 0); }
+                                    break;
+                                }
+                                if (System.nanoTime() >= deadline) break;
+                                Thread.sleep(25);
+                            } while (true);
+                        }
+                        if (!operationID.isEmpty() && !new org.json.JSONObject(output).has("operation_proof")) {
+                            // We cannot publish a safe iPhone media/control owner. Retire
+                            // only the call created by this operation, not another active call.
+                            CallRepository.disconnect(created);
+                            DirectCallOwnership.end(callLease, false);
+                            responseStatus = 504;
+                            output = "{\"error\":\"owned_dial_receipt_unavailable\"}";
+                            BridgeLog.info("vowlan_owned_dial_receipt_unavailable");
+                        } else if (!operationID.isEmpty()) {
+                            BridgeLog.info("vowlan_owned_dial_receipt_ready");
+                        }
                         AirSIMInCallService.refreshAudioPolicy();
                     } else if ("/api/calls/answer".equals(request.path)
                             && CallRepository.state(answerTarget) == android.telecom.Call.STATE_ACTIVE) {
@@ -154,6 +200,14 @@ public final class VoWLANControlGateway implements Closeable {
             BridgeLog.error("vowlan_control_failed path=" + safePath(pathForLog[0]), error);
             respond(peer, 502, "{\"error\":\"agent_unavailable\"}");
         });
+    }
+
+    private boolean canonicalCallIDsSupported() {
+        if (RuntimeMode.isStandalone(context)) return true;
+        try {
+            AgentClient.ForwardResponse health = new AgentClient(context).forwardVoWLAN("GET", "/api/health", null);
+            return health.status() == 200 && new org.json.JSONObject(health.payload()).optBoolean("canonical_call_ids", false);
+        } catch (Exception ignored) { return false; }
     }
 
     private static Request readRequest(InputStream raw) throws IOException {

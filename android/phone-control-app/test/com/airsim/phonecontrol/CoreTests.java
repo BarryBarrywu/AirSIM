@@ -917,6 +917,17 @@ public final class CoreTests {
 		assertTrue(controller.ownsCall("provisional-call", 8));
 		controller.observeCall("android-call", 8, "dialing");
 		assertTrue(controller.ownsCall("android-call", 8));
+		int acceptedCalls = calls.get();
+		var reusedActive = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"dial-reused-active", "dial", "different-call", "10086", 8);
+		assertEquals("stale_generation", controller.execute(reusedActive, true).code());
+		assertEquals(acceptedCalls, calls.get());
+		controller.observeCall("android-call", 8, "ended");
+		var reusedEnded = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
+				"dial-reused-ended", "dial", "different-call", "10086", 8);
+		assertEquals("stale_generation", controller.execute(reusedEnded, true).code());
+		assertEquals(acceptedCalls, calls.get());
+		assertEquals(8L, controller.currentGeneration());
 
 		// Android process/app data can restart while iPhone keeps its monotonic
 		// generation. The first authenticated dial must resynchronize forward,

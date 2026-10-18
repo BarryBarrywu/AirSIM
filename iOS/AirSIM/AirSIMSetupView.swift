@@ -17,7 +17,7 @@ struct AirSIMFirstConnectionView: View {
                     .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 22))
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("连接三星手机")
+                    Text("连接安卓手机")
                         .font(.largeTitle.bold())
                     Text("AirSIM 可通过 VoWLAN、蓝牙或云端 Relay 独立连接 Android 手机。")
                         .foregroundStyle(.secondary)
@@ -38,7 +38,7 @@ struct AirSIMFirstConnectionView: View {
                         Text(mode.title).tag(mode.rawValue)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .onChange(of: connectionModeRaw) { rawValue in
                     guard let mode = AirSIMConnectionMode(rawValue: rawValue) else { return }
                     model.setConnectionMode(mode)
@@ -55,6 +55,11 @@ struct AirSIMFirstConnectionView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .frame(maxWidth: .infinity)
+
+                if selectedMode == .localDual {
+                    NavigationLink("添加蓝牙设备") { VoBLEPairingView().environmentObject(model) }
+                        .frame(maxWidth: .infinity)
+                }
 
                 Button("稍后在设置中配对") { completed = true }
                     .frame(maxWidth: .infinity)
@@ -173,6 +178,16 @@ struct AirSIMSettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Toggle(isOn: Binding(
+                        get: { !runtimePolicy.startsCloud },
+                        set: { enabled in
+                            connectionModeRaw = ConnectionModePreference.selectingLocalOnly(
+                                enabled, from: selectedMode).rawValue
+                        }
+                    )) {
+                        Label("仅本地模式", systemImage: "network.slash")
+                    }
+                    .accessibilityIdentifier("localOnlyMode")
                     Picker("连接模式", selection: $connectionModeRaw) {
                         ForEach(AirSIMConnectionMode.allCases) { mode in
                             Label(mode.title, systemImage: modeIcon(mode)).tag(mode.rawValue)
@@ -188,7 +203,7 @@ struct AirSIMSettingsView: View {
                 } header: {
                     Text("运行模式")
                 } footer: {
-                    Text(selectedMode.detail)
+                    Text(selectedMode.detail + "\n仅本地模式与连接模式同步；关闭表示允许云端，安卓仍需完成云端配对。")
                 }
 
                 Section("当前连接") {
@@ -234,8 +249,7 @@ struct AirSIMSettingsView: View {
                         Label("配对蓝牙 Agent", systemImage: "wave.3.right")
                     }
                     Button("重新扫描蓝牙 Agent", systemImage: "arrow.clockwise") {
-                        model.voble.stop()
-                        model.voble.start()
+                        model.vobleHub.radio.rescan()
                     }
                     .disabled(!runtimePolicy.startsBluetooth)
                 }
@@ -340,6 +354,20 @@ struct AirSIMSettingsView: View {
                         : "依次验证本机 Push 凭据、AirSIM Relay 身份、设备注册和 Agent 最近 90 秒心跳；不会拨号或发送短信。")
                 }
 
+                Section("调试") {
+                    NavigationLink {
+                        AgentVerboseTraceView(api: model.verboseDiagnosticsAPI)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Verbose 日志调试")
+                                Text("开启详细记录、查看链路事件、导出 TXT")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } icon: { Image(systemName: "waveform.path.ecg") }
+                    }
+                }
+
                 Section("关于") {
                     LabeledContent("项目", value: "AirSIM")
                     LabeledContent("版本", value: AppInformation.version)
@@ -416,6 +444,7 @@ struct AirSIMSettingsView: View {
 
     private func modeIcon(_ mode: AirSIMConnectionMode) -> String {
         switch mode {
+        case .localDual: return "wifi.circle"
         case .vowlan: return "wifi"
         case .bluetooth: return "wave.3.right"
         case .cloud: return "cloud"

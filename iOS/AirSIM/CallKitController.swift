@@ -17,6 +17,10 @@ protocol CallKitActionHandling: AnyObject {
     func callKitEnd() async throws
     func callKitSetMuted(_ muted: Bool) async
     func callKitPlayDTMF(_ digits: String) async throws
+    func callKitAnswer(uuid: UUID, origin: CallAnswerOrigin) async throws
+    func callKitEnd(uuid: UUID) async throws
+    func callKitSetMuted(_ muted: Bool, uuid: UUID) async
+    func callKitPlayDTMF(_ digits: String, uuid: UUID) async throws
     func callKitAudioSessionDidActivate() async
     func callKitAudioSessionDidDeactivate()
     func callKitProviderDidReset() async
@@ -56,6 +60,10 @@ enum CallKitEndActionPolicy {
 }
 
 extension CallKitActionHandling {
+    func callKitAnswer(uuid: UUID, origin: CallAnswerOrigin) async throws { try await callKitAnswer(origin: origin) }
+    func callKitEnd(uuid: UUID) async throws { try await callKitEnd() }
+    func callKitSetMuted(_ muted: Bool, uuid: UUID) async { await callKitSetMuted(muted) }
+    func callKitPlayDTMF(_ digits: String, uuid: UUID) async throws { try await callKitPlayDTMF(digits) }
     func callKitPrepareAudioSession() throws {}
     func callKitDidReceiveIncoming(_ call: IncomingVoIPCall) {}
     func callKitCallDidEnd() {}
@@ -100,11 +108,12 @@ final class CallKitController: NSObject {
     private let callController = CXCallController()
     private(set) var audioSessionIsActive = false
     private var entitlementAvailable = true
-    private var featureEnabled = !LocalModePreference.isEnabled()
+    private var featureEnabled = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).usesCallKit
     weak var handler: (any CallKitActionHandling)?
 
     private var currentUUID: UUID?
     private var currentBackendID: String?
+    private var currentAgentID: String?
     private var currentState: String?
     private var currentNumber: String?
     private var currentDirection: String?
@@ -119,6 +128,7 @@ final class CallKitController: NSObject {
     private var dialedOutgoingUUIDs: Set<UUID> = []
     private var appAnswerRequestUUID: UUID?
     private var incomingReportCompletions: [(Error?) -> Void] = []
+    private var incomingSystemReporter: RequiredSystemReporter?
     private var incomingDeduplicator = IncomingCallDeduplicator()
     private(set) var currentIncomingPush: IncomingVoIPCall?
 
@@ -174,8 +184,10 @@ final class CallKitController: NSObject {
         return currentUUID
     }
 
-    func matchesCurrentCall(callID: String?, uuid: UUID?) -> Bool {
+    func matchesCurrentCall(callID: String?, uuid: UUID?, agentID: String? = nil) -> Bool {
         guard currentUUID != nil else { return false }
+        guard callID != nil || uuid != nil else { return false }
+        if let agentID, agentID != (currentAgentID ?? currentIncomingPush?.agentID) { return false }
         let backendMatches = callID == nil || callID == currentBackendID
         let uuidMatches = uuid == nil || uuid == currentUUID
         return backendMatches && uuidMatches
@@ -185,6 +197,11 @@ final class CallKitController: NSObject {
     func reportCurrentCallEnded(reason: CXCallEndedReason) {
         finishCurrentCall(previous: nil, reason: reason)
     }
+    func withdrawLocalPresentation(uuid: UUID, reason: CXCallEndedReason = .unanswered) {
+        guard currentUUID == uuid, currentState == "incoming" else { return }
+        if systemCallReported { provider.reportCall(with: uuid, endedAt: Date(), reason: reason) }
+        resetCurrentCall() // No backend command and no global call-ended handler.
+    }
 
     func reportCurrentOutgoingConnected() {
         guard currentDirection == "outgoing", let uuid = currentUUID,
@@ -192,11 +209,17 @@ final class CallKitController: NSObject {
         currentState = "active"
         provider.reportOutgoingCall(with: uuid, connectedAt: Date())
     }
+    func synchronizeOwnedCall(_ call: CallRecord, uuid: UUID, agentID: String) {
+        guard currentUUID == uuid else { return }
+        currentAgentID = agentID
+        synchronize(call: call, previous: nil, callerName: nil)
+    }
 
     /// PushKit 冷启动必须立即把同一通真实来电交给系统。后续 USB 状态同步会复用
     /// call_id/UUID，不会再生成第二个系统来电。
     func reportIncomingPush(
         _ call: IncomingVoIPCall,
+        systemReport: RequiredSystemReporter? = nil,
         completion: @escaping (Error?) -> Void
     ) {
         guard isAvailable else {
@@ -227,6 +250,7 @@ final class CallKitController: NSObject {
             return
         }
 
+        incomingSystemReporter = systemReport
         currentUUID = call.uuid
         currentBackendID = call.callID
         currentIncomingPush = call
@@ -240,8 +264,40 @@ final class CallKitController: NSObject {
         handler?.callKitDidReceiveIncoming(call)
     }
 
+    typealias RequiredSystemReporter = (UUID, CXCallUpdate, @escaping (Error?) -> Void) -> Void
+    /// A genuine VoIP push is still reported even if local mode is selected or
+    /// another device owns the primary call. Never reset/retarget that primary.
+    func reportRequiredVoIPPush(_ call: IncomingVoIPCall,
+        systemReport: RequiredSystemReporter? = nil, systemEnd: ((UUID) -> Void)? = nil,
+        completion: @escaping (Error?) -> Void) {
+        // Watch may own the shared route without an iPhone CallKit UUID.
+        // Native presentation state alone is therefore not an admission gate.
+        let model = handler as? AppModel
+        let localOwnerBusy = model?.deviceCalls.active != nil || model?.deviceCallContext.admissionReservation != nil
+        if isAvailable, CloudModePreference.isEnabled(),
+           !localOwnerBusy,
+           currentUUID == nil || currentUUID == call.uuid,
+           incomingDeduplicator.shouldAccept(callID: call.callID, uuid: call.uuid) {
+            reportIncomingPush(call, completion: completion)
+            return
+        }
+        let report: RequiredSystemReporter = systemReport ?? { [provider] uuid, update, done in
+            provider.reportNewIncomingCall(with: uuid, update: update, completion: done)
+        }
+        let end = systemEnd ?? { [provider] uuid in
+            provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
+        }
+        report(call.uuid, update(number: call.number, callerName: call.callerName)) { error in
+            Task { @MainActor in
+                if error == nil { end(call.uuid) }
+                completion(error)
+            }
+        }
+    }
+
     /// 先让系统接管呼出事务；真正的模块 ATD 只能在 CXProvider delegate 回调中执行。
-    func startOutgoingCall(number: String) async throws {
+    func startOutgoingCall(number: String,
+        systemStart: ((CXStartCallAction) async throws -> Void)? = nil) async throws {
         guard isAvailable else { throw CallKitBridgeError.unavailable }
         guard currentUUID == nil else { throw CallKitBridgeError.callInProgress }
 
@@ -255,7 +311,8 @@ final class CallKitController: NSObject {
 
         do {
             let handle = CXHandle(type: .phoneNumber, value: number)
-            try await request(CXStartCallAction(call: uuid, handle: handle))
+            let action = CXStartCallAction(call: uuid, handle: handle)
+            if let systemStart { try await systemStart(action) } else { try await request(action) }
         } catch {
             let unavailable = disableCallKitIfUnentitled(error)
             resetCurrentCall()
@@ -378,12 +435,13 @@ final class CallKitController: NSObject {
         guard !incomingReportRequested, !systemCallReported, let uuid = currentUUID else { return }
         incomingReportRequested = true
         debugLog("请求系统来电界面；来源=\(source)")
-        provider.reportNewIncomingCall(
-            with: uuid,
-            update: update(number: number, callerName: callerName)
-        ) { [weak self] error in
+        let report: RequiredSystemReporter = incomingSystemReporter ?? { [provider] uuid, update, done in
+            provider.reportNewIncomingCall(with: uuid, update: update, completion: done)
+        }
+        report(uuid, update(number: number, callerName: callerName)) { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard self.currentUUID == uuid else { return }
                 if let error {
                     let diagnosticError = error as NSError
                     self.debugLog(
@@ -503,10 +561,12 @@ final class CallKitController: NSObject {
         }
         currentUUID = nil
         currentBackendID = nil
+        currentAgentID = nil
         currentState = nil
         currentNumber = nil
         currentDirection = nil
         currentIncomingPush = nil
+        incomingSystemReporter = nil
         incomingReportRequested = false
         incomingReportFailed = false
         systemCallReported = false
@@ -523,6 +583,7 @@ final class CallKitController: NSObject {
 
     private func performAnswer(_ action: CXAnswerCallAction) async {
         do {
+            guard currentUUID == action.callUUID else { throw CallKitBridgeError.staleSystemCall }
             guard let handler else { throw CallKitBridgeError.handlerUnavailable }
             let origin: CallAnswerOrigin = appAnswerRequestUUID == action.callUUID ? .app : .system
             appAnswerRequestUUID = nil
@@ -534,8 +595,9 @@ final class CallKitController: NSObject {
                     // 在其后异步建立，不能阻塞 CallKit 激活 AVAudioSession。
                     action.fulfill()
                 },
-                backend: { try await handler.callKitAnswer(origin: origin) }
+                backend: { try await handler.callKitAnswer(uuid: action.callUUID, origin: origin) }
             )
+            guard currentUUID == action.callUUID else { return }
             if let backendError {
                 finishCurrentCall(previous: nil, reason: .failed)
                 handler.callKitDidFail(backendError.localizedDescription)
@@ -616,14 +678,17 @@ final class CallKitController: NSObject {
         // reportCall(ended:) may be followed by a delayed CXEndCallAction after
         // the authoritative Agent state already cleared this UUID. That action
         // is cleanup, not a new user hangup whose missing transport needs an alert.
-        let systemCallWasCurrent = currentUUID != nil
+        let systemCallWasCurrent = currentUUID == action.callUUID
+        guard systemCallWasCurrent else { action.fulfill(); return }
+        endActionFulfilled = true
+        action.fulfill()
         var backendError: Error?
         if CallKitEndActionPolicy.shouldForwardToBackend(
             systemCallWasCurrent: systemCallWasCurrent
         ) {
             do {
                 guard let currentHandler else { throw CallKitBridgeError.handlerUnavailable }
-                try await currentHandler.callKitEnd()
+                try await currentHandler.callKitEnd(uuid: action.callUUID)
             } catch {
                 backendError = error
             }
@@ -631,8 +696,7 @@ final class CallKitController: NSObject {
 
         // CallKit owns the local system-call lifecycle. A temporarily missing
         // module must not leave the UUID registered after the user hangs up.
-        endActionFulfilled = true
-        action.fulfill()
+        guard currentUUID == action.callUUID else { return }
         incomingDeduplicator.recordEnded(
             callID: currentBackendID,
             uuid: currentUUID,
@@ -675,7 +739,8 @@ extension CallKitController: CXProviderDelegate {
                 action.fail()
                 return
             }
-            await handler.callKitSetMuted(action.isMuted)
+            guard self.currentUUID == action.callUUID else { action.fail(); return }
+            await handler.callKitSetMuted(action.isMuted, uuid: action.callUUID)
             action.fulfill()
         }
     }
@@ -684,7 +749,8 @@ extension CallKitController: CXProviderDelegate {
         Task { @MainActor [weak self] in
             do {
                 guard let handler = self?.handler else { throw CallKitBridgeError.handlerUnavailable }
-                try await handler.callKitPlayDTMF(action.digits)
+                guard self?.currentUUID == action.callUUID else { throw CallKitBridgeError.staleSystemCall }
+                try await handler.callKitPlayDTMF(action.digits, uuid: action.callUUID)
                 action.fulfill()
             } catch {
                 self?.fail(action, error: error)

@@ -1,5 +1,7 @@
 # AirSIM 全项目 Claude 部署辅助
 
+2026-10-18 应用发布准备：Apps `v0.9.8`，Android／Apple `0.9.8 (92)`，见 `docs/releases/0.9.8.md`。推荐 Android 10–13 安装 Standalone；本地双通道与设备归属、配对／Verbose 和云端挂断确认修复仍须按说明区分测试与真机验收。本次不部署 Relay、不新增 workflow、不发布新 Linux Agent 二进制；TestFlight 状态以 Apple 实际回执为准。以下旧基线保留追溯。
+
 工作区候选 build 85 的 Wi-Fi 返回恢复见 `docs/vowlan-network-return.md`：安卓网络变化重发 NSD 并隔离旧回调，iOS 有限次重新发现认证。固定云端不变、通话中不换链路、不新增 Relay 查询定时器。未安装／发布／锁屏真机验收，不承诺系统挂起或 OEM 强停后的即时恢复。
 
 工作区候选 build 84 的 iOS 本机短信删除、安卓身份约束音频 Watchdog 与 VERBOSE TXT 导出见 `docs/sms-deletion-audio-watchdog.md`。未安装或发布，不得将系统静音标志视为物理无声或真机验收。

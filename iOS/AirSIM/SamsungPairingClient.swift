@@ -40,30 +40,50 @@ struct SamsungPairingService: Identifiable {
     }
 }
 
+protocol SamsungPairingBrowsing: AnyObject {
+    var stateUpdateHandler: (@Sendable (NWBrowser.State) -> Void)? { get set }
+    var browseResultsChangedHandler: (@Sendable (Set<NWBrowser.Result>, Set<NWBrowser.Result.Change>) -> Void)? { get set }
+    func start(queue: DispatchQueue)
+    func cancel()
+}
+
+extension NWBrowser: SamsungPairingBrowsing {}
+
 @MainActor
 final class SamsungPairingBrowser: ObservableObject {
     @Published private(set) var services: [SamsungPairingService] = []
     @Published private(set) var stateText = "正在扫描 VoWLAN 局域网…"
 
     private let queue = DispatchQueue(label: "com.airsim.samsung-pair.browser")
-    private var browser: NWBrowser?
+    private var browser: SamsungPairingBrowsing?
+    private let makeBrowser: (NWParameters) -> SamsungPairingBrowsing
+    private var scanID: UUID?
+
+    init(makeBrowser: @escaping (NWParameters) -> SamsungPairingBrowsing = {
+        NWBrowser(for: .bonjourWithTXTRecord(type: "_airsim-pair._tcp", domain: nil), using: $0)
+    }) {
+        self.makeBrowser = makeBrowser
+    }
 
     func start() {
         guard browser == nil else { return }
+        let scanID = UUID()
+        self.scanID = scanID
+        services = []
+        stateText = "正在扫描 VoWLAN 局域网…"
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
-        let active = NWBrowser(
-            for: .bonjourWithTXTRecord(type: "_airsim-pair._tcp", domain: nil),
-            using: parameters
-        )
+        let active = makeBrowser(parameters)
         active.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.scanID == scanID else { return }
                 switch state {
                 case .ready: self.stateText = "正在等待安卓配对广播…"
                 case .waiting: self.stateText = "请确认 iPhone 与安卓处于同一 Wi-Fi 或安卓热点"
-                case .failed(let error): self.stateText = "局域网扫描失败：\(error.localizedDescription)"
-                case .cancelled: self.stateText = "扫描已停止"
+                case .failed(let error):
+                    self.stop()
+                    self.stateText = "局域网扫描失败：\(error.localizedDescription)。请检查本地网络权限后重新扫描。"
+                case .cancelled: self.stop()
                 default: break
                 }
             }
@@ -73,8 +93,11 @@ final class SamsungPairingBrowser: ObservableObject {
                 .filter { $0.expiresAt > Date() }
                 .sorted { $0.expiresAt < $1.expiresAt }
             Task { @MainActor in
-                self?.services = parsed
-                if !parsed.isEmpty { self?.stateText = "已发现 \(parsed.count) 台待配对设备" }
+                guard let self, self.scanID == scanID else { return }
+                self.services = parsed
+                self.stateText = parsed.isEmpty
+                    ? "正在等待安卓配对广播…"
+                    : "已发现 \(parsed.count) 台待配对设备"
             }
         }
         browser = active
@@ -82,9 +105,17 @@ final class SamsungPairingBrowser: ObservableObject {
     }
 
     func stop() {
+        // Invalidate before cancel: Network.framework can deliver callbacks after cancellation.
+        scanID = nil
         browser?.cancel()
         browser = nil
         services = []
+        stateText = "扫描已停止"
+    }
+
+    func restart() {
+        stop()
+        start()
     }
 
     private nonisolated static func parse(_ result: NWBrowser.Result) -> SamsungPairingService? {
@@ -196,10 +227,20 @@ enum SamsungPairingClient {
         }
     }
 
-    static func pair(service: SamsungPairingService, code: String, registration: AgentPushRegistration) async throws -> String {
+    struct PairedDeviceResult {
+        let agentID: String
+        let message: String
+    }
+    static func pairDevice(service: SamsungPairingService, code: String,
+                           registration: AgentPushRegistration) async throws -> PairedDeviceResult {
         let (response, _) = try await claim(service: service, code: code, registration: registration, direct: false)
-        if let agentID = response.agentID { PairedAndroidDeviceStore.allowPairing(agentID) }
-        return response.deviceIDHint.map { "配对成功（设备 …\($0)）" } ?? "配对成功"
+        guard let agentID = response.agentID, !agentID.isEmpty else { throw SamsungPairingClientError.directGatewayUnavailable }
+        PairedAndroidDeviceStore.allowPairing(agentID)
+        return PairedDeviceResult(agentID: agentID,
+            message: response.deviceIDHint.map { "配对成功（设备 …\($0)）" } ?? "配对成功")
+    }
+    static func pair(service: SamsungPairingService, code: String, registration: AgentPushRegistration) async throws -> String {
+        try await pairDevice(service: service, code: code, registration: registration).message
     }
 
     static func pairManually(address: SamsungManualPairingAddress, code: String,
@@ -376,6 +417,7 @@ enum SamsungPairingHTTPResponse {
             throw SamsungPairingClientError.rejected
         }
         guard status[1] == "200" else {
+            if status[1] == "403" { throw SamsungPairingClientError.networkNotAllowed }
             if status[1] == "410" { throw SamsungPairingClientError.expired }
             if status[1] == "404", metadata { throw SamsungPairingClientError.manualUnsupported }
             throw SamsungPairingClientError.rejected
@@ -394,12 +436,13 @@ enum SamsungPairingHTTPResponse {
 
 enum SamsungPairingClientError: LocalizedError, Equatable {
     case invalidCode, expired, rejected, responseTooLarge, connectionClosed, registrationUnavailable, pairingBusy, invalidAddress
-    case manualUnsupported, directGatewayUnavailable, timedOut
+    case manualUnsupported, directGatewayUnavailable, timedOut, networkNotAllowed
     var errorDescription: String? {
         switch self {
         case .invalidCode: return "请输入三星屏幕上的 6 位验证码"
         case .expired: return "三星配对窗口已过期，请重新开始"
         case .rejected: return "三星拒绝了配对，请核对验证码后重试"
+        case .networkNotAllowed: return "安卓拒绝当前网络来源，尚未校验验证码。请更新安卓 App，并确认两端处于同一 Wi-Fi／热点或允许互访的 Tailscale 网络。"
         case .responseTooLarge: return "三星返回的数据异常"
         case .connectionClosed: return "与三星的局域网连接已断开"
         case .registrationUnavailable: return "Relay／推送配置未就绪。请先在设置完成云端配置；若只需本地连接，请打开‘本地模式配对’。"

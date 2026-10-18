@@ -258,6 +258,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                         .put("agent_id", AndroidAgentIdentity.agentID(this))
                         .put("device_name", AndroidAgentIdentity.deviceName())
                         .put("agent_kind", RuntimeMode.isStandalone(this) ? "standalone" : "avf")
+                        .put("call_generation", calls.currentGeneration())
                         .put("phone_number", AndroidAgentIdentity.phoneNumber(this)).toString());
             } else if ("start_media".equals(action)) {
                 result = calls.executeOnce(request, true,
@@ -276,6 +277,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             } else {
                 result = calls.execute(request, true);
             }
+            BridgeLog.info("voble_control_result command=" + action + " generation=" + envelope.generation()
+                    + " success=" + result.success() + " code=" + result.code());
             sendControl(deviceId, envelope.sessionId(), envelope.callId(), envelope.generation(),
                     "response", new JSONObject().put("request_id", requestId)
                             .put("ok", result.success()).put("code", result.code())
@@ -347,6 +350,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         SessionContext target = session;
         if (target != null && channel.isReady(target.deviceId)) {
             try {
+                BridgeLog.info("voble_call_state state=" + state + " generation=" + generation);
                 sendControl(target.deviceId, target.sessionId, callId, generation,
                         "call_state", new JSONObject().put("direction", direction).put("state", state)
                                 .put("number", number == null ? "" : number));

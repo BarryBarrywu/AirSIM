@@ -1,5 +1,7 @@
 # AirSIM 全项目 Codex 部署辅助
 
+2026-10-18 应用发布准备：Apps `v0.9.8`，Android／iOS／Watch／Live Activity `0.9.8 (92)`，见 `docs/releases/0.9.8.md`。包含本地双通道／多设备归属及 Android 确认挂断回执；顶部本地开关是现有模式的派生入口。推荐 Android 10–13 安装 Standalone；多安卓及最新音频／云端挂断仍待最终真机复验。不部署 Relay、不新增 workflow，不发布新 Linux Agent 二进制；TestFlight 上传与处理／审核须分别核实。下文旧基线保留追溯。
+
 2026-10-16 应用发布更新：Apps `v0.9.7.2`，Android `0.9.7.2 (91)`，iOS `0.9.7 (91)`。见 `docs/releases/0.9.7.2.md`；推荐 Android 10–13 升级 Standalone。包含后续候选功能，但三星最低音量与更多后台／OEM 场景仍待真机验收；不更新 Linux Agent 二进制，不新增 workflow，不随应用发布部署 Relay。以下较早基线保留追溯。
 
 本文为 AI 编码代理提供 AirSIM 全仓库的事实来源、构建顺序、部署边界和安全约束。开始任务前先阅读根目录 `README.md`，再阅读所修改组件的 README 和实际源码。涉及 AVF 安装、配对或恢复时，还要阅读 `docs/AVF_INSTALL_GUIDE.md` 和 `LLM.txt`。源码与测试是协议事实来源；本文不能替代它们。

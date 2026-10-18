@@ -11,6 +11,11 @@ protocol VoBLECallControlling: AnyObject {
     func send(command: String, callID: String, generation: UInt64,
               number: String) async throws -> VoBLEControlResponse
     func mediaKey(callID: String, generation: UInt64) throws -> Data
+    func synchronizeCallGeneration() async throws -> UInt64
+}
+
+extension VoBLECallControlling {
+    func synchronizeCallGeneration() async throws -> UInt64 { 0 }
 }
 
 extension VoBLECentralController: VoBLECallControlling {}
@@ -43,9 +48,9 @@ struct VoBLECallLifecycleReducer: Sendable {
     private(set) var mediaRequested = false
     private var terminalKeys: Set<String> = []
 
-    mutating func beginOutgoing(callID: String, generation: UInt64, number: String) -> VoBLECallIdentity {
+    mutating func beginOutgoing(callID: String, generation: UInt64, number: String, uuid: UUID = UUID()) -> VoBLECallIdentity {
         let value = VoBLECallIdentity(
-            callID: callID, generation: generation, uuid: UUID(),
+            callID: callID, generation: generation, uuid: uuid,
             direction: "outgoing", number: number, isProvisional: true)
         current = value
         mediaRequested = false
@@ -116,26 +121,32 @@ final class VoBLECallCoordinator {
     var onEnded: ((VoBLECallIdentity) -> Void)?
     var onError: ((String) -> Void)?
     var audioSessionContext: () -> (managedByCallKit: Bool, active: Bool) = { (true, false) }
+    var mediaPermission: (VoBLECallIdentity) -> Bool = { _ in true }
+    var onOutgoingIntent: ((VoBLECallIdentity) -> Void)?
 
     private let central: any VoBLECallControlling
     private let media: VoBLEGATTMediaTransport
     private let audio: VoBLEAudioEngine
     private let defaults: UserDefaults
+    private let traceRecorder: AgentVerboseTraceRecorder
     private var reducer = VoBLECallLifecycleReducer()
     private var recoveryTask: Task<Void, Never>?
     private var recoveringIdentity: VoBLECallIdentity?
+    private var pendingOutgoing: (callID: String, token: UUID)?
     private let generationKey = "airsim.voble.call-generation"
 
     init(
         central: any VoBLECallControlling,
         media: VoBLEGATTMediaTransport,
         audio: VoBLEAudioEngine,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        traceRecorder: AgentVerboseTraceRecorder = .shared
     ) {
         self.central = central
         self.media = media
         self.audio = audio
         self.defaults = defaults
+        self.traceRecorder = traceRecorder
         central.onEvent = { [weak self] event in self?.receive(event) }
         central.onAudioDownlinkFragment = { [weak media] fragment in
             media?.receiveDownlinkFragment(fragment)
@@ -148,20 +159,51 @@ final class VoBLECallCoordinator {
     var currentIdentity: VoBLECallIdentity? { reducer.current }
     var isReady: Bool { central.state == .ready }
 
-    func startOutgoing(number: String) async throws -> VoBLECallIdentity {
-        let stored = UInt64(max(0, defaults.integer(forKey: generationKey)))
-        let generation = max(stored, reducer.current?.generation ?? 0) + 1
-        let provisionalID = UUID().uuidString.lowercased()
-        let identity = reducer.beginOutgoing(
-            callID: provisionalID, generation: generation, number: number)
+    func cancelPendingOutgoing(callID: String) -> Bool {
+        guard pendingOutgoing?.callID == callID else { return false }
+        pendingOutgoing = nil
+        return true
+    }
+
+    func startOutgoing(number: String, operationID: String? = nil, systemUUID: UUID? = nil) async throws -> VoBLECallIdentity {
+        guard pendingOutgoing == nil, reducer.current == nil else { throw VoBLECentralError.bluetooth("call_in_progress") }
+        let provisionalID = operationID ?? UUID().uuidString.lowercased()
+        let token = UUID()
+        pendingOutgoing = (provisionalID, token)
+        defer { if pendingOutgoing?.token == token { pendingOutgoing = nil } }
+        var identity: VoBLECallIdentity?
+        var phase = "generation_sync"
         do {
+            let floor = try await central.synchronizeCallGeneration()
+            guard !Task.isCancelled, pendingOutgoing?.token == token, reducer.current == nil else {
+                throw CancellationError()
+            }
+            let stored = UInt64(max(0, defaults.integer(forKey: generationKey)))
+            let previous = max(stored, floor)
+            guard previous < UInt64(Int.max) else { throw VoBLECentralError.invalidResponse }
+            let generation = previous + 1
+            defaults.set(Int(generation), forKey: generationKey)
+            await traceRecorder.recordEvent(source: "APP", category: "voble", phase: "generation_sync",
+                title: "蓝牙拨号序号已同步", fields: ["peer_floor": String(floor), "generation": String(generation)])
+            // Keep the cancellable reservation across every pre-dial await,
+            // including diagnostics; a completed hangup must never dial later.
+            guard !Task.isCancelled, pendingOutgoing?.token == token, reducer.current == nil else {
+                throw CancellationError()
+            }
+            pendingOutgoing = nil
+            let outgoing = reducer.beginOutgoing(callID: provisionalID, generation: generation,
+                number: number, uuid: systemUUID ?? UUID())
+            identity = outgoing
+            onOutgoingIntent?(outgoing)
+            phase = "dial_command"
             let response = try await central.send(
                 command: "dial", callID: provisionalID,
                 generation: generation, number: number)
             guard response.success else {
                 throw VoBLECentralError.bluetooth(response.detail.isEmpty ? response.code : response.detail)
             }
-            defaults.set(Int(generation), forKey: generationKey)
+            await traceRecorder.recordEvent(source: "APP", category: "voble", phase: "dial_reply",
+                title: "蓝牙拨号已接受", fields: ["generation": String(generation), "success": "true"])
             // Telecom events may arrive before the dial response. Never restore
             // the provisional ID or regress an already active call to connecting.
             guard let current = reducer.current, current.generation == generation else {
@@ -170,7 +212,16 @@ final class VoBLECallCoordinator {
             if current.isProvisional { onState?(current, .connecting) }
             return current
         } catch {
-            _ = reducer.resetIfMatching(identity)
+            let wasPending = pendingOutgoing?.token == token
+            let reset = identity.map { reducer.resetIfMatching($0) } ?? false
+            if (reset || wasPending), !(error is CancellationError) {
+                // Router rollback may already retire CallKit's UUID, making the
+                // later provider callback stale. Keep this exact failure visible.
+                onError?(error.localizedDescription)
+            }
+            if !(error is CancellationError) {
+                await traceRecorder.recordFailure(category: "voble", phase: phase, error: error)
+            }
             throw error
         }
     }
@@ -214,6 +265,7 @@ final class VoBLECallCoordinator {
     func setCallKitAudioActive(_ active: Bool) { audio.setCallKitAudioActive(active) }
 
     func disconnect() {
+        pendingOutgoing = nil
         guard let identity = reducer.current, recoveringIdentity == nil else { return }
         audio.setMediaReady(false)
         media.stop(identity: identity.mediaIdentity)
@@ -270,12 +322,18 @@ final class VoBLECallCoordinator {
     }
 
     private func startMedia(for identity: VoBLECallIdentity) async {
+        let permitted = mediaPermission(identity), matches = reducer.current == identity
+        Task { await AgentVerboseTraceRecorder.shared.recordEvent(source: "ios", category: "voble",
+            phase: "media_admission", title: "蓝牙媒体归属检查",
+            fields: ["permitted": String(permitted), "identity_current": String(matches),
+                     "generation": String(identity.generation)], isFailure: !permitted || !matches) }
+        guard permitted, matches else { return }
         do {
             let context = audioSessionContext()
             try await audio.prepareForCall(
                 managedByCallKit: context.managedByCallKit,
                 callKitAudioActive: context.active)
-            guard reducer.current == identity else {
+            guard reducer.current == identity, mediaPermission(identity) else {
                 if reducer.current == nil { audio.stop() }
                 return
             }
@@ -285,7 +343,7 @@ final class VoBLECallCoordinator {
                 command: "start_media", callID: identity.callID,
                 generation: identity.generation, number: "")
             guard response.success, response.detail == "media_ready",
-                  reducer.current == identity else {
+                  reducer.current == identity, mediaPermission(identity) else {
                 throw VoBLECentralError.bluetooth(
                     response.detail.isEmpty ? response.code : response.detail)
             }
@@ -293,7 +351,10 @@ final class VoBLECallCoordinator {
                             mediaKey: central.mediaKey(
                                 callID: identity.callID, generation: identity.generation))
             audio.setMediaReady(true)
-        } catch { onError?(error.localizedDescription) }
+        } catch {
+            await AgentVerboseTraceRecorder.shared.recordFailure(category: "voble", phase: "start_media", error: error)
+            onError?(error.localizedDescription)
+        }
     }
 
     private func requireSuccess(_ command: String, identity: VoBLECallIdentity) async throws {

@@ -1,6 +1,8 @@
 AIRSIM PROJECT CONTEXT
 ======================
 
+2026-10-18 release preparation: Apps v0.9.8, Android/iOS/Watch/Live Activity 0.9.8 (92). See docs/releases/0.9.8.md. Recommend Standalone for Android10–13. Includes local-dual/multi-device ownership, pairing/Verbose updates and Android confirmed hangup receipts. Top local-only control is derived from connection mode, not a second preference. Latest audio/hangup and simultaneous multi-Android physical acceptance remains pending. No Relay deployment, workflow addition or new Linux Agent binary; verify Apple upload, processing and review separately. Older baselines below are historical.
+
 Workspace candidate build85 handles return-to-Wi-Fi VoWLAN recovery; see docs/vowlan-network-return.md. Android observes Wi-Fi network/address revisions and republishes NSD with atomic registration epochs; iOS restarts discovery with finite authenticated probes. Only automatic idle routing prefers VoWLAN; fixed cloud and active-call transport stay unchanged. No added Relay polling timer. Not installed/published or lock-screen hardware verified; suspended iOS/OEM force-stop recovery cannot be guaranteed.
 
 Workspace candidate build 84 adds local-only iOS SMS deletion with hashed atomic tombstones and Android confirmed-call audio Watchdog with bounded retries and UTF-8 TXT export. See docs/sms-deletion-audio-watchdog.md. Not installed/published; OS mute flags are not acoustic verification. Legacy AVF cloud without confirmed media ownership is not auto-repaired.

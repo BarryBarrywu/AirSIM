@@ -190,7 +190,7 @@ final class LiveActivityController {
                         staleDate: nil
                     ),
                     pushType: LiveActivityCreationPolicy.pushType(
-                        localModeEnabled: LocalModePreference.isEnabled()
+                        localModeEnabled: !CloudModePreference.isEnabled()
                     )
                 )
                 if let activity {

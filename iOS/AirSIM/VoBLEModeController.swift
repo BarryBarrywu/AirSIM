@@ -30,10 +30,11 @@ final class VoBLEModeController {
     }
 
     @discardableResult
-    func activate(_ mode: AirSIMConnectionMode) -> VoBLEModeActions {
+    func activate(_ mode: AirSIMConnectionMode, preservingActiveBluetooth: Bool = false) -> VoBLEModeActions {
         selectedMode = mode
         let policy = ConnectionModeRuntimePolicy(mode: mode)
-        if policy.startsBluetooth { bluetooth.start() } else { bluetooth.stop() }
+        if policy.startsBluetooth { bluetooth.start() }
+        else if !preservingActiveBluetooth { bluetooth.stop() }
         return VoBLEModeActions(
             startVoWLAN: policy.startsVoWLAN,
             startCloud: policy.startsCloud

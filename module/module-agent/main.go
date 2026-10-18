@@ -634,6 +634,7 @@ func (a *agent) health(response http.ResponseWriter, request *http.Request) {
 		"at_consecutive_failures": atHealth.ConsecutiveFailures,
 		"at_reopen_count":         atHealth.ReopenCount,
 		"control_plane":           "local-agent-reachable",
+		"canonical_call_ids":      a.profile.AndroidTelecom,
 		"cellular_state":          cellularState,
 		"cellular_registration":   registrationText,
 		"cellular_recovery":       cellularRecovery,

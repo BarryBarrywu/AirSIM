@@ -808,7 +808,8 @@ struct MessagesView: View {
 
     var body: some View {
         NavigationStack(path: $conversationPath) {
-            List(selection: $selectedConversations) {
+            // Outside explicit deletion mode, row taps belong to navigation, not selection.
+            List(selection: editMode.isEditing ? $selectedConversations : nil) {
                 if conversations.isEmpty {
                     EmptyStateView(title: L10n.t("暂无短信"), systemImage: "message")
                         .listRowBackground(Color.clear)

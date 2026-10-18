@@ -125,7 +125,7 @@ final class StandaloneAgentGateway {
             case "/api/calls/answer" -> command("answer", localCallTarget("answer", input), "", "");
             case "/api/calls/reject" -> command("reject", localCallTarget("reject", input), "", "");
             case "/api/calls/hangup" -> command("end", localCallTarget("end", input), "", "");
-            case "/api/calls/dtmf" -> command("dtmf", CallRepository.idForAction("dtmf"), input.optString("digit", ""), "");
+            case "/api/calls/dtmf" -> command("dtmf", localCallTarget("dtmf", input), input.optString("digit", ""), "");
             case "/api/sms/send" -> command("send_sms", "", input.optString("phone", ""),
                     input.optString("message", ""));
             case "/api/calls/audio/host/warmup" -> ok("{\"warming\":true}");

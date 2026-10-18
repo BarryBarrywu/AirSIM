@@ -1,13 +1,26 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
-private enum AgentVerboseTraceFilter: String, CaseIterable, Identifiable {
+struct AgentVerboseTextDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        text = String(decoding: configuration.file.regularFileContents ?? Data(), as: UTF8.self)
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+
+enum AgentVerboseTraceFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case failures = "错误"
     case calls = "通话"
     case relay = "Relay"
-    case at = "AT"
-    case usb = "USB"
+    case vowlan = "VoWLAN"
+    case voble = "VoBLE"
 
     var id: String { rawValue }
 }
@@ -25,8 +38,8 @@ private struct AgentVerboseTimelineItem: Identifiable, Equatable {
     var systemImage: String {
         if isFailure { return "exclamationmark.triangle.fill" }
         switch category.lowercased() {
-        case "at": return "terminal.fill"
-        case "usb": return "cable.connector"
+        case "vowlan": return "wifi"
+        case "voble", "bluetooth": return "antenna.radiowaves.left.and.right"
         case "http": return "arrow.left.arrow.right"
         case "voice", "cloud-call", "cloud-call-control": return "waveform"
         case "relay": return "network"
@@ -37,8 +50,8 @@ private struct AgentVerboseTimelineItem: Identifiable, Equatable {
     var tint: Color {
         if isFailure { return .red }
         switch category.lowercased() {
-        case "at": return .green
-        case "usb": return .cyan
+        case "vowlan": return .green
+        case "voble", "bluetooth": return .cyan
         case "voice", "cloud-call", "cloud-call-control": return .purple
         case "relay": return .indigo
         case "http": return .blue
@@ -48,21 +61,28 @@ private struct AgentVerboseTimelineItem: Identifiable, Equatable {
 }
 
 @MainActor
-private final class AgentVerboseTraceViewModel: ObservableObject {
+final class AgentVerboseTraceViewModel: ObservableObject {
     @Published var enabled = false
     @Published var localEntries: [AgentVerboseTraceEntry] = []
     @Published var agentEvents: [ModuleDebugEvent] = []
-    @Published var agentState = "未连接"
+    @Published var agentState = "仅本机日志"
+    @Published private(set) var readingAgent = false
     @Published var errorMessage: String?
     @Published var exportText = "AirSIM Agent Verbose Trace\n"
 
-    private let api: AirSIMAPI
+    private let api: AirSIMAPI?
+    private let recorder: AgentVerboseTraceRecorder
     private var lastSequence: UInt64 = 0
+    private var clearGeneration = 0
 
-    init(api: AirSIMAPI) { self.api = api }
+    init(api: AirSIMAPI?, recorder: AgentVerboseTraceRecorder = .shared) {
+        self.api = api; self.recorder = recorder
+    }
+
+    var canReadAgent: Bool { api != nil && !readingAgent }
 
     func run() async {
-        enabled = await AgentVerboseTraceRecorder.shared.isEnabled()
+        enabled = await recorder.isEnabled()
         await refresh()
         while !Task.isCancelled {
             do { try await Task.sleep(for: .seconds(enabled ? 1 : 2)) }
@@ -75,46 +95,51 @@ private final class AgentVerboseTraceViewModel: ObservableObject {
     func setEnabled(_ value: Bool) {
         enabled = value
         Task {
-            await AgentVerboseTraceRecorder.shared.setEnabled(value)
+            await recorder.setEnabled(value)
             await refresh()
         }
     }
 
     func refresh() async {
-        localEntries = await AgentVerboseTraceRecorder.shared.snapshot()
-        if enabled {
-            do {
-                let snapshot = try await api.moduleDebug(after: lastSequence, limit: 600)
-                merge(snapshot.events)
-                lastSequence = max(lastSequence, snapshot.debug.latestSequence)
-                agentState = "Agent \(snapshot.agent.version) · seq \(snapshot.debug.latestSequence)"
-                errorMessage = nil
-            } catch is CancellationError {
-                return
-            } catch {
-                agentState = "Agent 不可达"
-                errorMessage = error.localizedDescription
-            }
-        }
+        localEntries = await recorder.snapshot()
         await rebuildExport()
     }
 
-    func clear() async {
-        await AgentVerboseTraceRecorder.shared.clear()
-        localEntries = []
-        agentEvents = []
-        lastSequence = 0
+    // Remote reads are opt-in, not a one-second HTTP/Relay polling loop.
+    func readAgent() async {
+        guard let api, !readingAgent else { return }
+        readingAgent = true
+        defer { readingAgent = false }
+        let generation = clearGeneration
         do {
-            try await api.clearModuleDebug()
-            agentState = "Agent 日志已清除"
+            let snapshot = try await api.moduleDebug(after: lastSequence, limit: 600)
+            guard generation == clearGeneration else { return }
+            merge(snapshot.events)
+            lastSequence = max(lastSequence, snapshot.debug.latestSequence)
+            agentState = "Agent \(snapshot.agent.version) · seq \(snapshot.debug.latestSequence)"
             errorMessage = nil
+        } catch is CancellationError {
+            return
         } catch {
-            errorMessage = "本机日志已清除；Agent 日志清除失败：\(error.localizedDescription)"
+            guard generation == clearGeneration else { return }
+            agentState = "Agent 不可达"
+            errorMessage = error.localizedDescription
         }
         await refresh()
     }
 
-    var timeline: [AgentVerboseTimelineItem] {
+    func clear() async {
+        clearGeneration &+= 1
+        await recorder.clear()
+        localEntries = []
+        agentEvents = []
+        lastSequence = 0
+        agentState = "本机日志已清除（不修改安卓日志）"
+        errorMessage = nil
+        await refresh()
+    }
+
+    fileprivate var timeline: [AgentVerboseTimelineItem] {
         let local = localEntries.map { entry in
             let fields = (entry.fields ?? [:])
                 .filter { $0.key != "trace_id" }
@@ -128,7 +153,7 @@ private final class AgentVerboseTraceViewModel: ObservableObject {
                 id: "app-\(entry.id.uuidString)",
                 timestamp: entry.timestamp,
                 source: entry.source ?? "APP",
-                category: entry.category ?? (entry.stage == .route ? "usb" : "http"),
+                category: entry.category ?? "http",
                 traceID: entry.traceID == "--------" ? nil : entry.traceID,
                 title: "\(entry.method) \(entry.path)",
                 detail: entry.elapsedMilliseconds.map { "\(detail) · \($0) ms" } ?? detail,
@@ -184,7 +209,7 @@ private final class AgentVerboseTraceViewModel: ObservableObject {
                 fields: $0.fields ?? [:]
             )
         }
-        exportText = await AgentVerboseTraceRecorder.shared.exportText(agentEvents: remote)
+        exportText = await recorder.exportText(agentEvents: remote)
     }
 
     private static func parse(_ value: String) -> Date {
@@ -210,8 +235,10 @@ struct AgentVerboseTraceView: View {
     @State private var filter: AgentVerboseTraceFilter = .all
     @State private var selectedItem: AgentVerboseTimelineItem?
     @State private var showingClearConfirmation = false
+    @State private var showingExport = false
+    @State private var exportDocument = AgentVerboseTextDocument(text: "")
 
-    init(api: AirSIMAPI) {
+    init(api: AirSIMAPI? = nil) {
         _model = StateObject(wrappedValue: AgentVerboseTraceViewModel(api: api))
     }
 
@@ -221,8 +248,8 @@ struct AgentVerboseTraceView: View {
                     Toggle(isOn: Binding(get: { model.enabled }, set: model.setEnabled)) {
                         Label {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Verbose 链路模式")
-                                Text(model.enabled ? "正在采集 App、USB、HTTP、AT 与 Agent 事件" : "关闭时不记录新的 App 请求")
+                                Text("Verbose 模式")
+                                Text(model.enabled ? "记录通话、VoWLAN、VoBLE 与云端链路事件" : "关闭详细采集，保留基础音频启动记录")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -235,10 +262,19 @@ struct AgentVerboseTraceView: View {
                     LabeledContent("Agent 通道", value: model.agentState)
                     LabeledContent("本机链路", value: "\(model.localEntries.count) 条")
                     LabeledContent("Agent 事件", value: "\(model.agentEvents.count) 条")
+                    Button {
+                        Task { await model.readAgent() }
+                    } label: {
+                        HStack {
+                            Label("手动读取安卓日志", systemImage: "arrow.down.doc")
+                            if model.readingAgent { ProgressView() }
+                        }
+                    }
+                    .disabled(!model.canReadAgent)
                 } header: {
                     Text("链式调试")
                 } footer: {
-                    Text("日志可能包含电话号码、短信正文、AT 响应和设备标识。排查结束后请关闭 Verbose，并在分享前检查内容。")
+                    Text("本机日志支持蓝牙及离线记录，不自动请求 Relay 或安卓。手动读取需有已验证的 VoWLAN 连接。日志可能包含电话号码、短信正文和设备标识；排查结束后请关闭 Verbose，分享前检查内容。")
                 }
 
                 Section {
@@ -247,7 +283,7 @@ struct AgentVerboseTraceView: View {
                             Text(item.rawValue).tag(item)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                 }
 
                 if let error = model.errorMessage {
@@ -290,13 +326,20 @@ struct AgentVerboseTraceView: View {
                     }
                 }
         }
-        .navigationTitle("Agent Verbose")
+        .navigationTitle("Verbose 日志调试")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                ShareLink(item: model.exportText) {
+                Button {
+                    Task {
+                        await model.refresh()
+                        exportDocument = AgentVerboseTextDocument(text: model.exportText)
+                        showingExport = true
+                    }
+                } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
+                .accessibilityLabel("导出 TXT 调试日志")
                 Button(role: .destructive) { showingClearConfirmation = true } label: {
                     Image(systemName: "trash")
                 }
@@ -304,11 +347,15 @@ struct AgentVerboseTraceView: View {
         }
         .task { await model.run() }
         .refreshable { await model.refresh() }
+        .fileExporter(isPresented: $showingExport, document: exportDocument,
+            contentType: .plainText, defaultFilename: "AirSIM-Verbose-\(Int(Date().timeIntervalSince1970)).txt") { result in
+                if case let .failure(error) = result { model.errorMessage = error.localizedDescription }
+            }
         .sheet(item: $selectedItem) { item in
             AgentVerboseTraceDetailView(item: item)
         }
-        .confirmationDialog("清除 App 与 Agent 调试日志？", isPresented: $showingClearConfirmation) {
-            Button("全部清除", role: .destructive) { Task { await model.clear() } }
+        .confirmationDialog("清除本机调试日志？不会删除安卓日志、短信或通话记录。", isPresented: $showingClearConfirmation) {
+            Button("清除本机日志", role: .destructive) { Task { await model.clear() } }
             Button("取消", role: .cancel) {}
         }
     }
@@ -319,10 +366,11 @@ struct AgentVerboseTraceView: View {
             case .all: return true
             case .failures: return item.isFailure
             case .calls:
-                return ["voice", "cloud-call", "cloud-call-control"].contains(item.category.lowercased())
+                return ["voice", "cloud-call", "cloud-call-control", "voble", "call-audio",
+                        "callkit-audio", "call_transport"].contains(item.category.lowercased())
             case .relay: return item.source == "RELAY" || item.category.lowercased() == "relay"
-            case .at: return item.category.lowercased() == "at"
-            case .usb: return item.category.lowercased() == "usb"
+            case .vowlan: return ["vowlan", "call-audio"].contains(item.category.lowercased())
+            case .voble: return ["voble", "bluetooth"].contains(item.category.lowercased())
             }
         }
     }

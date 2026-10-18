@@ -1,5 +1,8 @@
 package com.airsim.phonecontrol;
 
+import java.net.InetAddress;
+import java.net.Inet6Address;
+
 public final class VoWLANNetworkPolicy {
     private VoWLANNetworkPolicy() {}
 
@@ -24,6 +27,19 @@ public final class VoWLANNetworkPolicy {
         int[] fields = ipv4(local);
         if (fields == null || !permitsPeer(remote, local)) return false;
         return fields[0] == 127 || isVoWLANInterface(interfaceName, local) || isOverlayInterface(interfaceName, local);
+    }
+
+    public static boolean permitsPairingPeer(InetAddress remote, InetAddress local, String interfaceName) {
+        // Bonjour can connect over IPv6 link-local on a dual-stack Wi-Fi network.
+        // This exception is only for the short-lived encrypted pairing listener;
+        // it does not open IPv6 control/PCM gateways or overlay/cellular ingress.
+        if (remote instanceof Inet6Address && local instanceof Inet6Address) {
+            return remote.isLinkLocalAddress() && local.isLinkLocalAddress() && interfaceName != null
+                    && (interfaceName.startsWith("wlan") || interfaceName.startsWith("swlan")
+                        || interfaceName.startsWith("ap"));
+        }
+        return remote != null && local != null
+                && permitsPairingPeer(remote.getHostAddress(), local.getHostAddress(), interfaceName);
     }
 
     public static boolean isOverlayIPv4(String host) {

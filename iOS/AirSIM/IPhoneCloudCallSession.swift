@@ -514,12 +514,14 @@ struct CloudCallControlReceipt: Decodable, Equatable, Sendable {
     struct Result: Decodable, Equatable, Sendable {
         let ended: Bool?
         let modemConfirmed: Bool?
+        let androidConfirmed: Bool?
         let clccAttempts: Int?
         let lastCLCC: String?
 
         enum CodingKeys: String, CodingKey {
             case ended
             case modemConfirmed = "modem_confirmed"
+            case androidConfirmed = "android_confirmed"
             case clccAttempts = "clcc_attempts"
             case lastCLCC = "last_clcc"
         }
@@ -544,12 +546,14 @@ struct CloudCallControlReceipt: Decodable, Equatable, Sendable {
         status == "completed" || status == "failed" || status == "expired"
     }
 
-    var modemConfirmed: Bool {
-        status == "completed" && result?.modemConfirmed == true
+    var terminationConfirmed: Bool {
+        status == "completed" && result?.ended == true
+            && (result?.modemConfirmed == true || result?.androidConfirmed == true)
     }
 
     var confirmationPhase: String {
-        rescueCommandID == nil ? "modem_confirmed" : "rescue_modem_confirmed"
+        let backend = result?.modemConfirmed == true ? "modem_confirmed" : "android_confirmed"
+        return rescueCommandID == nil ? backend : "rescue_\(backend)"
     }
 }
 
@@ -923,7 +927,7 @@ final class IPhoneCloudCallSession {
                     envelope: envelope,
                     credentials: credentials
                 )
-                guard final.modemConfirmed else {
+                guard final.terminationConfirmed else {
                     throw CloudCallControlClientError.rejected(
                         final.error ?? "Agent 未确认蜂窝通话已经结束"
                     )
@@ -932,7 +936,9 @@ final class IPhoneCloudCallSession {
                     envelope,
                     phase: final.confirmationPhase,
                     detail: [
-                        "CLCC 检查 \(final.result?.clccAttempts ?? 0) 次",
+                        final.result?.modemConfirmed == true
+                            ? "CLCC 检查 \(final.result?.clccAttempts ?? 0) 次"
+                            : "Android Telecom 已确认通话结束",
                         final.rescueCommandID.map { "救援命令 \($0)" },
                     ].compactMap { $0 }.joined(separator: " · ")
                 )

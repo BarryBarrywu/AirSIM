@@ -49,6 +49,10 @@ public final class VoBLECallController {
         boolean nextDial = "dial".equals(request.action)
                 && currentCallId.isEmpty()
                 && request.generation > currentGeneration;
+        // Cached request IDs are handled above. A fresh request must never
+        // place another carrier call using an active or already-ended epoch.
+        if ("dial".equals(request.action) && !nextDial) return remember(
+                request.requestId, Result.failure("stale_generation"));
         if (request.generation != currentGeneration && !nextDial) return remember(
                 request.requestId, Result.failure("stale_generation"));
         if (!"dial".equals(request.action) && !currentCallId.equals(request.callId)) {

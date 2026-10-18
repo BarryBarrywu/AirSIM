@@ -17,7 +17,10 @@ final class VoBLEAudioEngine: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private let transport: VoBLEGATTMediaTransport
+    private let enableVoiceProcessing: (AVAudioEngine) throws -> Void
+    private let installInputTap: (AVAudioInputNode, AVAudioFormat?, @escaping AVAudioNodeTapBlock) throws -> Void
     private var gate = VoBLEAudioStartGate()
+    var callKitAudioActive: Bool { gate.callKitAudioActive }
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var encoder: VoicePCMEncoder?
@@ -56,7 +59,16 @@ final class VoBLEAudioEngine: ObservableObject {
         updateRunningState()
     }
 
-    init(transport: VoBLEGATTMediaTransport) { self.transport = transport }
+    init(transport: VoBLEGATTMediaTransport,
+         enableVoiceProcessing: @escaping (AVAudioEngine) throws -> Void = {
+             try $0.inputNode.setVoiceProcessingEnabled(true)
+         }, installInputTap: @escaping (AVAudioInputNode, AVAudioFormat?, @escaping AVAudioNodeTapBlock) throws -> Void = {
+             try CallAudioGraph.installCapture($0, format: $1, block: $2)
+         }) {
+        self.transport = transport
+        self.enableVoiceProcessing = enableVoiceProcessing
+        self.installInputTap = installInputTap
+    }
 
     func setMediaReady(_ ready: Bool) {
         gate.mediaReady = ready
@@ -95,27 +107,34 @@ final class VoBLEAudioEngine: ObservableObject {
     }
 
     private func startEngine() {
+        var phase = "enable_voice_processing"
         do {
             let engine = AVAudioEngine()
             let player = AVAudioPlayerNode()
             let encoder = VoicePCMEncoder()
             encoder.setMuted(muted)
             engine.attach(player)
+            // VoiceProcessingIO replaces the I/O nodes. Configure it before
+            // connecting the fixed-rate player graph (otherwise AVFAudio can
+            // raise an Objective-C exception, which Swift catch cannot handle).
+            try enableVoiceProcessing(engine)
             guard let format = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: 8_000,
                 channels: 1, interleaved: false) else {
                 throw VoiceAudioError.invalidPlaybackFormat
             }
-            engine.connect(player, to: engine.mainMixerNode, format: format)
+            phase = "connect_playback"
+            try CallAudioGraph.connectPlayback(player, engine: engine, format: format)
             let input = engine.inputNode
-            try input.setVoiceProcessingEnabled(true)
             let inputFormat = input.outputFormat(forBus: 0)
             guard inputFormat.channelCount > 0 else { throw VoiceAudioError.microphoneUnavailable }
-            input.installTap(onBus: 0, bufferSize: 960, format: inputFormat) {
+            phase = "install_capture_tap"
+            try installInputTap(input, nil) {
                 [weak self, weak encoder] buffer, _ in
                 guard let encoded = encoder?.encode(buffer), !encoded.isEmpty else { return }
                 Task { @MainActor [weak self] in self?.acceptCaptured(encoded) }
             }
+            phase = "start_engine"
             engine.prepare()
             try engine.start()
             player.play()
@@ -123,12 +142,16 @@ final class VoBLEAudioEngine: ObservableObject {
             playbackGeneration = UUID()
             playbackQueue.reset()
             running = true; errorMessage = nil
+            Task { await AgentVerboseTraceRecorder.shared.recordEvent(source: "ios", category: "voble",
+                phase: "engine_ready", title: "蓝牙语音引擎已启动",
+                fields: ["input_rate": String(inputFormat.sampleRate)]) }
 #if DEBUG
             capturedFrames = 0
             playedFrames = 0
             print("[AirSIM VoBLE Audio] started inputRate=\(inputFormat.sampleRate) route=\(AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue))")
 #endif
             playbackTask = Task { @MainActor [weak self] in
+                var diagnosticTicks = 0
 #if DEBUG
                 var ticks = 0
 #endif
@@ -137,6 +160,25 @@ final class VoBLEAudioEngine: ObservableObject {
                     // replenishment follows the audio clock via completion,
                     // not a drifting 20 ms MainActor timer.
                     self?.fillPlaybackQueue()
+                    diagnosticTicks += 1
+                    if diagnosticTicks % 200 == 0, let self {
+                        let fields = ["engine_running": String(self.engine?.isRunning == true),
+                            "player_playing": String(self.player?.isPlaying == true),
+                            "capture_buffers": String(self.encoder?.capturedBuffers ?? 0),
+                            "input_format": self.engine?.inputNode.outputFormat(forBus: 0).description ?? "none",
+                            "output_format": self.engine?.outputNode.inputFormat(forBus: 0).description ?? "none",
+                            "system_output_volume": String(AVAudioSession.sharedInstance().outputVolume),
+                            "player_volume": String(self.player?.volume ?? 0),
+                            "player_render_sample": String(self.player?.lastRenderTime?.sampleTime ?? -1),
+                            "queued_frames": String(self.transport.queuedFrameCount),
+                            "dropped_frames": String(self.transport.droppedFrameCount),
+                            "jitter_frames": String(self.transport.jitterTargetFrames),
+                            "media": self.transport.diagnosticSummary,
+                            "input_route": AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue).joined(separator: ","),
+                            "output_route": AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")]
+                        await AgentVerboseTraceRecorder.shared.recordEvent(source: "APP", category: "voble",
+                            phase: "media_statistics", title: "VoBLE 实际音频状态", fields: fields)
+                    }
 #if DEBUG
                     ticks += 1
                     if ticks % 100 == 0, let self {
@@ -147,8 +189,14 @@ final class VoBLEAudioEngine: ObservableObject {
                 }
             }
         } catch {
+            let failedPhase = phase
+            Task { await AgentVerboseTraceRecorder.shared.recordFailure(category: "voble", phase: failedPhase, error: error) }
             stopEngine()
             errorMessage = "无法启动蓝牙通话音频：\(error.localizedDescription)"
+            Task { await AgentVerboseTraceRecorder.shared.recordEvent(source: "ios", category: "voble",
+                phase: "engine_failed", title: "蓝牙语音引擎启动失败",
+                fields: ["error_domain": (error as NSError).domain,
+                         "error_code": String((error as NSError).code)], isFailure: true) }
 #if DEBUG
             print("[AirSIM VoBLE Audio] start_failed \(error.localizedDescription)")
 #endif

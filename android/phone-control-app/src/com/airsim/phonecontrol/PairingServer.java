@@ -88,9 +88,13 @@ public final class PairingServer implements Closeable {
         peer.setSoTimeout(8_000);
         InetAddress remote = peer.getInetAddress();
         NetworkInterface localNetwork = NetworkInterface.getByInetAddress(peer.getLocalAddress());
-        if (!VoWLANNetworkPolicy.permitsPairingPeer(remote.getHostAddress(), peer.getLocalAddress().getHostAddress(),
+        if (!VoWLANNetworkPolicy.permitsPairingPeer(remote, peer.getLocalAddress(),
                 localNetwork == null ? null : localNetwork.getName())) {
-            BridgeLog.info("pairing_claim_rejected reason=non_private_peer");
+            BridgeLog.info("pairing_claim_rejected reason=non_private_peer"
+                    + " remote_family=" + (remote instanceof java.net.Inet6Address ? "ipv6" : "ipv4")
+                    + " remote_link_local=" + remote.isLinkLocalAddress()
+                    + " local_link_local=" + peer.getLocalAddress().isLinkLocalAddress()
+                    + " interface=" + (localNetwork == null ? "unknown" : localNetwork.getName()));
             respond(peer, 403, "{\"error\":\"private_network_required\"}");
             return false;
         }

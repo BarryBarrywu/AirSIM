@@ -1,5 +1,13 @@
 # AirSIM 三星 Android 控制 App
 
+本轮应用版本：[0.9.8（92）](../../docs/releases/0.9.8.md)，优先使用 Standalone，推荐 Android 10–13 用户升级。共享源码包含下述双通道协议与配对修复；Linux Agent 仍未发布新二进制，旧 AVF 需具备 `canonical_call_ids` 才能使用新的归属 VoWLAN 拨号。后文较早“未发布”说明为开发追溯，不代表本轮全场景真机验收。
+
+未发布双通道开发：`/v1/health` 增加 `identity_proof`，使用本次已认证请求的 nonce 与 `agent_id` 生成 HMAC；新多设备目录必须验证该证明才合并 VoWLAN／VoBLE 身份。旧 iOS 可忽略新增字段；旧 Android 不具备新多设备身份验证能力，需要升级 APK。原请求签名、时间戳与防重放检查保留，不涉及 Relay 修改。本轮功能仍在开发，尚未安装或发布。
+
+双通道通话归并还需 `canonical_call_ids` 能力：Standalone 直接支持；AVF Bridge 仅在 Linux Agent 宣告能力时启用。新版 Linux 状态保留原 `id`，另外导出 Telecom `android_id`。iOS 归属拨号携带 `operation_id`，网关返回绑定请求 nonce、操作 ID、Telecom ID 和后端 ID 的 HMAC 回执；不同传输不按号码或设备名猜测。旧客户端不传该字段时保持原协议；旧 AVF 不宣告能力时，新归属拨号在发送实际命令前拒绝，需要同时升级 APK 与 Linux Agent。本轮不会自动部署。
+
+未发布配对回归修复：一次性配对恢复 Wi-Fi／热点上的双端链路本地 IPv6 连接，避免 Bonjour 选中 IPv6 后被手动地址的 IPv4 来源检查误拒。来源仍须属于系统确认的 Wi-Fi／热点接口，六位码加密和限时校验不变；控制与 PCM 网关的 IPv4 策略不变。详见[配对安全边界](../../docs/manual-ip-pairing.md#协议与安全)，尚未完成本轮双端真机成功配对验收。
+
 工作区候选构建为 `0.9.7.1 (86)`，尚未发布。Standalone 与 AVF Bridge 共享「设置 → 关于」：从实际安装 APK 读取版本号与 versionCode，可打开 GitHub 仓库和版本发布页；不依赖 Agent、Relay 或网络查询版本。
 
 build 86 的本机通话静音只由已确认远程通话和就绪媒体触发，不再仅因默认 `remote_silent` 设置静音所有原生通话。链路失效或挂断恢复先前状态，蓝牙 PCM 中断主动释放所属会话，静音与恢复结果均记录到 VERBOSE TXT。[行为及验收边界](../../docs/remote-call-local-output-mute.md)。

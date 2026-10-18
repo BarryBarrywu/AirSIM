@@ -18,11 +18,15 @@ assert_not_contains() {
   fi
 }
 
+assert_contains "$ROOT/../android/phone-control-app/src/com/airsim/phonecontrol/StandaloneAgentGateway.java" \
+  'case "/api/calls/dtmf" -> command("dtmf", localCallTarget("dtmf", input)' \
+  'standalone DTMF must preserve the explicitly requested published call identity'
+
 assert_contains "$MANIFEST" 'package="com.airsim.phonecontrol.standalone"' \
   'standalone package id is missing'
-assert_contains "$MANIFEST" 'android:versionCode="91"' \
+assert_contains "$MANIFEST" 'android:versionCode="92"' \
   'standalone version code does not match the current candidate build'
-assert_contains "$MANIFEST" 'android:versionName="0.9.7.2"' \
+assert_contains "$MANIFEST" 'android:versionName="0.9.8"' \
   'standalone version name does not match the Apps release'
 assert_contains "$MANIFEST" 'com.airsim.phonecontrol.STANDALONE_AGENT' \
   'standalone runtime flag is missing'
@@ -44,6 +48,7 @@ assert_not_contains "$MANIFEST" 'AgentWatchdogService' \
 
 "$ROOT/build.sh" >/dev/null
 sh "$ROOT/../android/phone-control-app/test-gateway-lifecycle.sh"
+sh "$ROOT/../android/phone-control-app/test-owned-dial.sh"
 APK="$ROOT/build/android/AirSIM-Android-Standalone-debug.apk"
 APKANALYZER=${APKANALYZER:-$(command -v apkanalyzer || true)}
 if [ -z "$APKANALYZER" ]; then

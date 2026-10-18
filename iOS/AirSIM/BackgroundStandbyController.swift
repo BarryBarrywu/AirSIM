@@ -14,6 +14,20 @@ extension Notification.Name {
     static let airsimRemoteSMSReceived = Notification.Name("AirSIMRemoteSMSReceived")
     static let airsimOpenSMSConversation = Notification.Name("AirSIMOpenSMSConversation")
     static let airsimOpenIncomingCall = Notification.Name("AirSIMOpenIncomingCall")
+    static let airsimOpenOtherAndroidCall = Notification.Name("AirSIMOpenOtherAndroidCall")
+}
+
+enum OtherAndroidCallPresentationRequest {
+    private static let key = "airsim.pending-other-android-call"
+    static func mark(_ info: [AnyHashable: Any], defaults: UserDefaults = .standard) {
+        guard let identity = OtherDeviceCallReminder.key(from: info) else { return }
+        defaults.set(["event": "other_android_incoming", "agent_id": identity.agentID,
+            "call_id": identity.callID, "generation": String(identity.generation)], forKey: key)
+    }
+    static func consume(defaults: UserDefaults = .standard) -> [AnyHashable: Any]? {
+        defer { defaults.removeObject(forKey: key) }
+        return defaults.dictionary(forKey: key)
+    }
 }
 
 /// 锁屏来电通知使用的稳定标识；动作不要求设备解锁，也不会强制打开 App 界面。
@@ -193,6 +207,9 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        if notification.request.content.userInfo["event"] as? String == "other_android_incoming" {
+            completionHandler([.banner, .list]); return
+        }
         guard notification.request.content.userInfo["event"] as? String == "incoming_sms" else {
             completionHandler([])
             return
@@ -206,6 +223,12 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let actionIdentifier = response.actionIdentifier
+        if response.notification.request.content.userInfo["event"] as? String == "other_android_incoming" {
+            let info = response.notification.request.content.userInfo
+            OtherAndroidCallPresentationRequest.mark(info)
+            NotificationCenter.default.post(name: .airsimOpenOtherAndroidCall, object: nil, userInfo: info)
+            completionHandler(); return
+        }
         if response.notification.request.content.userInfo["event"] as? String == "incoming_sms" {
             let userInfo = response.notification.request.content.userInfo
             if let pushed = try? IncomingRemoteSMS(userInfo: userInfo), persistRemoteSMS(pushed) {
@@ -245,6 +268,11 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
                 completionHandler()
             }
             do {
+                if callID.hasPrefix("local:") {
+                    guard let model = CallKitController.shared.handler as? AppModel else { throw DeviceCallRoutingError.stale }
+                    _ = try await model.performOwnedIncomingNotificationAction(actionIdentifier, callID: callID)
+                    return
+                }
                 guard let api = await coldLaunchCallHandler.availableSamsungAPI() else {
                     throw CallKitBridgeError.noReachableTransport
                 }
@@ -391,8 +419,9 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
 /// 个人侧载模式下维持静音播放，让 iOS 在熄屏后继续执行模块来电轮询。
 @MainActor
 final class BackgroundStandbyController {
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private var engine: AVAudioEngine?
+    private var player: AVAudioPlayerNode?
+    var audioGraphPrepared: Bool { engine != nil }
     private let silentBuffer: AVAudioPCMBuffer
     private var enabled = false
     private var appIsBackground = false
@@ -409,8 +438,6 @@ final class BackgroundStandbyController {
             samples.initialize(repeating: 0, count: Int(buffer.frameLength))
         }
         silentBuffer = buffer
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
 
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -477,6 +504,13 @@ final class BackgroundStandbyController {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
+            if engine == nil {
+                let graph = AVAudioEngine(), node = AVAudioPlayerNode()
+                graph.attach(node)
+                graph.connect(node, to: graph.mainMixerNode, format: silentBuffer.format)
+                engine = graph; player = node
+            }
+            guard let engine, let player else { return }
             if !engine.isRunning { try engine.start() }
             if !player.isPlaying {
                 player.scheduleBuffer(silentBuffer, at: nil, options: .loops)
@@ -510,8 +544,8 @@ final class BackgroundStandbyController {
     private func stop(deactivateSession: Bool) {
         retryTask?.cancel()
         retryTask = nil
-        player.stop()
-        engine.stop()
+        player?.stop()
+        engine?.stop()
         if deactivateSession {
             try? AVAudioSession.sharedInstance().setActive(
                 false,
@@ -545,6 +579,7 @@ final class BackgroundStandbyController {
 /// App 在后台检测到模块来电后发送本地通知；不依赖 APNs 或远程服务器。
 @MainActor
 final class IncomingCallNotifier {
+    private(set) var currentCallID: String?
     private var notifiedCallIDs: [String] = []
 
     func requestAuthorization() {
@@ -568,6 +603,13 @@ final class IncomingCallNotifier {
     }
 
     func update(call: CallRecord?, callerName: String?, appIsActive: Bool) {
+        let nextID = call.flatMap { ["incoming", "waiting"].contains($0.state) ? $0.id : nil }
+        if let old = currentCallID, old != nextID {
+            let center = UNUserNotificationCenter.current()
+            center.removeDeliveredNotifications(withIdentifiers: ["airsim.incoming.\(old)"])
+            center.removePendingNotificationRequests(withIdentifiers: ["airsim.incoming.\(old)"])
+        }
+        currentCallID = nextID
         guard !appIsActive,
               let call,
               call.direction == "incoming",

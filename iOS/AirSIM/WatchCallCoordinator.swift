@@ -18,6 +18,11 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         let callID: String
         let uuid: UUID
         let api: AirSIMAPI
+        let backendID: String
+        init(requestID: UUID?, callID: String, uuid: UUID, api: AirSIMAPI, backendID: String? = nil) {
+            self.requestID = requestID; self.callID = callID; self.uuid = uuid; self.api = api
+            self.backendID = backendID ?? callID
+        }
     }
     private var localWatchCall: LocalWatchCall?
     private var localEndInFlight: String?
@@ -68,7 +73,8 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         let identityCall = call ?? previous
         let payload = WatchCallPayload(
             callID: identityCall?.id ?? "",
-            callUUID: CallKitController.shared.watchCallUUID(for: identityCall?.id),
+            callUUID: CallKitController.shared.watchCallUUID(for: identityCall?.id)
+                ?? model?.ownedCallUUID(for: identityCall?.id),
             phase: phase,
             number: identityCall?.number,
             callerName: callerName,
@@ -98,6 +104,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
     @MainActor
     private func publish(_ payload: WatchCallPayload) {
         if payload.phase == .ended, localWatchCall?.callID == payload.callID {
+            if let reservation = localWatchCall?.requestID { model?.deviceCallContext.releaseAdmission(reservation) }
             localWatchCall = nil
         }
         if let lastPayload,
@@ -198,7 +205,8 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             }
             let callID = message["call_id"] as? String
             let uuid = (message["call_uuid"] as? String).flatMap(UUID.init(uuidString:))
-            guard CallKitController.shared.matchesCurrentCall(callID: callID, uuid: uuid) else {
+            guard CallKitController.shared.matchesCurrentCall(callID: callID, uuid: uuid,
+                agentID: message["agent_id"] as? String) else {
                 replyHandler(["ok": false, "error": "stale_call"])
                 return
             }
@@ -229,18 +237,44 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             return
         }
         guard pendingWatchDialID == nil, watchOutgoingCall == nil, localWatchCall == nil,
-              CallKitController.shared.currentSystemCallUUID == nil else {
+              CallKitController.shared.currentSystemCallUUID == nil,
+              let model, !model.callLifecycleSnapshot.state.representsCall,
+              model.deviceCallContext.reserveAdmission(requestID) else {
             replyHandler(["ok": false, "error": "已有通话或拨号任务正在进行"])
             return
         }
         if cancelledWatchDialIDs.remove(requestID) != nil {
+            model.deviceCallContext.releaseAdmission(requestID)
             replyHandler(["ok": false, "error": "已取消拨号"])
             return
         }
         pendingWatchDialID = requestID
-        defer { pendingWatchDialID = nil; cancelledWatchDialIDs.remove(requestID) }
+        defer {
+            pendingWatchDialID = nil; cancelledWatchDialIDs.remove(requestID)
+            // Legacy Watch/cloud media keep the admission reservation for
+            // their whole call; owned local calls now hold the registry lease.
+            if model.deviceCalls.active != nil || (localWatchCall?.requestID != requestID && watchOutgoingCall?.requestID != requestID) {
+                model.deviceCallContext.releaseAdmission(requestID)
+            }
+        }
         do {
-            if let model, let (api, pcmRoute) = await model.readyVoWLANRoute(),
+            if let owned = try await model.beginOwnedWatchDial(number: number, requestID: requestID, bound: boundAtStart),
+               case let .vowlan(endpoint, credential) = owned.api.route {
+                if cancelledWatchDialIDs.contains(requestID) {
+                    try? await model.callKitEnd(uuid: owned.route.systemUUID)
+                    replyHandler(["ok": false, "error": "已取消拨号"]); return
+                }
+                localWatchCall = LocalWatchCall(requestID: requestID, callID: owned.presentationID,
+                    uuid: owned.route.systemUUID, api: owned.api, backendID: owned.backendID)
+                monitorLocalAudio(callID: owned.presentationID, backendID: owned.backendID, api: owned.api)
+                replyHandler(["ok": true, "request_id": requestID.uuidString,
+                    "call_id": owned.presentationID, "call_uuid": owned.route.systemUUID.uuidString,
+                    "agent_id": owned.route.key.agentID, "number": number, "media_route": "vowlan",
+                    "pcm_host": endpoint.host, "pcm_port": Int(endpoint.pcmPort), "pcm_secret": credential.encodedSecret,
+                    "expires_at": Date().addingTimeInterval(300).timeIntervalSince1970])
+                return
+            }
+            if let (api, pcmRoute) = await model.readyVoWLANRoute(),
                case let .vowlan(endpoint, credential) = pcmRoute {
                 guard !cancelledWatchDialIDs.contains(requestID) else {
                     replyHandler(["ok": false, "error": "已取消拨号"])
@@ -333,8 +367,10 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         if let active = localWatchCall, active.requestID == requestID {
             Task { @MainActor in
                 do {
-                    try await active.api.hangupCall(callID: active.callID)
+                    if active.callID.hasPrefix("local:"), let model { try await model.callKitEnd(uuid: active.uuid) }
+                    else { try await active.api.hangupCall(callID: active.backendID) }
                     if localWatchCall?.callID == active.callID { localWatchCall = nil }
+                    model?.deviceCallContext.releaseAdmission(requestID)
                 } catch {
                     NSLog("[AirSIM Watch Dial] VoWLAN 取消失败：%@", error.localizedDescription)
                 }
@@ -342,6 +378,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         }
         if let active = watchOutgoingCall, active.requestID == requestID {
             watchOutgoingCall = nil
+            model?.deviceCallContext.releaseAdmission(requestID)
             cancelledWatchDialIDs.remove(requestID)
             Task { await endAbandonedWatchCall(active.call) }
         }
@@ -365,8 +402,17 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
     ) async {
         guard let callID = message["call_id"] as? String, !callID.isEmpty,
               let uuid = (message["call_uuid"] as? String).flatMap(UUID.init(uuidString:)),
-              localWatchCall == nil, let model,
-              let (api, pcmRoute) = await model.readyVoWLANRoute(),
+              localWatchCall == nil, let model else {
+            replyHandler(["ok": false, "error": "stale_call"]); return
+        }
+        let owned = model.ownedWatchTarget(uuid: uuid, agentID: message["agent_id"] as? String, presentationID: callID)
+        // A scoped local call must never fall back to the current default's API.
+        if callID.hasPrefix("local:"), owned == nil {
+            replyHandler(["ok": false, "error": "stale_call"]); return
+        }
+        let legacy = owned == nil ? await model.readyVoWLANRoute() : nil
+        guard let api = owned?.api ?? legacy?.0,
+              let pcmRoute = owned.map({ $0.api.route }).map(AppModel.pcmRouteForWatch) ?? legacy?.1,
               case let .vowlan(endpoint, credential) = pcmRoute else {
             replyHandler(["ok": false, "error": "VoWLAN 未就绪",
                           "cloud_media_allowed": CloudModePreference.isEnabled()])
@@ -374,15 +420,17 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         }
         do {
             guard let current = try await api.callStatus().active,
-                  current.id == callID,
+                  current.id == (owned?.backendID ?? callID),
                   ["incoming", "waiting"].contains(current.state) else {
                 replyHandler(["ok": false, "error": "来电已失效",
                               "cloud_media_allowed": CloudModePreference.isEnabled()])
                 return
             }
-            localWatchCall = LocalWatchCall(requestID: nil, callID: callID, uuid: uuid, api: api)
+            localWatchCall = LocalWatchCall(requestID: nil, callID: callID, uuid: uuid, api: api,
+                backendID: owned?.backendID)
             do {
-                try await api.answerCall(callID: current.id)
+                if let owned { try await model.answerOwnedCallFromWatch(owned.route.key) }
+                else { try await api.answerCall(callID: current.id) }
             } catch {
                 localWatchCall = nil
                 throw error
@@ -390,7 +438,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             if CallKitController.shared.matchesCurrentCall(callID: callID, uuid: nil) {
                 CallKitController.shared.reportCurrentCallEnded(reason: .answeredElsewhere)
             }
-            monitorLocalAudio(callID: callID, api: api)
+            monitorLocalAudio(callID: callID, backendID: owned?.backendID, api: api)
             replyHandler([
                 "ok": true, "call_id": callID, "call_uuid": uuid.uuidString,
                 "media_route": "vowlan", "pcm_host": endpoint.host,
@@ -420,8 +468,11 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         localEndInFlight = call.callID
         defer { localEndInFlight = nil }
         do {
-            try await call.api.hangupCall(callID: call.callID)
+            if call.callID.hasPrefix("local:"), let model {
+                try await model.callKitEnd(uuid: call.uuid)
+            } else { try await call.api.hangupCall(callID: call.backendID) }
             if localWatchCall?.callID == call.callID { localWatchCall = nil }
+            if let reservation = call.requestID { model?.deviceCallContext.releaseAdmission(reservation) }
             replyHandler(["ok": true])
         } catch {
             replyHandler(["ok": false, "error": error.localizedDescription])
@@ -432,6 +483,17 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
     private func rejectLocalWatchCall(
         _ message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void
     ) async {
+        if let uuid = (message["call_uuid"] as? String).flatMap(UUID.init(uuidString:)),
+           (message["call_id"] as? String)?.hasPrefix("local:") == true {
+            guard let model, let target = model.ownedWatchTarget(uuid: uuid, agentID: message["agent_id"] as? String,
+                presentationID: message["call_id"] as? String),
+                  model.deviceCalls.latestEvent(for: target.route.key)?.state == .ringing else {
+                replyHandler(["ok": false, "error": "stale_call"]); return
+            }
+            do { try await model.callKitEnd(uuid: uuid); replyHandler(["ok": true]) }
+            catch { replyHandler(["ok": false, "error": error.localizedDescription]) }
+            return
+        }
         guard let callID = message["call_id"] as? String, !callID.isEmpty,
               let model, let (api, _) = await model.readyVoWLANRoute() else {
             replyHandler(["ok": false, "error": "VoWLAN 未就绪"])
@@ -452,12 +514,12 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
     }
 
     @MainActor
-    private func monitorLocalAudio(callID: String, api: AirSIMAPI) {
+    private func monitorLocalAudio(callID: String, backendID: String? = nil, api: AirSIMAPI) {
         Task { @MainActor in
             for _ in 0..<120 {
                 guard localWatchCall?.callID == callID else { return }
                 if let current = try? await api.callStatus().active {
-                    guard current.id == callID else { return }
+                    guard current.id == (backendID ?? callID) else { return }
                     if current.state == "active" {
                         let outcome = try? await CallAudioRegistrationCoordinator.register(service: api)
                         if outcome == .registered { return }
@@ -567,6 +629,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         let uuid = (message["call_uuid"] as? String).flatMap(UUID.init(uuidString:))
         if let active = watchOutgoingCall, active.call.callID == callID,
            phase == WatchCallPhase.ended.rawValue {
+            model?.deviceCallContext.releaseAdmission(active.requestID)
             watchOutgoingCall = nil
         }
         guard CallKitController.shared.matchesCurrentCall(callID: callID, uuid: uuid) else { return true }

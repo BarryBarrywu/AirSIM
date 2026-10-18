@@ -57,7 +57,7 @@ struct VoBLEPairingView: View {
                 Section("发现的 Android Agent") {
                     ForEach(model.voble.discoveredPeers) { peer in
                         Button {
-                            model.voble.connect(peer)
+                            model.vobleHub.connect(peer)
                         } label: {
                             HStack {
                                 Label(peer.name, systemImage: "smartphone")
@@ -73,8 +73,8 @@ struct VoBLEPairingView: View {
 
             Section {
                 Button("重新扫描", systemImage: "arrow.clockwise") {
-                    model.voble.stop()
-                    model.voble.start()
+                    model.vobleHub.start()
+                    model.vobleHub.radio.rescan()
                 }
                 if model.voble.authenticatedIdentity != nil {
                     Button("取消 VoBLE 配对", systemImage: "trash", role: .destructive) {
@@ -91,7 +91,7 @@ struct VoBLEPairingView: View {
         }
         .navigationTitle("蓝牙 Agent")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { model.voble.start() }
+        .onAppear { model.vobleHub.start() }
         .confirmationDialog(
             "同时删除 iPhone 与 Android 上的 VoBLE 凭据？",
             isPresented: $showingUnpairConfirmation,

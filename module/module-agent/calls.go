@@ -23,7 +23,7 @@ type callRecord struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Missed    bool       `json:"missed"`
-	AndroidID string     `json:"-"`
+	AndroidID string     `json:"android_id,omitempty"`
 }
 
 type callTracker struct {
@@ -639,6 +639,9 @@ func (a *agent) dial(response http.ResponseWriter, request *http.Request) {
 	}
 	var body struct {
 		Number string `json:"number"`
+		// Gateway consumes this additive operation identity when it proves the
+		// Telecom/backend mapping to iOS; never reject its forwarded request.
+		OperationID string `json:"operation_id,omitempty"`
 	}
 	if !decodeJSON(response, request, &body) {
 		return
@@ -940,12 +943,13 @@ func (a *agent) dtmf(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var body struct {
-		Digit string `json:"digit"`
+		Digit  string `json:"digit"`
+		CallID string `json:"call_id"`
 	}
 	if !decodeJSON(response, request, &body) {
 		return
 	}
-	if err := a.sendDTMFDigit(body.Digit); err != nil {
+	if err := a.sendDTMFDigitForCall(body.Digit, body.CallID); err != nil {
 		writeError(response, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -953,6 +957,10 @@ func (a *agent) dtmf(response http.ResponseWriter, request *http.Request) {
 }
 
 func (a *agent) sendDTMFDigit(digit string) error {
+	return a.sendDTMFDigitForCall(digit, "")
+}
+
+func (a *agent) sendDTMFDigitForCall(digit, expectedID string) error {
 	if len(digit) != 1 || !strings.Contains("0123456789*#", digit) {
 		return errors.New("DTMF 仅支持 0-9、*、#")
 	}
@@ -961,11 +969,14 @@ func (a *agent) sendDTMFDigit(digit string) error {
 		if err != nil {
 			return fmt.Errorf("create Android Telecom DTMF command: %w", err)
 		}
-		result := a.executeAndroidCallCommandWithNumber(commandID, "dtmf", digit)
+		result := a.executeAndroidCallCommandWithNumberForID(commandID, "dtmf", digit, expectedID)
 		if !result.Success {
 			return errors.New(result.Error)
 		}
 		return nil
+	}
+	if err := a.requireActiveCallID(expectedID); err != nil {
+		return err
 	}
 	if _, err := a.at.command(`AT+VTS="`+digit+`"`, 3*time.Second); err != nil {
 		if _, fallbackErr := a.at.command("AT+CLDTMF=1,"+digit, 3*time.Second); fallbackErr != nil {

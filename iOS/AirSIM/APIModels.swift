@@ -13,12 +13,26 @@ struct CallRecord: Codable, Equatable, Sendable, Identifiable {
     let updatedAt: Date
     let endedAt: Date?
     let missed: Bool
+    var androidID: String? = nil
+    var sourceAgentID: String? = nil
+    var sourceCallID: String? = nil
+    var historyEstimated: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, index, direction, state, number, missed
         case startedAt = "started_at"
         case updatedAt = "updated_at"
         case endedAt = "ended_at"
+        case androidID = "android_id"
+        case sourceAgentID = "source_agent_id", sourceCallID = "source_call_id"
+        case historyEstimated = "history_estimated"
+    }
+    func scopedHistory(to agentID: String) -> CallRecord {
+        var copy = CallRecord(id: "agent-call:\(Data(agentID.utf8).base64EncodedString()):\(Data((androidID ?? id).utf8).base64EncodedString())",
+            index: index, direction: direction, state: state, number: number, startedAt: startedAt,
+            updatedAt: updatedAt, endedAt: endedAt, missed: missed, androidID: androidID)
+        copy.sourceAgentID = agentID; copy.sourceCallID = id; copy.historyEstimated = historyEstimated
+        return copy
     }
 }
 
@@ -146,16 +160,23 @@ struct AndroidAgentMetadata: Decodable, Equatable, Sendable {
     let deviceName: String
     let phoneNumber: String?
     let agentKind: String?
+    let callGeneration: UInt64?
+    init(agentID: String, deviceName: String, phoneNumber: String?, agentKind: String?, callGeneration: UInt64? = nil) {
+        self.agentID = agentID; self.deviceName = deviceName; self.phoneNumber = phoneNumber
+        self.agentKind = agentKind; self.callGeneration = callGeneration
+    }
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id", deviceName = "device_name"
         case phoneNumber = "phone_number", agentKind = "agent_kind"
+        case callGeneration = "call_generation"
     }
     static func decode(_ data: Data, expectedID: String) throws -> Self {
         let value = try JSONDecoder().decode(Self.self, from: data)
         guard value.agentID == expectedID else { throw VoBLECentralError.invalidResponse }
         let number = value.phoneNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
         return Self(agentID: value.agentID, deviceName: value.deviceName,
-                    phoneNumber: number?.isEmpty == false ? number : nil, agentKind: value.agentKind)
+                    phoneNumber: number?.isEmpty == false ? number : nil, agentKind: value.agentKind,
+                    callGeneration: value.callGeneration)
     }
 }
 

@@ -1,6 +1,66 @@
 import AVFoundation
 import Network
 
+/// Keep the codec's 8 kHz rate out of VoiceProcessingIO's hardware bus.
+enum CallAudioGraph {
+    static func connectPlayback(_ player: AVAudioPlayerNode, engine: AVAudioEngine,
+                                format: AVAudioFormat) throws {
+        let hardware = engine.outputNode.inputFormat(forBus: 0)
+        guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+            throw VoiceAudioError.microphoneUnavailable
+        }
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: hardware)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+    }
+
+    static func installCapture(_ input: AVAudioInputNode, format: AVAudioFormat?,
+                               block: @escaping AVAudioNodeTapBlock) throws {
+        let rate = input.outputFormat(forBus: 0).sampleRate
+        guard rate > 0, input.outputFormat(forBus: 0).channelCount > 0 else {
+            throw VoiceAudioError.microphoneUnavailable
+        }
+        // The native tap preserves the I/O format. Never reapply a stale format
+        // after VoiceProcessingIO replaces/configures its buses.
+        if #available(iOS 27.0, *) {
+            try input.__installTap(onBus: 0, bufferSize: AVAudioFrameCount(max(1024, rate * 0.1)),
+                                   format: nil, error: (), block: block)
+        } else {
+            input.installTap(onBus: 0, bufferSize: 1024, format: nil, block: block)
+        }
+    }
+}
+
+@MainActor
+protocol CallToneOutput: AnyObject {
+    var isPlaying: Bool { get }
+    func play(_ data: Data, looping: Bool, volume: Float, configureSession: Bool) throws
+    func stop(deactivateSession: Bool)
+}
+
+@MainActor
+final class SystemCallToneOutput: CallToneOutput {
+    private var player: AVAudioPlayer?
+    var isPlaying: Bool { player?.isPlaying == true }
+    func play(_ data: Data, looping: Bool, volume: Float, configureSession: Bool) throws {
+        let session = AVAudioSession.sharedInstance()
+        if configureSession {
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            try session.setActive(true)
+        }
+        let player = try AVAudioPlayer(data: data)
+        player.numberOfLoops = looping ? -1 : 0; player.volume = volume
+        player.prepareToPlay()
+        guard player.play() else { throw VoiceAudioError.tonePlaybackFailed }
+        self.player = player
+    }
+    func stop(deactivateSession: Bool) {
+        player?.stop(); player = nil
+        if deactivateSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+    }
+}
+
 enum PCMRoute: Equatable, Sendable {
     case moduleLocal
     case vowlan(endpoint: VoWLANEndpoint, credential: VoWLANCredential)
@@ -106,8 +166,9 @@ final class AudioSessionController: ObservableObject {
     private var player: AVAudioPlayerNode?
     private var transport: NetworkPCMTransport?
     private var encoder: VoicePCMEncoder?
-    private var callTonePlayer: AVAudioPlayer?
+    private let toneOutput: any CallToneOutput
     private var currentCallTone: CallTone?
+    var hasCallTone: Bool { currentCallTone != nil }
     private var muted = false
     private var requestedSpeakerOverride = false
     private var speakerRouteRetryTask: Task<Void, Never>?
@@ -124,7 +185,8 @@ final class AudioSessionController: ObservableObject {
         ) }
     }
 
-    init() {
+    init(toneOutput: (any CallToneOutput)? = nil) {
+        self.toneOutput = toneOutput ?? SystemCallToneOutput()
         // CallKit、蓝牙或系统控制中心都可能改变输出路由，按钮状态必须跟随真实会话。
         routeChangeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
@@ -181,6 +243,7 @@ final class AudioSessionController: ObservableObject {
             return false
         }
 
+        var startupPhase = "configure_session"
         do {
             let session = AVAudioSession.sharedInstance()
             sessionActivationManagedByCallKit = sessionAlreadyActive
@@ -226,6 +289,9 @@ final class AudioSessionController: ObservableObject {
             )
 
             engine.attach(player)
+            startupPhase = "enable_voice_processing"
+            // Switching I/O must precede all fixed-rate graph connections.
+            try engine.inputNode.setVoiceProcessingEnabled(true)
             guard let playbackFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
                 sampleRate: 8_000,
@@ -234,21 +300,23 @@ final class AudioSessionController: ObservableObject {
             ) else {
                 throw VoiceAudioError.invalidPlaybackFormat
             }
-            engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+            startupPhase = "connect_playback"
+            try CallAudioGraph.connectPlayback(player, engine: engine, format: playbackFormat)
 
             let input = engine.inputNode
-            // voiceChat 只声明用途；显式启用 VoiceProcessingIO 才能获得回声消除与自动增益。
-            try input.setVoiceProcessingEnabled(true)
+            // Read the final input format only after enabling VoiceProcessingIO.
             let inputFormat = input.outputFormat(forBus: 0)
             guard inputFormat.channelCount > 0, inputFormat.sampleRate >= 8_000 else {
                 throw VoiceAudioError.microphoneUnavailable
             }
-            input.installTap(onBus: 0, bufferSize: 960, format: inputFormat) {
+            startupPhase = "install_capture_tap"
+            try CallAudioGraph.installCapture(input, format: nil) {
                 buffer, _ in
                 let pcm = encoder.encode(buffer)
                 if !pcm.isEmpty { transport.sendPCM(pcm) }
             }
 
+            startupPhase = "start_engine"
             engine.prepare()
             try engine.start()
             player.play()
@@ -271,6 +339,8 @@ final class AudioSessionController: ObservableObject {
             transport.start()
             return true
         } catch {
+            let phase = startupPhase
+            Task { await AgentVerboseTraceRecorder.shared.recordFailure(category: "vowlan", phase: phase, error: error) }
             recordStartup("failed")
             deactivate()
             errorMessage = "无法启用通话音频：\(error.localizedDescription)"
@@ -326,17 +396,11 @@ final class AudioSessionController: ObservableObject {
     }
 
     func stopCallTone(deactivateSession: Bool = true) {
-        let hadTone = callTonePlayer != nil || currentCallTone != nil
-        callTonePlayer?.stop()
-        callTonePlayer = nil
+        let hadTone = currentCallTone != nil
         currentCallTone = nil
         // 空闲轮询会反复调用本方法；没有铃声时绝不能停用后台待机正在使用的会话。
         // CallKit 的 didActivate 回调之后，音频会话也只能由系统释放。
-        guard hadTone, deactivateSession, !active, !sessionActivationManagedByCallKit else { return }
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
+        toneOutput.stop(deactivateSession: hadTone && deactivateSession && !active && !sessionActivationManagedByCallKit)
     }
 
     /// 切换当前通话的输出路由；关闭扬声器时交还给系统选择听筒或已连接的蓝牙设备。
@@ -470,23 +534,15 @@ final class AudioSessionController: ObservableObject {
     }
 
     private func playCallTone(_ tone: CallTone, looping: Bool) {
-        guard currentCallTone != tone || callTonePlayer?.isPlaying != true else { return }
+        guard currentCallTone != tone || !toneOutput.isPlaying else { return }
         stopCallTone()
 
         do {
-            let session = AVAudioSession.sharedInstance()
-            // 模块来电属于电话提醒，使用 playback 确保手机静音时仍能听到，并压低其他音频。
-            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
-            try session.setActive(true)
-            let player = try AVAudioPlayer(data: SynthesizedCallTone.wavData(for: tone))
-            player.numberOfLoops = looping ? -1 : 0
-            player.volume = tone.volume
-            player.prepareToPlay()
-            guard player.play() else { throw VoiceAudioError.tonePlaybackFailed }
-            callTonePlayer = player
+            try toneOutput.play(SynthesizedCallTone.wavData(for: tone), looping: looping, volume: tone.volume,
+                                configureSession: !sessionActivationManagedByCallKit)
             currentCallTone = tone
         } catch {
-            callTonePlayer = nil
+            toneOutput.stop(deactivateSession: !sessionActivationManagedByCallKit)
             currentCallTone = nil
             errorMessage = "无法播放通话提示音：\(error.localizedDescription)"
         }
@@ -513,6 +569,20 @@ final class AudioSessionController: ObservableObject {
             refreshRouteDescription()
             errorMessage = nil
         case let .statistics(statistics):
+            let fields = ["engine_running": String(engine?.isRunning == true),
+                "player_playing": String(player?.isPlaying == true),
+                "uplink_bytes": String(statistics.uplinkBytes), "uplink_peak": String(statistics.uplinkPeak),
+                "downlink_bytes": String(statistics.downlinkBytes), "downlink_peak": String(statistics.downlinkPeak),
+                "capture_buffers": String(encoder?.capturedBuffers ?? 0),
+                "input_format": engine?.inputNode.outputFormat(forBus: 0).description ?? "none",
+                "output_format": engine?.outputNode.inputFormat(forBus: 0).description ?? "none",
+                "system_output_volume": String(AVAudioSession.sharedInstance().outputVolume),
+                "player_volume": String(player?.volume ?? 0),
+                "player_render_sample": String(player?.lastRenderTime?.sampleTime ?? -1),
+                "input_route": AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue).joined(separator: ","),
+                "output_route": AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")]
+            Task { await AgentVerboseTraceRecorder.shared.recordEvent(source: "APP", category: "vowlan",
+                phase: "media_statistics", title: "VoWLAN 实际音频状态", fields: fields) }
             let handshakeState = transportReady ? "PCM 已握手" : "PCM 尚未握手"
             let playbackDrops = playbackQueue.droppedFrames > 0
                 ? " · 播放丢弃\(playbackQueue.droppedFrames)帧"
@@ -1103,6 +1173,8 @@ final class VoicePCMEncoder: @unchecked Sendable {
     private var position = 0.0
     private var sampleRate = 0.0
     private var muted = false
+    private var bufferCount: UInt64 = 0
+    var capturedBuffers: UInt64 { lock.withLock { bufferCount } }
 
     func setMuted(_ muted: Bool) {
         lock.lock()
@@ -1111,6 +1183,7 @@ final class VoicePCMEncoder: @unchecked Sendable {
     }
 
     func encode(_ buffer: AVAudioPCMBuffer) -> Data {
+        lock.withLock { bufferCount &+= 1 }
         guard let input = buffer.floatChannelData?[0] else { return Data() }
         let frameCount = Int(buffer.frameLength)
         let copied = Array(UnsafeBufferPointer(start: input, count: frameCount))

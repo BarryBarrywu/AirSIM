@@ -1,5 +1,7 @@
 # AirSIM Android AVF Agent
 
+未发布双通道协议开发：通话 JSON 保留旧 `id`，新增可选 `android_id`（安卓原始 Telecom 通话 ID）；`/api/health` 增加 `canonical_call_ids: true`。与新版 AVF Bridge 配合后，iOS 可将同一安卓的 VoWLAN／VoBLE 通话按经认证的原始身份归并，不按号码／时间猜测。旧接口和旧客户端保持兼容；未升级 Agent 的设备不开放新的设备归属 VoWLAN 拨号。本轮仅修改源码和测试，不自动部署或发布。
+
 Agent 运行在三星 Android 的 AVF Linux 环境中，连接三星控制 App、通话音频桥、Cloudflare Relay 与 iPhone/Apple Watch 客户端。
 
 当前 Agent 发布为 [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包 `0.4.6-1`），配套 Android/iOS 应用发布为 [`v0.9.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.6)。维护者 Relay 是 `https://airsim-push.remotepilot.site`；`https://push.remotepilot.site` 仅属于 DJOneHub。

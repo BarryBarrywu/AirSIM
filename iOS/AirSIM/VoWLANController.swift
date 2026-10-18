@@ -82,6 +82,8 @@ struct VoWLANHealthIdentity: Decodable {
     let manufacturer: String?
     let model: String?
     let phoneNumber: String?
+    var identityProof: String? = nil
+    var canonicalCallIDs: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case ok
@@ -90,6 +92,8 @@ struct VoWLANHealthIdentity: Decodable {
         case deviceName = "device_name"
         case manufacturer, model
         case phoneNumber = "phone_number"
+        case identityProof = "identity_proof"
+        case canonicalCallIDs = "canonical_call_ids"
     }
 }
 
@@ -347,7 +351,7 @@ struct VoWLANNetworkRecoveryPlan {
 @MainActor
 final class VoWLANController: ObservableObject {
     @Published private(set) var availability: VoWLANAvailability =
-        VoWLANCredentialStore.load() == nil ? .unpaired : .discovering {
+        !VoWLANCredentialStore.hasAny() ? .unpaired : .discovering {
         didSet { onAvailabilityChange?(availability) }
     }
 
@@ -401,11 +405,6 @@ final class VoWLANController: ObservableObject {
     }
 
     func startBrowsing() {
-        guard VoWLANCredentialStore.load() != nil else {
-            stopBrowserSession()
-            availability = .unpaired
-            return
-        }
         startNetworkMonitorIfNeeded()
         guard let generation = browserLifecycle.startIfNeeded() else { return }
         restoreManualRoutes()
@@ -415,11 +414,6 @@ final class VoWLANController: ObservableObject {
 
     func restartBrowsing() {
         identityEpoch &+= 1
-        guard VoWLANCredentialStore.load() != nil else {
-            stopBrowserSession()
-            availability = .unpaired
-            return
-        }
         startNetworkMonitorIfNeeded()
         let generation = browserLifecycle.restart()
         stopCurrentBrowser()
@@ -511,7 +505,7 @@ final class VoWLANController: ObservableObject {
 
     func stopBrowsing() {
         stopBrowserSession()
-        if VoWLANCredentialStore.load() != nil { availability = .discovering }
+        if VoWLANCredentialStore.hasAny() { availability = .discovering }
     }
 
     private func stopBrowserSession() {
@@ -559,7 +553,7 @@ final class VoWLANController: ObservableObject {
 
     func installManualRoute(_ route: VoWLANManualRoute) async throws {
         try VoWLANManualRouteStore.save(route)
-        AndroidAgentBindingPreference.set(route.agentID)
+        if AndroidAgentBindingPreference.selected() == nil { AndroidAgentBindingPreference.set(route.agentID) }
         restartBrowsing()
         await probeNow()
     }
@@ -585,7 +579,7 @@ final class VoWLANController: ObservableObject {
     /// failed health probe must not wait for Android to advertise again.
     func recoverIfNeeded() async {
         guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsVoWLAN,
-              !callInProgress(), VoWLANCredentialStore.load() != nil,
+              !callInProgress(), VoWLANCredentialStore.hasAny(),
               recoveryGate.shouldAttempt(for: availability, at: Date()) else { return }
         let browserWasRunning = browserLifecycle.isRunning
         startBrowsing()
@@ -665,19 +659,23 @@ final class VoWLANController: ObservableObject {
 
     private func mayRecoverNetwork(_ token: UInt64) -> Bool {
         networkRecoveryPlan.permits(token, mode: ConnectionModePreference.selected(),
-            paired: VoWLANCredentialStore.load() != nil, callInProgress: callInProgress())
+            paired: VoWLANCredentialStore.hasAny(), callInProgress: callInProgress())
     }
 
     func probeNow() async {
         guard let endpoint = availability.endpoint ?? discoveredEndpoint else { return }
-        guard let credential = VoWLANCredentialStore.load() else {
+        let expectedID = discoveredAgents.first { $0.endpoint == endpoint }?.id
+        let credential = await Task.detached {
+            expectedID.flatMap { VoWLANCredentialStore.load(agentID: $0) } ?? VoWLANCredentialStore.load()
+        }.value
+        guard let credential else {
             availability = .unpaired
             return
         }
         let epoch = identityEpoch
         let probe = probeGeneration.begin()
         do {
-            let (data, response) = try await VoWLANProbeRecovery.run {
+            let (data, response, nonce) = try await VoWLANProbeRecovery.run {
                 let signed = try VoWLANRequestSigner(secret: credential.secret).sign(
                     method: "GET", path: "/v1/health", body: Data()
                 )
@@ -689,7 +687,8 @@ final class VoWLANController: ObservableObject {
                 configuration.waitsForConnectivity = false
                 let session = URLSession(configuration: configuration)
                 defer { session.finishTasksAndInvalidate() }
-                return try await session.data(for: request)
+                let (data, response) = try await session.data(for: request)
+                return (data, response, signed.nonce)
             }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let identity = try? JSONDecoder().decode(VoWLANHealthIdentity.self, from: data),
@@ -697,6 +696,11 @@ final class VoWLANController: ObservableObject {
                 throw VoWLANControllerError.authenticationFailed
             }
             guard epoch == identityEpoch, discoveredEndpoint == endpoint, probeGeneration.accepts(probe) else { return }
+            if let expectedID, VoWLANCredentialStore.load(agentID: expectedID) != nil {
+                guard identity.agentID == expectedID,
+                      VoWLANHealthProof.verify(identity.identityProof, nonce: nonce,
+                        agentID: expectedID, credential: credential) else { throw VoWLANControllerError.authenticationFailed }
+            }
             if let route = manualRoute(for: endpoint), identity.agentID != route.agentID {
                 throw VoWLANControllerError.authenticationFailed
             }

@@ -102,6 +102,22 @@ struct RootView: View {
         .background(PhoneBackdrop())
         .animation(.easeInOut(duration: 0.2), value: model.inAppPresentedCall?.id)
         .preferredColorScheme(settings.appearance.colorScheme)
+        .overlay(alignment: .top) {
+            if let reminder = model.otherDeviceCallReminders.first {
+                Button {
+                    _ = model.openOtherDeviceCallNotification(reminder.userInfo)
+                } label: {
+                    Label("\(reminder.deviceName) 来电 · 其他设备 \(model.otherDeviceCallReminders.count)", systemImage: "phone.badge.waveform")
+                        .font(.subheadline.weight(.semibold)).padding(12)
+                        .frame(maxWidth: .infinity)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+                .buttonStyle(.plain).padding(.horizontal)
+            }
+        }
+        .sheet(item: $model.focusedOtherDeviceCall) { reminder in
+            OtherDeviceCallSheet(reminder: reminder).environmentObject(model)
+        }
         .fullScreenCover(isPresented: Binding(
             get: { !firstConnectionComplete },
             set: { if !$0 { firstConnectionComplete = true } }
@@ -111,6 +127,7 @@ struct RootView: View {
         }
         .onOpenURL(perform: handleSystemCommunicationURL)
         .onAppear {
+            if let info = OtherAndroidCallPresentationRequest.consume() { _ = model.openOtherDeviceCallNotification(info) }
             if let sender = IncomingSMSPresentationRequest.consume() {
                 openSMSConversation(sender)
             }
@@ -129,6 +146,10 @@ struct RootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .airsimOpenIncomingCall)) { _ in
             model.presentCurrentCallInApp()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .airsimOpenOtherAndroidCall)) { notification in
+            let info = OtherAndroidCallPresentationRequest.consume() ?? notification.userInfo ?? [:]
+            _ = model.openOtherDeviceCallNotification(info)
         }
         .alert(L10n.t("错误"), isPresented: errorBinding) {
             Button("OK") { model.errorMessage = nil }

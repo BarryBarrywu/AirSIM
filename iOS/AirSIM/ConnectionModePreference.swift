@@ -6,6 +6,7 @@ enum AirSIMConnectionMode: String, CaseIterable, Codable, Identifiable, Sendable
     case bluetooth
     case cloud
     case automatic
+    case localDual
 
     var id: String { rawValue }
 
@@ -15,6 +16,7 @@ enum AirSIMConnectionMode: String, CaseIterable, Codable, Identifiable, Sendable
         case .bluetooth: return "蓝牙"
         case .cloud: return "云端"
         case .automatic: return "自动"
+        case .localDual: return "本地双通道"
         }
     }
 
@@ -24,12 +26,20 @@ enum AirSIMConnectionMode: String, CaseIterable, Codable, Identifiable, Sendable
         case .bluetooth: return "仅使用蓝牙控制与通话音频，不依赖 Wi-Fi 或 Relay"
         case .cloud: return "仅使用 Relay、PushKit 与 CallKit"
         case .automatic: return "按 VoWLAN、蓝牙、云端的可用性自动选择"
+        case .localDual: return "同时连接 VoWLAN 与 VoBLE；同一安卓优先 Wi-Fi、其次蓝牙，不使用 Relay，通话途中不切换音频链路"
         }
     }
 }
 
 enum ConnectionModePreference {
     static let key = "airsim.connection-mode"
+
+    /// The top-level toggle is a projection of the mode, never a second preference.
+    static func selectingLocalOnly(_ enabled: Bool, from mode: AirSIMConnectionMode) -> AirSIMConnectionMode {
+        let localOnly = !ConnectionModeRuntimePolicy(mode: mode).startsCloud
+        guard enabled != localOnly else { return mode }
+        return enabled ? .localDual : .automatic
+    }
 
     static func selected(defaults: UserDefaults = .standard) -> AirSIMConnectionMode {
         if let rawValue = defaults.string(forKey: key),
@@ -131,13 +141,18 @@ enum PairedAndroidDeviceStore {
         let values = defaults.dictionary(forKey: peripheralsKey) as? [String: String] ?? [:]
         return !values.contains { $0.value == peripheralID && !permits($0.key, defaults: defaults) }
     }
+    static func peripheralID(for id: String, defaults: UserDefaults = .standard) -> UUID? {
+        guard permits(id, defaults: defaults),
+              let value = (defaults.dictionary(forKey: peripheralsKey) as? [String: String])?[id] else { return nil }
+        return UUID(uuidString: value)
+    }
 }
 
 struct ConnectionModeRuntimePolicy: Equatable, Sendable {
     let mode: AirSIMConnectionMode
 
-    var startsVoWLAN: Bool { mode == .vowlan || mode == .automatic }
-    var startsBluetooth: Bool { mode == .bluetooth || mode == .automatic }
+    var startsVoWLAN: Bool { mode == .vowlan || mode == .automatic || mode == .localDual }
+    var startsBluetooth: Bool { mode == .bluetooth || mode == .automatic || mode == .localDual }
     var startsCloud: Bool { mode == .cloud || mode == .automatic }
     var allowsCrossModeFallback: Bool { mode == .automatic }
 
@@ -161,6 +176,9 @@ enum DialRouteSelector {
             return bluetoothReady ? .bluetooth : nil
         case .cloud:
             return cloudReady ? .cloud : nil
+        case .localDual:
+            if vowlanReady { return .vowlan }
+            return bluetoothReady ? .bluetooth : nil
         case .automatic:
             if vowlanReady { return .vowlan }
             if bluetoothReady { return .bluetooth }

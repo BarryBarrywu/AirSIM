@@ -4,7 +4,384 @@ import AVFoundation
 import XCTest
 import Contacts
 import Network
+import SwiftUI
 @testable import AirSIM
+
+@MainActor
+final class AudioGraphAndVerboseRegressionTests: XCTestCase {
+    func testCloudHangupAcceptsAndroidConfirmationWithoutRequiringLegacyModemField() throws {
+        let receipt = try JSONDecoder().decode(CloudCallControlReceipt.self, from: Data(
+            #"{"command_id":"fixture","status":"completed","result":{"ended":true,"android_confirmed":true}}"#.utf8))
+        XCTAssertTrue(receipt.terminationConfirmed)
+        XCTAssertEqual(receipt.confirmationPhase, "android_confirmed")
+        let rescue = try JSONDecoder().decode(CloudCallControlReceipt.self, from: Data(
+            #"{"command_id":"fixture","status":"completed","rescue_command_id":"rescue","result":{"ended":true,"android_confirmed":true}}"#.utf8))
+        XCTAssertTrue(rescue.terminationConfirmed)
+        XCTAssertEqual(rescue.confirmationPhase, "rescue_android_confirmed")
+    }
+
+    func testCloudHangupRequiresCompletedEndedAndPositiveBackendConfirmation() throws {
+        for result in [#"{"ended":true,"modem_confirmed":true}"#,
+                       #"{"ended":true,"android_confirmed":true}"#] {
+            for status in ["pending", "delivered", "failed", "expired"] {
+                let data = Data("{\"command_id\":\"fixture\",\"status\":\"\(status)\",\"result\":\(result)}".utf8)
+                XCTAssertFalse(try JSONDecoder().decode(CloudCallControlReceipt.self, from: data).terminationConfirmed)
+            }
+        }
+        for result in [#"{"ended":true}"#, #"{"ended":false,"modem_confirmed":true}"#,
+                       #"{"modem_confirmed":true}"#, #"{"ended":false,"android_confirmed":true}"#,
+                       #"{"ended":true,"android_confirmed":false}"#] {
+            let data = Data("{\"command_id\":\"fixture\",\"status\":\"completed\",\"result\":\(result)}".utf8)
+            XCTAssertFalse(try JSONDecoder().decode(CloudCallControlReceipt.self, from: data).terminationConfirmed)
+        }
+        let legacy = try JSONDecoder().decode(CloudCallControlReceipt.self, from: Data(
+            #"{"command_id":"fixture","status":"completed","result":{"ended":true,"modem_confirmed":true,"clcc_attempts":2}}"#.utf8))
+        XCTAssertTrue(legacy.terminationConfirmed)
+        XCTAssertEqual(legacy.confirmationPhase, "modem_confirmed")
+    }
+
+    func testLocalOnlySwitchPreservesExistingBluetoothTransport() {
+        let old = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.bluetooth)
+        defer { ConnectionModePreference.set(old) }
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()))
+        model.setLocalModeEnabled(true)
+        XCTAssertEqual(ConnectionModePreference.selected(), .bluetooth)
+        XCTAssertFalse(CloudModePreference.isEnabled())
+    }
+
+    func testLocalOnlySwitchConvertsAutomaticToDualLocalWithoutSeparatePreference() {
+        let old = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.automatic)
+        defer { ConnectionModePreference.set(old) }
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()))
+        model.setLocalModeEnabled(true)
+        XCTAssertEqual(ConnectionModePreference.selected(), .localDual)
+        XCTAssertFalse(CloudModePreference.isEnabled())
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsBluetooth)
+    }
+
+    func testAuthenticatedMetadataRetainsPeerGenerationAndRejectsWrongOwner() throws {
+        let payload = Data(#"{"agent_id":"A","device_name":"Android","agent_kind":"standalone","phone_number":null,"call_generation":41}"#.utf8)
+        XCTAssertEqual(try AndroidAgentMetadata.decode(payload, expectedID: "A").callGeneration, 41)
+        XCTAssertThrowsError(try AndroidAgentMetadata.decode(payload, expectedID: "B"))
+        let legacy = Data(#"{"agent_id":"A","device_name":"Android"}"#.utf8)
+        XCTAssertNil(try AndroidAgentMetadata.decode(legacy, expectedID: "A").callGeneration)
+        for raw in ["-1", "1.5", "true", "\"41\""] {
+            let invalid = Data("{\"agent_id\":\"A\",\"device_name\":\"Android\",\"call_generation\":\(raw)}".utf8)
+            XCTAssertThrowsError(try AndroidAgentMetadata.decode(invalid, expectedID: "A"))
+        }
+    }
+    func testCallKitWaitingToneCannotDemoteDuplexAudioToPlayback() throws {
+        let tone = FixtureToneOutput()
+        let audio = AudioSessionController(toneOutput: tone)
+        try audio.prepareForCallKit()
+        defer { audio.deactivate() }
+        audio.updateCallTone(for: .init(id: "fixture", index: 0, direction: "outgoing", state: "dialing",
+            number: nil, startedAt: Date(), updatedAt: Date(), endedAt: nil, missed: false))
+        XCTAssertTrue(tone.isPlaying)
+        XCTAssertEqual(tone.sessionConfigurations, [false],
+            "Waiting tone must not change CallKit's playAndRecord category/activation")
+    }
+
+    func testFreshBLEDialUsesAuthenticatedPeerGenerationFloor() async throws {
+        let suite = "AirSIMTests.BLEFloor.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(17, forKey: "airsim.voble.call-generation")
+        let central = VoBLECallControlProbe()
+        central.synchronizeOperation = { 41 }
+        var sent: [UInt64] = []
+        central.sendOperation = { _, _, generation in
+            sent.append(generation)
+            return .init(requestID: "accepted", generation: generation, success: true, code: "ok", detail: "")
+        }
+        let media = VoBLEGATTMediaTransport(writer: VoBLEWriterProbe(canSend: true, maximumLength: 247))
+        let calls = VoBLECallCoordinator(central: central, media: media, audio: VoBLEAudioEngine(transport: media), defaults: defaults)
+        let call = try await calls.startOutgoing(number: "fixture")
+        XCTAssertEqual(call.generation, 42)
+        XCTAssertEqual(sent, [42], "Metadata synchronization must not itself place or repeat a call")
+    }
+
+    func testHangupDuringBLEGenerationSyncCannotPlaceLateCarrierCall() async throws {
+        let suite = "AirSIMTests.BLECancelSync.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let central = VoBLECallControlProbe()
+        var resume: CheckedContinuation<UInt64, Never>?
+        central.synchronizeOperation = { await withCheckedContinuation { resume = $0 } }
+        var sent = 0
+        central.sendOperation = { _, _, generation in
+            sent += 1
+            return .init(requestID: "accepted", generation: generation, success: true, code: "ok", detail: "")
+        }
+        let media = VoBLEGATTMediaTransport(writer: VoBLEWriterProbe(canSend: true, maximumLength: 247))
+        let calls = VoBLECallCoordinator(central: central, media: media, audio: VoBLEAudioEngine(transport: media), defaults: defaults)
+        let pending = Task { try await calls.startOutgoing(number: "fixture", operationID: "pending") }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(calls.cancelPendingOutgoing(callID: "another-call"))
+        XCTAssertTrue(calls.cancelPendingOutgoing(callID: "pending"))
+        resume?.resume(returning: 41)
+        do { _ = try await pending.value; XCTFail("Cancelled sync must not dial") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(sent, 0)
+    }
+    func testLostBLEAckCannotReuseGenerationAfterCoordinatorRecreation() async throws {
+        let suite = "AirSIMTests.BLEGeneration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let central = VoBLECallControlProbe()
+        var generations: [UInt64] = []
+        central.sendOperation = { _, _, generation in
+            generations.append(generation)
+            throw URLError(.timedOut) // An ACK can be lost after Android accepts the command.
+        }
+        let media = VoBLEGATTMediaTransport(writer: VoBLEWriterProbe(canSend: true, maximumLength: 247))
+        for _ in 0..<2 {
+            let calls = VoBLECallCoordinator(central: central, media: media,
+                audio: VoBLEAudioEngine(transport: media), defaults: defaults)
+            do { _ = try await calls.startOutgoing(number: "fixture"); XCTFail("Expected lost ACK") }
+            catch { XCTAssertEqual((error as? URLError)?.code, .timedOut) }
+        }
+        XCTAssertEqual(generations, [1, 2], "Each explicit user dial must reserve its generation before transport yields")
+    }
+
+    func testRejectedBLEDialSurfacesErrorAndRecordsCatchBeforeRethrow() async throws {
+        let suite = "AirSIMTests.BLERejection.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let central = VoBLECallControlProbe()
+        central.sendOperation = { _, _, generation in
+            .init(requestID: "denied", generation: generation, success: false,
+                  code: "stale_generation", detail: "")
+        }
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: true, maxEntries: 20, persistenceURL: nil)
+        let media = VoBLEGATTMediaTransport(writer: VoBLEWriterProbe(canSend: true, maximumLength: 247))
+        let calls = VoBLECallCoordinator(central: central, media: media, audio: VoBLEAudioEngine(transport: media),
+            defaults: defaults, traceRecorder: recorder)
+        var visibleError: String?
+        calls.onError = { visibleError = $0 }
+        do { _ = try await calls.startOutgoing(number: "fixture"); XCTFail("Expected rejection") }
+        catch { XCTAssertEqual(error as? VoBLECentralError, .bluetooth("stale_generation")) }
+        XCTAssertEqual(visibleError, "stale_generation", "Rollback must not silently swallow the rejection")
+        let exported = await recorder.exportText(agentEvents: [])
+        XCTAssertTrue(exported.contains("stale_generation"))
+        XCTAssertTrue(exported.contains("dial_command"))
+        XCTAssertTrue(exported.contains("startOutgoing"))
+        XCTAssertNil(calls.currentIdentity)
+    }
+    func testBLECaptureDoesNotForceTapFormatOrDownclockHardwareOutput() throws {
+        let media = VoBLEGATTMediaTransport(writer: VoBLEWriterProbe(canSend: true, maximumLength: 247))
+        var reachedTap = false
+        var tapHasExplicitFormat = false
+        var outputRate: Double = 0
+        var mixerRate: Double = 0
+        let audio = VoBLEAudioEngine(transport: media, enableVoiceProcessing: { _ in },
+            installInputTap: { input, format, _ in
+                reachedTap = true
+                tapHasExplicitFormat = format != nil
+                outputRate = input.engine!.outputNode.inputFormat(forBus: 0).sampleRate
+                mixerRate = input.engine!.mainMixerNode.outputFormat(forBus: 0).sampleRate
+                throw NSError(domain: "tap-boundary-fixture", code: 1)
+            })
+        audio.setCallKitAudioActive(true)
+        audio.setMediaReady(true)
+        XCTAssertTrue(reachedTap)
+        XCTAssertFalse(tapHasExplicitFormat, "A VoiceProcessing tap must not renegotiate the I/O bus format")
+        XCTAssertGreaterThan(outputRate, 8000, "The 8k codec is not the hardware output format")
+        XCTAssertEqual(mixerRate, outputRate)
+    }
+
+    func testVerboseFiltersOfferWLANAndBLENotRetiredATUSB() {
+        // The actual picker consumes this enum; transport filters must exist.
+        let labels = AgentVerboseTraceFilter.allCases.map(\.rawValue)
+        XCTAssertTrue(labels.contains("VoWLAN"))
+        XCTAssertTrue(labels.contains("VoBLE"))
+        XCTAssertFalse(labels.contains("AT"))
+        XCTAssertFalse(labels.contains("USB"))
+    }
+
+    func testVerboseFailureIncludesSourceAndUnderlyingCodeWithoutSecrets() async {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: true, maxEntries: 20, persistenceURL: nil)
+        let underlying = NSError(domain: NSOSStatusErrorDomain, code: -10868,
+            userInfo: [NSLocalizedDescriptionKey: "unsupported audio format"])
+        let error = NSError(domain: "fixture.audio", code: 7,
+            userInfo: [NSLocalizedDescriptionKey: "tap failed https://example.invalid/key?token=secret",
+                       NSUnderlyingErrorKey: underlying])
+        await recorder.recordFailure(category: "voble", phase: "install_tap", error: error,
+            file: "AirSIM/VoBLEAudioEngine.swift", function: "startEngine()", line: 123)
+        let text = await recorder.exportText(agentEvents: [])
+        XCTAssertTrue(text.contains("fixture.audio"))
+        XCTAssertTrue(text.contains("-10868"))
+        XCTAssertTrue(text.contains("startEngine()"))
+        XCTAssertTrue(text.contains("123"))
+        XCTAssertFalse(text.contains("token=secret"))
+    }
+    func testVoiceProcessingIsEnabledBeforeConnectingPlaybackGraph() {
+        let media = VoBLEGATTMediaTransport(writer: VoBLEWriterProbe(canSend: true, maximumLength: 247))
+        var connectionsAtVoiceProcessing: Int?
+        let audio = VoBLEAudioEngine(transport: media, enableVoiceProcessing: { engine in
+            connectionsAtVoiceProcessing = engine.attachedNodes.filter { $0 is AVAudioPlayerNode }.reduce(0) {
+                $0 + engine.outputConnectionPoints(for: $1, outputBus: 0).count
+            }
+            // Stop at the OS voice-processing boundary: never start hardware or request a microphone.
+            throw NSError(domain: "graph-order-fixture", code: 1)
+        })
+        audio.setCallKitAudioActive(true)
+        audio.setMediaReady(true)
+        XCTAssertEqual(connectionsAtVoiceProcessing, 0,
+            "Changing VoiceProcessingIO must not reconnect an already fixed-rate playback graph")
+        XCTAssertFalse(audio.running)
+    }
+
+    func testVerboseLocalRefreshDoesNotPollAgent() async throws {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: true, maxEntries: 20, persistenceURL: nil)
+        await recorder.recordEvent(source: "ios", category: "voble", phase: "media_admission", title: "fixture")
+        let transport = VerboseHTTPBoundary()
+        let api = AirSIMAPI(route: .vowlan(endpoint: try VoWLANEndpoint(host: "192.168.31.2", controlPort: 7592, pcmPort: 7593),
+            credential: try VoWLANCredential(secret: Data(repeating: 1, count: 32))), transport: transport)
+        let model = AgentVerboseTraceViewModel(api: api, recorder: recorder)
+        model.enabled = true
+        await model.refresh()
+        XCTAssertEqual(model.localEntries.count, 1)
+        XCTAssertTrue(model.exportText.contains("MEDIA_ADMISSION"))
+        XCTAssertEqual(transport.requests, 0, "Viewing local BLE/offline logs must not query HTTP or Relay")
+    }
+
+    func testClearingLocalVerboseNeverDeletesAndroidLogs() async throws {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 20, persistenceURL: nil)
+        await recorder.recordAudioStartup(phase: "failed")
+        let transport = VerboseHTTPBoundary()
+        let api = AirSIMAPI(route: .vowlan(endpoint: try VoWLANEndpoint(host: "192.168.31.2", controlPort: 7592, pcmPort: 7593),
+            credential: try VoWLANCredential(secret: Data(repeating: 1, count: 32))), transport: transport)
+        let model = AgentVerboseTraceViewModel(api: api, recorder: recorder)
+        await model.clear()
+        let remaining = await recorder.snapshot()
+        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertEqual(transport.requests, 0, "Clear action owns local diagnostics only")
+    }
+
+    func testVerboseBLEOfflineNeedsNoAgentAPI() async {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: true, maxEntries: 20, persistenceURL: nil)
+        await recorder.recordEvent(source: "ios", category: "voble", phase: "engine_ready", title: "蓝牙语音")
+        let model = AgentVerboseTraceViewModel(api: nil, recorder: recorder)
+        await model.refresh()
+        XCTAssertFalse(model.canReadAgent)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.localEntries.count, 1)
+        XCTAssertTrue(model.exportText.contains("蓝牙语音"))
+        let document = AgentVerboseTextDocument(text: model.exportText)
+        XCTAssertEqual(String(data: Data(document.text.utf8), encoding: .utf8), model.exportText)
+    }
+
+    func testVerboseReadsAndroidOnlyOnExplicitRequest() async throws {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: true, maxEntries: 20, persistenceURL: nil)
+        let transport = VerboseHTTPBoundary()
+        let api = AirSIMAPI(route: .vowlan(endpoint: try VoWLANEndpoint(host: "192.168.31.2", controlPort: 7592, pcmPort: 7593),
+            credential: try VoWLANCredential(secret: Data(repeating: 1, count: 32))), transport: transport)
+        let model = AgentVerboseTraceViewModel(api: api, recorder: recorder)
+        await model.refresh()
+        XCTAssertEqual(transport.requests, 0)
+        await model.readAgent()
+        XCTAssertEqual(transport.requests, 1)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(model.canReadAgent, "A failed manual read must not leave the button busy")
+        await model.refresh()
+        XCTAssertEqual(transport.requests, 1, "Refreshing local logs must not retry the remote read")
+    }
+}
+
+private final class VerboseHTTPBoundary: AirSIMHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var requests: Int { lock.withLock { count } }
+    func send(_ request: URLRequest, uploadFileURL: URL?) async throws -> WiredHTTPResponse {
+        lock.withLock { count += 1 }
+        throw URLError(.notConnectedToInternet)
+    }
+}
+
+@MainActor
+final class SamsungPairingDiscoveryTests: XCTestCase {
+    func testBonjourDiscoveryReadsPairingTXTAndFindsFreshSessionAfterRestart() async throws {
+        let session = UUID().uuidString
+        let key = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation
+        let encodedKey = key.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let listener = try NWListener(using: .tcp)
+        listener.service = NWListener.Service(name: "AirSIM-Test-\(session.prefix(8))", type: "_airsim-pair._tcp",
+            txtRecord: NWTXTRecord(["v": "1", "session": session, "key": encodedKey,
+                "expires": String(Int(Date().addingTimeInterval(120).timeIntervalSince1970 * 1000))]))
+        listener.newConnectionHandler = { $0.cancel() }
+        let browser = SamsungPairingBrowser()
+        defer { browser.stop(); listener.cancel() }
+        listener.start(queue: DispatchQueue(label: "AirSIMTests.pairing-advertisement"))
+        for round in 0..<2 {
+            let discovered = expectation(description: "pairing TXT discovered \(round)")
+            let observation = browser.$services.filter { $0.contains(where: { $0.sessionID == session }) }
+                .prefix(1).sink { _ in discovered.fulfill() }
+            browser.start()
+            await fulfillment(of: [discovered], timeout: 8)
+            observation.cancel()
+            let service = try XCTUnwrap(browser.services.first { $0.sessionID == session })
+            XCTAssertEqual(service.serverPublicKey, key)
+            browser.stop()
+            XCTAssertTrue(browser.services.isEmpty)
+        }
+    }
+
+    func testSwitchingBackFromManualIgnoresPreviousBrowserCallbacks() async {
+        let old = PairingBrowserProbe(), current = PairingBrowserProbe()
+        var instances = [old, current]
+        let browser = SamsungPairingBrowser { _ in instances.removeFirst() }
+        browser.start()
+        let lateState = old.stateUpdateHandler
+        browser.stop()
+        browser.start()
+        let ready = expectation(description: "current scan ready")
+        let readyObservation = browser.$stateText.filter { $0 == "正在等待安卓配对广播…" }
+            .prefix(1).sink { _ in ready.fulfill() }
+        current.stateUpdateHandler?(.ready)
+        await fulfillment(of: [ready], timeout: 1)
+        readyObservation.cancel()
+        let staleUpdate = expectation(description: "retired scan must not publish")
+        staleUpdate.isInverted = true
+        let lateObservation = browser.$stateText.dropFirst().sink { _ in staleUpdate.fulfill() }
+        lateState?(.cancelled)
+        await fulfillment(of: [staleUpdate], timeout: 0.1)
+        lateObservation.cancel()
+        XCTAssertEqual(browser.stateText, "正在等待安卓配对广播…")
+        XCTAssertEqual(current.starts, 1)
+        XCTAssertEqual(old.cancels, 1)
+    }
+
+    func testFailedDiscoveryCanStartFreshInsteadOfKeepingDeadBrowser() async {
+        let old = PairingBrowserProbe(), current = PairingBrowserProbe()
+        var instances = [old, current]
+        let browser = SamsungPairingBrowser { _ in instances.removeFirst() }
+        browser.start()
+        let failed = expectation(description: "scan failure delivered")
+        let observation = browser.$stateText.filter { $0.hasPrefix("局域网扫描失败") }
+            .prefix(1).sink { _ in failed.fulfill() }
+        old.stateUpdateHandler?(.failed(.posix(.ENETDOWN)))
+        await fulfillment(of: [failed], timeout: 1)
+        observation.cancel()
+        XCTAssertEqual(old.cancels, 1, "Network.framework failed browsers must be cancelled")
+        browser.start()
+        XCTAssertEqual(current.starts, 1, "A failed browser cannot discover when started again")
+        browser.stop()
+    }
+
+}
+
+private final class PairingBrowserProbe: SamsungPairingBrowsing {
+    var stateUpdateHandler: (@Sendable (NWBrowser.State) -> Void)?
+    var browseResultsChangedHandler: (@Sendable (Set<NWBrowser.Result>, Set<NWBrowser.Result.Change>) -> Void)?
+    var starts = 0
+    var cancels = 0
+    func start(queue: DispatchQueue) { starts += 1 }
+    func cancel() { cancels += 1 }
+}
 
 @MainActor
 final class CallUpdateWorkSchedulerTests: XCTestCase {
@@ -401,6 +778,34 @@ final class VoWLANNetworkRecoveryTests: XCTestCase {
 }
 
 final class SMSDeletionTests: XCTestCase {
+    @MainActor
+    func testConversationRowOpensThreadOutsideDeletionMode() async throws {
+        let model = AppModel()
+        model.messages = [SMSMessage(sender: "sms-navigation-fixture", content: "test message",
+                                    code: nil, timestamp: Date(), deliveryID: "navigation-fixture")]
+        let view = MessagesView(pendingRecipient: .constant(nil), pendingConversation: .constant(nil))
+            .environmentObject(model)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: view)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        func descendants(_ view: UIView) -> [UIView] {
+            [view] + view.subviews.flatMap(descendants)
+        }
+        let list = try XCTUnwrap(descendants(window).compactMap { $0 as? UICollectionView }.first)
+        let index = IndexPath(item: 0, section: 0)
+        XCTAssertGreaterThan(list.numberOfItems(inSection: 0), 0)
+        list.selectItem(at: index, animated: false, scrollPosition: [])
+        list.delegate?.collectionView?(list, didSelectItemAt: index)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let navigation = descendants(window).compactMap { $0 as? UINavigationBar }.first
+        XCTAssertEqual(navigation?.topItem?.title, "sms-navigation-fixture",
+                       "Reading a conversation must navigate, not select it for deletion")
+    }
+
     func testRepeatedFractionalLegacySaveAndUpgradeDoNotDuplicateMessages() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -678,6 +1083,8 @@ private final class VoBLECallControlProbe: VoBLECallControlling {
     var onReadyToSendAudio: (() -> Void)?
     var onDisconnected: (() -> Void)?
     var onReady: (() -> Void)?
+    var synchronizeOperation: () async throws -> UInt64 = { 0 }
+    func synchronizeCallGeneration() async throws -> UInt64 { try await synchronizeOperation() }
     var sendOperation: (String, String, UInt64) async throws -> VoBLEControlResponse = { _, _, generation in
         .init(requestID: "test-response", generation: generation, success: true, code: "ok", detail: "accepted")
     }
@@ -722,6 +1129,18 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(gate.accepts(old))
         XCTAssertTrue(gate.accepts(new))
     }
+    func testPairingNetworkDenialDoesNotTellUserTheVerificationCodeIsWrong() {
+        let response = Data("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".utf8)
+        for metadata in [false, true] {
+            XCTAssertThrowsError(try SamsungPairingHTTPResponse.decode(response, metadata: metadata)) { error in
+                XCTAssertEqual(error as? SamsungPairingClientError, .networkNotAllowed,
+                                  "Network refusal is not a failed six-digit-code authentication")
+                XCTAssertFalse(error.localizedDescription.contains("核对验证码"))
+                XCTAssertTrue(error.localizedDescription.contains("网络"))
+            }
+        }
+    }
+
     func testPairingTCPTransportReadsFramedResponseAndBoundsUnresponsivePeer() async throws {
         let peer = try LocalPairingHTTPProbe(response: Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8))
         let endpoint = try await peer.start()
@@ -1827,9 +2246,9 @@ final class AirSIMTests: XCTestCase {
         let player = AVAudioPlayerNode()
         let format = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 8_000, channels: 1, interleaved: false))
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 160)
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
-        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 160)
         try engine.start()
         defer { player.stop(); engine.stop() }
         let consumed = expectation(description: "streaming buffer can be replenished without a device sink")

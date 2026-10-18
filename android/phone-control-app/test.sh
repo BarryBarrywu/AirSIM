@@ -197,6 +197,8 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEPCMBridgeSession.java \
 	"$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEMediaSession.java \
 	"$ROOT"/test/com/airsim/phonecontrol/CoreTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/PairingPeerPolicyTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/HealthIdentityProofTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/PairingCryptoCompatibilityTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/NotificationUpdateGateTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java \
@@ -207,6 +209,8 @@ mkdir -p "$OUT"
   "$ROOT"/test/com/airsim/phonecontrol/AndroidAgentIdentityTests.java
 sh "$ROOT/verify-io-api.sh" "$OUT"
 "$JAVA" -cp "$OUT:$CRYPTO_JAR" com.airsim.phonecontrol.CoreTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.PairingPeerPolicyTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.HealthIdentityProofTests
 "$JAVA" -cp "$OUT:$CRYPTO_JAR" com.airsim.phonecontrol.PairingCryptoCompatibilityTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.PCMHealthEvidenceTests
 sh "$ROOT/test-voble-gatt.sh"

@@ -1,8 +1,10 @@
 import SwiftUI
 
 struct SamsungPairingView: View {
+    static var defaultLocalPairingOnly: Bool { !ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud }
     @EnvironmentObject private var model: AppModel
-    @State private var localPairingOnly = LocalModePreference.isEnabled()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var localPairingOnly = SamsungPairingView.defaultLocalPairingOnly
     @StateObject private var browser = SamsungPairingBrowser()
     @State private var code = ""
     @State private var pairingServiceID: String?
@@ -11,12 +13,13 @@ struct SamsungPairingView: View {
     @State private var host = ""
     @State private var port = ""
     @State private var pairingTask: Task<Void, Never>?
+    @State private var isVisible = false
 
     var body: some View {
         Form {
             Section {
                 Toggle(isOn: $localPairingOnly) {
-                    Label("本地模式配对", systemImage: "wifi")
+                    Label("仅本次配对不写入云端", systemImage: "wifi")
                 }
                 .disabled(pairingServiceID != nil)
                 .accessibilityIdentifier("localPairingOnly")
@@ -83,6 +86,13 @@ struct SamsungPairingView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                Button("重新扫描", systemImage: "arrow.clockwise") {
+                    browser.restart()
+                }
+                .disabled(pairingServiceID != nil)
+                Text("请在安卓打开一次性配对窗口，并允许 iPhone 的本地网络访问。回到 App 或切回自动发现时会重新扫描；路由器隔离或不支持广播的 VPN 可使用手动地址。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
               }
             }
 
@@ -92,13 +102,27 @@ struct SamsungPairingView: View {
         }
         .navigationTitle("配对安卓手机")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { if !manual { browser.start() } }
+        .onAppear {
+            isVisible = true
+            if !manual { browser.start() }
+        }
         .onChange(of: manual) { value in
             if value { browser.stop() } else { browser.start() }
             code = ""
             message = ""
         }
-        .onDisappear { browser.stop(); pairingTask?.cancel() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                browser.stop()
+            } else if isVisible, phase == .active, !manual, pairingServiceID == nil {
+                browser.restart()
+            }
+        }
+        .onDisappear {
+            isVisible = false
+            browser.stop()
+            pairingTask?.cancel()
+        }
     }
 
     private var codeField: some View {
@@ -120,6 +144,8 @@ struct SamsungPairingView: View {
             message = try await VoIPPushController.shared.performAndroidPairing(localOnly: localPairingOnly) { registration in
                 let result = try await SamsungPairingClient.pairManually(address: address, code: code, registration: registration)
                 try Task.checkCancellation()
+                try await model.completeLocalPairing(agentID: result.route.agentID,
+                    registration: registration, endpoint: result.route.endpoint)
                 try await model.vowlan.installManualRoute(result.route)
                 return model.vowlan.availability.isOnlineForDisplay
                     ? "配对成功，直连网关已通过认证。选择 VoWLAN 或自动连接模式后可用于通话与短信。"
@@ -146,18 +172,14 @@ struct SamsungPairingView: View {
             message = try await VoIPPushController.shared.performAndroidPairing(
                 localOnly: localPairingOnly
             ) { registration in
-                try await SamsungPairingCompletionCoordinator.complete(
-                performPairing: {
-                    try await SamsungPairingClient.pair(
+                let paired = try await SamsungPairingClient.pairDevice(
                         service: service,
                         code: code,
                         registration: registration
                     )
-                },
-                refreshVoWLAN: {
-                    await model.vowlan.refreshAfterPairing()
-                }
-                )
+                try await model.completeLocalPairing(agentID: paired.agentID, registration: registration)
+                return model.localDevices.api(for: paired.agentID) == nil
+                    ? "加密配对已写入安卓，正在等待通话网关身份验证；暂未建立可用路由。" : paired.message
             }
 #if DEBUG
             print("[AirSIM Pair] claim_completed session=\(service.sessionID)")

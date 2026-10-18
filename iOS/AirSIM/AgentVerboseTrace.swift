@@ -13,6 +13,7 @@ struct AgentVerboseTraceContext: Sendable {
     let method: String
     let path: String
     let startedAt: Date
+    let category: String
 }
 
 struct AgentVerboseTraceEntry: Codable, Identifiable, Sendable {
@@ -71,13 +72,13 @@ actor AgentVerboseTraceRecorder {
         }
     }
 
-    func begin(method: String, path: String, bodyBytes: Int) -> AgentVerboseTraceContext? {
+    func begin(method: String, path: String, bodyBytes: Int, category: String = "http") -> AgentVerboseTraceContext? {
         guard enabled else { return nil }
         let context = AgentVerboseTraceContext(
             id: String(UUID().uuidString.prefix(8)).lowercased(),
             method: method.uppercased(),
             path: path,
-            startedAt: Date()
+            startedAt: Date(), category: category
         )
         append(
             context,
@@ -110,7 +111,7 @@ actor AgentVerboseTraceRecorder {
         append(
             context,
             stage: .failure,
-            detail: error,
+            detail: Self.redact(error),
             elapsedMilliseconds: elapsed(from: context)
         )
         persist()
@@ -166,6 +167,34 @@ actor AgentVerboseTraceRecorder {
 
     func snapshot() -> [AgentVerboseTraceEntry] { entries }
 
+    func recordFailure(category: String, phase: String, error: Error,
+                       file: String = #fileID, function: String = #function, line: Int = #line) {
+        var fields = ["phase": phase, "file": file, "function": function, "line": String(line)]
+        var current: NSError? = error as NSError
+        var seen = Set<ObjectIdentifier>()
+        for depth in 0..<4 {
+            guard let value = current, seen.insert(ObjectIdentifier(value)).inserted else { break }
+            let prefix = depth == 0 ? "error" : "underlying_\(depth)"
+            fields["\(prefix)_domain"] = value.domain
+            fields["\(prefix)_code"] = String(value.code)
+            fields["\(prefix)_message"] = Self.redact(value.localizedDescription)
+            if let reason = value.localizedFailureReason { fields["\(prefix)_reason"] = Self.redact(reason) }
+            if let recovery = value.localizedRecoverySuggestion { fields["\(prefix)_recovery"] = Self.redact(recovery) }
+            current = value.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        recordEvent(source: "APP", category: category, phase: phase,
+                    title: "链路异常", detail: Self.redact(error.localizedDescription), fields: fields, isFailure: true)
+    }
+
+    private static func redact(_ text: String) -> String {
+        var value = String(text.prefix(1500))
+        for pattern in ["https?://[^\\s]+", "(?i)(token|secret|password|authorization)[=:]\\s*[^\\s]+",
+                        "[A-Za-z0-9_+/-]{32,}={0,2}", "\\+?[0-9]{11,15}"] {
+            value = value.replacingOccurrences(of: pattern, with: "[REDACTED]", options: .regularExpression)
+        }
+        return value
+    }
+
     func clear() {
         entries.removeAll(keepingCapacity: true)
         persist()
@@ -174,6 +203,7 @@ actor AgentVerboseTraceRecorder {
     func exportText(agentEvents: [AgentVerboseRemoteEvent]) -> String {
         var lines = [
             "AirSIM Agent Verbose Trace",
+            "app_version=\(AppInformation.version)",
             "exported_at=\(Self.iso8601.string(from: Date()))",
             "local_entries=\(entries.count) agent_events=\(agentEvents.count)",
             ""
@@ -224,7 +254,7 @@ actor AgentVerboseTraceRecorder {
                 detail: detail,
                 elapsedMilliseconds: elapsedMilliseconds,
                 source: nil,
-                category: nil,
+                category: context.category,
                 fields: nil
             )
         )

@@ -45,6 +45,11 @@ enum AirSIMRoutePolicy {
 }
 
 /// 统一封装模块代理 HTTP API；接口路径与 AirSIM Mac 版保持一致。
+protocol AirSIMHTTPTransport: Sendable {
+    func send(_ request: URLRequest, uploadFileURL: URL?) async throws -> WiredHTTPResponse
+}
+extension WiredHTTPTransport: AirSIMHTTPTransport {}
+
 struct AirSIMAPI: Sendable {
     /// Android Telecom 最长等待 12 秒确认；VoWLAN 必须晚于 Agent 的确认窗口超时，
     /// 否则 iPhone 会把仍在执行的非幂等拨号误判为失败并可能触发重复呼叫。
@@ -52,7 +57,7 @@ struct AirSIMAPI: Sendable {
 
     let baseURL: URL
     let route: LocalAgentRoute
-    private let transport: WiredHTTPTransport
+    private let transport: any AirSIMHTTPTransport
 
     static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
@@ -75,12 +80,12 @@ struct AirSIMAPI: Sendable {
 
     private static let decoder = makeDecoder()
 
-    init(route: LocalAgentRoute = .moduleLocal) {
+    init(route: LocalAgentRoute = .moduleLocal, transport: (any AirSIMHTTPTransport)? = nil) {
         self.route = route
         let baseURL = route.baseURL
         precondition(Self.isAllowedLocalURL(baseURL), "模块代理地址必须是本地 HTTP 地址")
         self.baseURL = baseURL
-        self.transport = WiredHTTPTransport(policy: route == .moduleLocal ? .moduleLocal : .vowlan)
+        self.transport = transport ?? WiredHTTPTransport(policy: route == .moduleLocal ? .moduleLocal : .vowlan)
     }
 
     init(baseURL: URL) {
@@ -169,6 +174,29 @@ struct AirSIMAPI: Sendable {
             throw originalError
         }
     }
+    func dialOwnedCall(number: String, operationID: String) async throws -> DeviceBackendCall {
+        struct Receipt: Decodable {
+            let operation_id: String?
+            let android_id: String?
+            let backend_id: String?
+            let operation_proof: String?
+        }
+        guard let credential = route.credential else { throw DeviceCallRoutingError.unavailable }
+        let nonce = VoWLANRequestSigner.makeNonce()
+        var request = URLRequest(url: endpoint("api/calls/dial"))
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["number": number, "operation_id": operationID])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.voWLANDialTimeout
+        let response = try await tracedResponse(for: request, authenticationNonce: nonce)
+        try Self.requireSuccess(response)
+        let receipt = try JSONDecoder().decode(Receipt.self, from: response.body)
+        guard receipt.operation_id == operationID, let androidID = receipt.android_id,
+              let backendID = receipt.backend_id,
+              VoWLANHealthProof.verifyDial(receipt.operation_proof, nonce: nonce, operationID: operationID,
+                androidID: androidID, backendID: backendID, credential: credential) else { throw DeviceCallRoutingError.unsupportedPeer }
+        return DeviceBackendCall(callID: androidID, backendID: backendID, generation: nil)
+    }
     func answerCall(callID: String? = nil) async throws {
         try await post("api/calls/answer", LocalCallControlBody(callID: callID))
     }
@@ -178,7 +206,11 @@ struct AirSIMAPI: Sendable {
     func hangupCall(callID: String? = nil) async throws {
         try await post("api/calls/hangup", LocalCallControlBody(callID: callID))
     }
-    func sendDTMF(_ digit: String) async throws { try await post("api/calls/dtmf", ["digit": digit]) }
+    func sendDTMF(_ digit: String, callID: String? = nil) async throws {
+        var body = ["digit": digit]
+        if let callID { body["call_id"] = callID }
+        try await post("api/calls/dtmf", body)
+    }
     func setAudioMuted(_ muted: Bool) async throws { try await post("api/calls/audio/mute", ["muted": muted]) }
     func setCallRecording(_ recording: Bool) async throws -> CallRecordingResponse {
         try await postDecoded("api/calls/audio/record", ["action": recording ? "start" : "stop"])
@@ -267,7 +299,8 @@ struct AirSIMAPI: Sendable {
     private func tracedResponse(
         for originalRequest: URLRequest,
         uploadFileURL: URL? = nil,
-        recordVerboseTrace: Bool = true
+        recordVerboseTrace: Bool = true,
+        authenticationNonce: String? = nil
     ) async throws -> WiredHTTPResponse {
         guard AirSIMRoutePolicy.permits(route) else {
             throw APIError.disabledLegacyRoute
@@ -288,7 +321,8 @@ struct AirSIMAPI: Sendable {
             ? await AgentVerboseTraceRecorder.shared.begin(
                 method: method,
                 path: path,
-                bodyBytes: uploadFileURL == nil ? (request.httpBody?.count ?? 0) : uploadBytes
+                bodyBytes: uploadFileURL == nil ? (request.httpBody?.count ?? 0) : uploadBytes,
+                category: route.credential == nil ? "http" : "vowlan"
             )
             : nil
         if let trace {
@@ -304,7 +338,8 @@ struct AirSIMAPI: Sendable {
             let signed = try VoWLANRequestSigner(secret: credential.secret).sign(
                 method: method,
                 path: path,
-                body: body
+                body: body,
+                nonce: authenticationNonce ?? VoWLANRequestSigner.makeNonce()
             )
             VoWLANController.apply(signed, to: &request)
         }
@@ -321,6 +356,8 @@ struct AirSIMAPI: Sendable {
         } catch {
             if let trace {
                 await AgentVerboseTraceRecorder.shared.fail(trace, error: error.localizedDescription)
+                await AgentVerboseTraceRecorder.shared.recordFailure(category: route.credential == nil ? "http" : "vowlan",
+                    phase: "http_request", error: error)
             }
             throw error
         }
