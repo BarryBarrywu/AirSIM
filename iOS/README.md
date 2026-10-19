@@ -1,6 +1,6 @@
 # AirSIM iOS 与 watchOS
 
-2026-10-19 发布：[Apps v0.9.8.2](../docs/releases/0.9.8.2.md)，iOS／Watch／Live Activity `0.9.8 (96)`。包含通话路径修复、多 SIM 卡槽选择、双通道灵动岛在线判断与 Agent 文案；GitHub unsigned IPA 仍需重签，TestFlight 上传／处理／审核分别核实。下文候选及旧版本记录保留追溯。
+2026-10-19 发布：[Apps v0.9.8.2](../docs/releases/0.9.8.2.md)，iOS／Watch／Live Activity `0.9.8 (96)`。包含通话路径修复、多 SIM 卡槽选择、双通道灵动岛在线判断与 Agent 文案；GitHub unsigned IPA 仍需重签。TestFlight **0.9.8 (96) 已上传 App Store Connect，processing**；处理／审核／测试者可用另行核实。下文候选及旧版本记录保留追溯。
 
 0.9.8.1 新增应用更新入口：首次安装／升级启动展示包内版本说明；「设置 → 关于」可重看和手动检查新版。前台每日最多自动检查一次（失败也限频），不自动下载／安装 IPA，不访问 Relay；TestFlight 可用性与 GitHub 发布分开提示。[行为、维护和验证边界](../docs/app-updates.md)。
 

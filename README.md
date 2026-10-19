@@ -101,7 +101,7 @@ VoBLE 是与 VoWLAN、云端 Relay 并列的模式选项，不是现有 Wi-Fi �
 | 组件 | 当前版本或地址 |
 | --- | --- |
 | Android Standalone / AVF Bridge · Android 10–13 修复 APK | [`v0.9.8.2 (96)`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.2)，推荐安装 Standalone |
-| iPhone / Apple Watch App | `0.9.8 (96)`，随 [v0.9.8.2](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.2) 提供 full／sideload unsigned IPA；TestFlight 单独上传处理 |
+| iPhone / Apple Watch App | `0.9.8 (96)`，随 [v0.9.8.2](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.2) 提供 full／sideload unsigned IPA；TestFlight 已上传，processing |
 | Android AVF Linux Agent | [`v0.4.6`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.6)（Debian 包版本 `0.4.6-1`） |
 | AirSIM Relay | `0.2.1` · [`https://airsim-push.remotepilot.site`](https://airsim-push.remotepilot.site/healthz) |
 | DJOneHub Relay | `https://push.remotepilot.site`（独立服务，AirSIM 不得使用） |
