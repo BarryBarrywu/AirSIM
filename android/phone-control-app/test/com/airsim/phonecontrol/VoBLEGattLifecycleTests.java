@@ -9,8 +9,11 @@ public final class VoBLEGattLifecycleTests {
         context.grant(android.Manifest.permission.BLUETOOTH_ADVERTISE);
         var manager=new BluetoothManager(); context.setSystemService(BluetoothManager.class,manager);
         var listener=new VoBLEGattServer.Listener() {
+            int ready, failed;
             public void onPairingWrite(String d,byte[] v) {} public void onControlWrite(String d,byte[] v) {}
             public void onAudioWrite(String d,byte[] v) {} public void onDisconnected(String d) {}
+            public void onAdvertisingReady() { ready++; }
+            public void onAdvertisingFailed(int code) { failed++; }
         };
         var gatt=new VoBLEGattServer(context,listener,new VoBLEControlChannel());
         check(gatt.start(),"service setup must start");
@@ -19,6 +22,8 @@ public final class VoBLEGattLifecycleTests {
         check(first.pending.getCharacteristics().size()==7,"missing service characteristics");
         old.onServiceAdded(0,first.pending);
         check(manager.adapter.advertiser.starts==1,"successful registration did not advertise");
+        manager.adapter.advertiser.last.onStartSuccess(null);
+        check(listener.ready==1,"successful advertising did not notify the service");
         old.onServiceAdded(0,first.pending);
         check(manager.adapter.advertiser.starts==1,"duplicate callback advertised twice");
         gatt.close(); gatt.start();
@@ -33,6 +38,7 @@ public final class VoBLEGattLifecycleTests {
         manager.callbacks.get(2).onServiceAdded(0,third.pending);
         manager.adapter.advertiser.last.onStartFailure(2);
         check(third.closed,"failed advertising left nonfunctional server cached");
+        check(listener.failed==1,"failed advertising did not notify the service");
         gatt.close();
         System.out.println("VoBLE GATT lifecycle tests passed");
     }

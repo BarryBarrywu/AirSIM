@@ -127,7 +127,7 @@ struct AirSIMLiveActivityWidget: Widget {
                     if state.phase == .standby {
                         HStack(spacing: 5) {
                             Circle().fill(Color.green).frame(width: 7, height: 7)
-                            Text(connectionStatusLine(state) ?? "模块在线")
+                            Text(connectionStatusLine(state) ?? "Agent 在线")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.green)
                         }

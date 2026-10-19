@@ -117,11 +117,15 @@ struct OtherDeviceCallSheet: View {
                 Section("来电设备") {
                     Text(reminder.deviceName).font(.headline)
                     Text(reminder.number ?? "号码未提供")
-                    Text(model.deviceCalls.active == nil ? "接听将使用此设备的本地链路" : "当前通话继续；请先结束当前通话再接听")
+                    Text(model.cloudCallOwnsPrimaryPresentation
+                         ? "当前云端通话继续；请先结束当前通话再接听"
+                         : (model.deviceCalls.active == nil
+                            ? "接听将使用此设备的本地链路"
+                            : "当前通话继续；请先结束当前通话再接听"))
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Button("接听此设备", action: answer)
-                    .disabled(model.deviceCalls.active != nil)
+                    .disabled(model.deviceCalls.active != nil || model.cloudCallOwnsPrimaryPresentation)
                 if let failure { Text(failure).foregroundStyle(.red) }
             }
             .navigationTitle("其他设备来电")

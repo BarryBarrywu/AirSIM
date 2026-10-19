@@ -273,7 +273,9 @@ final class CallKitController: NSObject {
         // Watch may own the shared route without an iPhone CallKit UUID.
         // Native presentation state alone is therefore not an admission gate.
         let model = handler as? AppModel
-        let localOwnerBusy = model?.deviceCalls.active != nil || model?.deviceCallContext.admissionReservation != nil
+        let localOwnerBusy = model?.ownsLocalCallPresentation == true
+            || model?.cloudCallOwnsPrimaryPresentation == true
+            || model?.deviceCallContext.admissionReservation != nil
         if isAvailable, CloudModePreference.isEnabled(),
            !localOwnerBusy,
            currentUUID == nil || currentUUID == call.uuid,

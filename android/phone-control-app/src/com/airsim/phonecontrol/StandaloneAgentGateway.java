@@ -47,6 +47,7 @@ final class StandaloneAgentGateway {
     String health() throws Exception {
         return new JSONObject().put("ok", true).put("product", "airsim")
                 .put("version", "standalone-0.1.0").put("runtime_profile", "android-standalone")
+                .put("sim_slots", SimSlotJson.slots(context))
                 .toString();
     }
 
@@ -121,7 +122,8 @@ final class StandaloneAgentGateway {
             case "/api/push/register" -> ok(registerPairing(input.toString()));
             case "/api/push/mode" -> ok(store.setCloudEnabled(
                     input.optBoolean("enabled", false)).toString());
-            case "/api/calls/dial" -> command("dial", "", input.optString("number", ""), "");
+            case "/api/calls/dial" -> command("dial", "", input.optString("number", ""), "",
+                    input.optString("sim_account", ""));
             case "/api/calls/answer" -> command("answer", localCallTarget("answer", input), "", "");
             case "/api/calls/reject" -> command("reject", localCallTarget("reject", input), "", "");
             case "/api/calls/hangup" -> command("end", localCallTarget("end", input), "", "");
@@ -191,7 +193,8 @@ final class StandaloneAgentGateway {
                     .put("status","failed").put("error","call_mismatch"));
         }
         AgentCommand local = new AgentCommand(commandID, action, callID,
-                command.optString("number", ""), command.optString("message", ""));
+                command.optString("number", ""), command.optString("message", ""),
+                command.optString("sim_account", ""));
         AgentCommandDispatcher.Result result = execute(local);
         JSONObject output = new JSONObject().put("command_id", commandID)
                 .put("status", result.success() ? "completed" : "failed");
@@ -222,8 +225,13 @@ final class StandaloneAgentGateway {
 
     private AgentClient.ForwardResponse command(String action, String callID, String number, String message)
             throws Exception {
+        return command(action, callID, number, message, "");
+    }
+
+    private AgentClient.ForwardResponse command(String action, String callID, String number, String message,
+                                                String simAccount) throws Exception {
         AgentCommandDispatcher.Result result = execute(new AgentCommand(
-                UUID.randomUUID().toString(), action, callID, number, message));
+                UUID.randomUUID().toString(), action, callID, number, message, simAccount));
         if (!result.success()) return error(502, result.error());
         JSONObject value = new JSONObject();
         switch (action) {

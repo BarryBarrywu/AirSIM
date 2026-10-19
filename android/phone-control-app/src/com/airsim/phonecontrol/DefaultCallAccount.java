@@ -93,8 +93,14 @@ public final class DefaultCallAccount {
         preferences(context).edit().putString("key", "").putString("label", SYSTEM).apply();
     }
     public static Bundle dialExtras(Context context) {
+        return dialExtras(context, "");
+    }
+
+    /** Optional per-call override from the paired iPhone; empty keeps the app default. */
+    public static Bundle dialExtras(Context context, String overrideKey) {
         Bundle extras = new Bundle();
-        String key = selectedKey(context);
+        String key = overrideKey == null ? "" : overrideKey.trim();
+        if (key.isEmpty()) key = selectedKey(context);
         if (key.isEmpty()) return extras;
         Snapshot snapshot = snapshot(context);
         if (!snapshot.error().isEmpty()) throw new IllegalStateException(snapshot.error());
@@ -104,6 +110,8 @@ public final class DefaultCallAccount {
                 return extras;
             }
         }
-        throw new IllegalStateException("默认通话卡已关闭或移除，请在 AirSIM 设置中重新选择");
+        throw new IllegalStateException("所选通话卡已关闭或移除，请在 iPhone 上重新选择");
     }
+
+
 }

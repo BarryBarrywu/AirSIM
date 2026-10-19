@@ -116,6 +116,16 @@ public final class BridgeUnitTests {
             failed = true;
         }
         check(failed, "malformed hello rejected");
+
+        boolean probe = false;
+        boolean[] started = {false};
+        try {
+            BridgeProtocol.acceptHandshake(new ByteArrayInputStream(new byte[0]),
+                new ByteArrayOutputStream(), () -> started[0] = true);
+        } catch (BridgeProtocol.ProbeClosed expected) {
+            probe = true;
+        }
+        check(probe && !started[0], "liveness probe started audio");
     }
 
     private static void testStats() {

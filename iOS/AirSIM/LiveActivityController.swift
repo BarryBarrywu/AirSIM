@@ -48,13 +48,14 @@ enum LiveActivityStateBuilder {
         downloadBytesPerSecond: Double? = nil,
         uploadBytesPerSecond: Double? = nil
     ) -> AirSIMCallActivityAttributes.ContentState {
-        // 只有本地控制与 Relay 心跳同时不可达才显示离线；云端心跳新鲜时使用
-        // 独立待机态，避免把 USB ECM 中断误报成整个模块离线。
-        guard moduleOnline || cloudOnline else {
+        // USB 本地控制、Relay 心跳、VoWLAN、VoBLE 任一路可达即视为 Agent 在线。
+        // 双通道下 USB ECM 断开但 BLE 仍连着时，不能把整个 Agent 误报成离线。
+        let localAgentOnline = agent?.vowlanOnline == true || agent?.bluetoothOnline == true
+        guard moduleOnline || cloudOnline || localAgentOnline else {
             return .init(
                 callID: "",
                 number: "",
-                displayName: "模块离线",
+                displayName: "Agent 离线",
                 phase: .offline,
                 startedAt: idleStartedAt,
                 agentDeviceName: agent?.deviceName,
@@ -72,7 +73,7 @@ enum LiveActivityStateBuilder {
             return .init(
                 callID: "",
                 number: "",
-                displayName: cloudOnly ? "公网中继已连接" : "等待模块来电",
+                displayName: cloudOnly ? "公网中继已连接" : "等待 Agent 来电",
                 phase: cloudOnly ? .cloudStandby : .standby,
                 startedAt: idleStartedAt,
                 transport: cloudOnly ? .cloud : transport,

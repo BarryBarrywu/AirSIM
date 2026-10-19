@@ -92,6 +92,18 @@ final class DeviceCallRegistryTests: XCTestCase {
         XCTAssertEqual(registry.latestEvent(for: a)?.state, .active)
     }
 
+    func testDeactivateReleasesOnlyOptimisticAnswer() throws {
+        var registry = DeviceCallRegistry()
+        _ = registry.apply(event("A", .ringing))
+        let a = try XCTUnwrap(registry.ringing.first)
+        XCTAssertTrue(registry.activate(a))
+        registry.deactivate(a)
+        XCTAssertNil(registry.active)
+        XCTAssertEqual(registry.latestEvent(for: a)?.state, .ringing)
+        XCTAssertTrue(registry.ringing.contains(a))
+        XCTAssertTrue(registry.activate(a))
+    }
+
     @MainActor
     func testLegacyIngressDoesNotEndAnotherSourceOnLateResult() throws {
         let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()))

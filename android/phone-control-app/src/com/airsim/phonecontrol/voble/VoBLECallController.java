@@ -11,7 +11,12 @@ public final class VoBLECallController {
     }
 
     public record Request(
-            String requestId, String action, String callId, String number, long generation) {}
+            String requestId, String action, String callId, String number, long generation,
+            String simAccount) {
+        public Request(String requestId, String action, String callId, String number, long generation) {
+            this(requestId, action, callId, number, generation, "");
+        }
+    }
 
     public record Result(boolean success, String code, String detail) {
         public static Result success(String detail) { return new Result(true, "ok", detail); }

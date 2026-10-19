@@ -1,10 +1,190 @@
 import XCTest
+import Combine
 import CoreBluetooth
 import CryptoKit
 @testable import AirSIM
 
 @MainActor
 final class VoBLEMultiDeviceTests: XCTestCase {
+    func testPairingPageShowsSharedScanBeforeAnyDeviceIsSelected() {
+        let io = RadioIOProbe()
+        let hub = VoBLEDeviceHub(radio: VoBLERadioController(io: io), pairingStore: MemoryPairings())
+        XCTAssertEqual(hub.pairingState, .stopped)
+        hub.start()
+        XCTAssertNil(hub.selectedPeripheralID)
+        XCTAssertEqual(hub.pairingState, .scanning)
+        XCTAssertNil(hub.selected.central.authenticatedIdentity)
+        XCTAssertNil(hub.bundle(for: "unpaired"))
+        XCTAssertEqual(io.scans, 1)
+        hub.start()
+        XCTAssertEqual(io.scans, 1, "entering pairing must reuse the shared scan")
+        hub.stop()
+        XCTAssertEqual(hub.pairingState, .stopped)
+    }
+
+    func testForegroundReArmsSharedScanWhenFlagStillSaysScanning() {
+        let io = RadioIOProbe()
+        let hub = VoBLEDeviceHub(radio: VoBLERadioController(io: io), pairingStore: MemoryPairings())
+        defer { hub.stop() }
+        hub.start()
+        XCTAssertEqual(io.scans, 1)
+        XCTAssertEqual(hub.pairingState, .scanning)
+        // The OS can stop a scan while the app is suspended without changing
+        // the in-memory flag; a foreground re-arm must issue a fresh scan.
+        hub.radio.rearmScan()
+        XCTAssertEqual(io.stops, 1)
+        XCTAssertEqual(io.scans, 2)
+        XCTAssertEqual(hub.pairingState, .scanning)
+    }
+
+    func testMediaPauseStopsSharedScanAndResumesWhenAudioEnds() {
+        let io = RadioIOProbe()
+        let radio = VoBLERadioController(io: io)
+        radio.start()
+        XCTAssertEqual(io.scans, 1)
+        radio.pauseScanForMedia()
+        XCTAssertEqual(io.stops, 1)
+        XCTAssertFalse(radio.scanning)
+        // Foreground/re-arm and user rescan must not steal radio time from an
+        // active BLE media connection.
+        radio.start()
+        radio.rearmScan()
+        radio.rescan()
+        XCTAssertEqual(io.scans, 1, "media must suppress rescan while audio is running")
+        radio.resumeScanAfterMedia()
+        XCTAssertEqual(io.scans, 2)
+        XCTAssertTrue(radio.scanning)
+        radio.stop()
+    }
+
+    func testLocalIncomingDuringCloudCallStaysReminder() async throws {
+        let previous = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.automatic)
+        defer { ConnectionModePreference.set(previous) }
+        let backend = PassiveCallBackend()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            deviceBackend: { _, _ in backend })
+        defer { model.stop() }
+        let cloudUUID = UUID()
+        let cloud = try IncomingVoIPCall(userInfo: [
+            "event": "incoming_call", "call_id": "cloud-busy-1",
+            "call_uuid": cloudUUID.uuidString, "generation": 1,
+            "number": "10086", "agent_id": "cloud-agent",
+        ])
+        model.callKitDidReceiveIncoming(cloud)
+        XCTAssertEqual(model.callLifecycleSnapshot.callID, "cloud-busy-1")
+        XCTAssertEqual(model.callLifecycleSnapshot.state, .ringing)
+
+        let local = DeviceCallEvent(agentID: "local-agent", callID: "local-busy-1",
+            state: .ringing, transport: .bluetooth, transportEpoch: 1, number: "10010")
+        _ = model.receiveOwnedCallEvent(local)
+        // The cloud call keeps the primary presentation; the local call must be
+        // visible as an "other device" reminder, not silently swallowed.
+        XCTAssertEqual(model.callLifecycleSnapshot.callID, "cloud-busy-1")
+        XCTAssertEqual(model.callLifecycleSnapshot.state, .ringing)
+        let key = try XCTUnwrap(model.deviceCalls.key(agentID: "local-agent", callID: "local-busy-1"))
+        XCTAssertEqual(model.deviceCalls.latestEvent(for: key)?.state, .ringing)
+        XCTAssertNil(model.deviceCalls.active)
+        XCTAssertTrue(model.otherDeviceCallReminders.contains { $0.key == key },
+                      "local ringing call must surface as a reminder while cloud owns the call")
+        do {
+            try await model.answerOtherDeviceCall(key)
+            XCTFail("answering a local reminder during a cloud call must be busy")
+        } catch {
+            XCTAssertEqual(error as? DeviceCallRoutingError, .busy)
+        }
+    }
+
+    func testLiveActivityTreatsBluetoothAsAgentOnline() {
+        let agent = AndroidAgentPresentation(
+            id: "a", deviceName: "Samsung", phoneNumber: nil, agentKind: "standalone",
+            cloudOnline: false, vowlanOnline: false, bluetoothOnline: true, isCurrent: true)
+        let snapshot = LiveActivityAgentSnapshot(agent: agent, pairedAgentCount: 1)
+        let state = LiveActivityStateBuilder.make(
+            call: nil, callerName: nil, moduleOnline: false, cloudOnline: false,
+            radio: nil, agent: snapshot, idleStartedAt: Date())
+        XCTAssertEqual(state.phase, .standby)
+        XCTAssertEqual(state.displayName, "等待 Agent 来电")
+        XCTAssertTrue(state.bluetoothOnline == true)
+    }
+
+    func testLiveActivityOfflineSaysAgentOffline() {
+        let state = LiveActivityStateBuilder.make(
+            call: nil, callerName: nil, moduleOnline: false, cloudOnline: false,
+            radio: nil, agent: nil, idleStartedAt: Date())
+        XCTAssertEqual(state.phase, .offline)
+        XCTAssertEqual(state.displayName, "Agent 离线")
+    }
+
+    func testAndroidSIMSlotMetadataDecodesNumbers() throws {
+        let data = Data(#"""
+        {"agent_id":"sim-agent","device_name":"Samsung","call_generation":1,
+         "sim_slots":[{"id":"k1","label":"SIM 1","number":"10086","default":true},
+                      {"id":"k2","label":"SIM 2","number":""}]}
+        """#.utf8)
+        let metadata = try AndroidAgentMetadata.decode(data, expectedID: "sim-agent")
+        XCTAssertEqual(metadata.simSlots?.count, 2)
+        XCTAssertEqual(metadata.simSlots?.first?.displayName, "SIM 1 · 10086")
+        XCTAssertEqual(metadata.simSlots?.last?.displayName, "SIM 2")
+    }
+
+    func testBluetoothPCMStatusText() {
+        XCTAssertEqual(CallAudioStatusPresentation.text(
+            transport: .bluetooth, bluetoothRunning: true, bluetoothError: nil,
+            localAudioActive: false, cloudState: .idle), "已连接蓝牙 PCM 链路")
+        XCTAssertEqual(CallAudioStatusPresentation.text(
+            transport: .bluetooth, bluetoothRunning: false, bluetoothError: nil,
+            localAudioActive: false, cloudState: .idle), "正在建立蓝牙语音链路")
+    }
+
+    func testPairingSheetObservesVerificationCodeWithoutAnotherTap() {
+        let hub = VoBLEDeviceHub(radio: VoBLERadioController(io: RadioIOProbe()), pairingStore: MemoryPairings())
+        let session = hub.prepare(peripheralID: UUID())
+        var updates = 0
+        let observation = hub.objectWillChange.sink { updates += 1 }
+        defer { observation.cancel(); hub.stop() }
+        // pendingSAS/errorMessage are @Published on the central, not mirrored by
+        // $state. Forwarding the central must invalidate the sheet immediately.
+        session.central.objectWillChange.send()
+        XCTAssertGreaterThan(updates, 0, "pairing sheet must observe verification-code changes")
+    }
+
+    func testRadioBecomingAvailablePublishesPairingPageUpdateWithoutSelectedSession() {
+        let io = RadioIOProbe(); io.poweredOn = false
+        let hub = VoBLEDeviceHub(radio: VoBLERadioController(io: io), pairingStore: MemoryPairings())
+        var updates = 0
+        let observation = hub.objectWillChange.sink { updates += 1 }
+        defer { observation.cancel(); hub.stop() }
+        hub.start()
+        XCTAssertGreaterThan(updates, 0, "reopening pairing while power is off must publish enablement")
+        XCTAssertEqual(hub.pairingState, .bluetoothUnavailable)
+        updates = 0
+        io.poweredOn = true
+        hub.radio.scanIfNeeded()
+        XCTAssertGreaterThan(updates, 0, "radio power/scan updates must invalidate the pairing view")
+        XCTAssertEqual(hub.pairingState, .scanning)
+        XCTAssertNil(hub.selected.central.authenticatedIdentity)
+    }
+
+    func testUnboundBluetoothPeersExposeDialDeviceSelectionAndBindOnlyChosenPhone() {
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.bluetooth); AndroidAgentBindingPreference.set(nil)
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        let hub = VoBLEDeviceHub(radio: VoBLERadioController(io: RadioIOProbe()), pairingStore: MemoryPairings())
+        let a = hub.prepare(peripheralID: UUID()), b = hub.prepare(peripheralID: UUID())
+        authenticate(a.central, as: "selector-A"); authenticate(b.central, as: "selector-B")
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()), bluetoothHub: hub)
+        defer { model.stop() }
+        XCTAssertNil(model.currentAndroidAgent)
+        XCTAssertEqual(model.pairedAndroidAgents.count, 2)
+        XCTAssertEqual(DialPadAgentSection.make(mode: .bluetooth, hasCurrent: model.currentAndroidAgent != nil,
+            pairedCount: model.pairedAndroidAgents.count), .selection)
+        model.bindAndroidAgent("selector-B")
+        XCTAssertEqual(model.currentAndroidAgent?.id, "selector-B")
+        XCTAssertEqual(a.central.state, .ready)
+        XCTAssertEqual(b.central.state, .ready)
+    }
+
     private func authenticate(_ session: VoBLECentralController, as identity: String) {
         session.apply(.discovered(session.targetPeripheralID!))
         session.apply(.connected)
@@ -258,6 +438,16 @@ private final class CallControlBoundary: VoBLECallControlling {
 }
 
 @MainActor
+private final class PassiveCallBackend: DeviceCallBackend {
+    let epoch: UInt64 = 1
+    func dial(number: String, operationID: String, systemUUID: UUID) async throws -> DeviceBackendCall {
+        .init(callID: operationID, backendID: operationID, generation: 1)
+    }
+    func answer(callID: String, generation: UInt64?) async throws {}
+    func end(callID: String, generation: UInt64?, reject: Bool) async throws {}
+    func dtmf(_ digits: String, callID: String, generation: UInt64?) async throws {}
+}
+
 private final class RadioIOProbe: VoBLERadioIO {
     var manager: CBCentralManager? { nil }
     var poweredOn = true

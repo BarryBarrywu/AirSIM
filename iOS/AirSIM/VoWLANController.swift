@@ -84,6 +84,7 @@ struct VoWLANHealthIdentity: Decodable {
     let phoneNumber: String?
     var identityProof: String? = nil
     var canonicalCallIDs: Bool? = nil
+    var simSlots: [AndroidSIMSlot]? = nil
 
     enum CodingKeys: String, CodingKey {
         case ok
@@ -94,6 +95,7 @@ struct VoWLANHealthIdentity: Decodable {
         case phoneNumber = "phone_number"
         case identityProof = "identity_proof"
         case canonicalCallIDs = "canonical_call_ids"
+        case simSlots = "sim_slots"
     }
 }
 

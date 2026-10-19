@@ -91,7 +91,7 @@
 
 ## 2026-10-13 晚间蓝牙音频复现与修复
 
-- 三星 SM-F766U 已通过无线 ADB `192.168.31.203:38137` 接入，Standalone 前台服务正常；iPhone Air 使用保留数据的 `AirSIM Diag`。
+- 三星 SM-F766U 已通过无线 ADB `<samsung-lan>:38137` 接入，Standalone 前台服务正常；iPhone Air 使用保留数据的 `AirSIM Diag`。
 - 修复前真实蓝牙呼出已到达 Android Telecom 的 `active`。PCM 下行持续增长，上行仅短暂出现静音帧；此证据不能算作双向语音通过。
 - Android `STREAM_VOICE_CALL` 为静音，音频 HAL 收到 `setVoiceVolume(0.0)` 和 `l_volume_voice=0.0`，因此不能仅凭 App 的静音请求日志判断实际听感。
 - iOS 临时呼出 ID 不再绑定 CallKit 后端身份，只在 Android 权威通话 ID 到达后同步。拨号响应晚于 Telecom 事件时，不再回写临时 ID 或把已接通电话降回连接中。
@@ -202,3 +202,23 @@
 - iOS 用户强制退出 App 后，系统不保证 BLE 后台唤醒。CallKit 可用于本地蓝牙通话，但本地模式不依赖 PushKit。
 - Apple Watch 使用 iPhone 的 CallKit/WatchConnectivity 状态与系统音频路由，不是 Watch 到 Android 的直接 BLE 音频链路。
 - 自动化测试不替代三星、小米、iPhone 与 Watch 的联合真机电话验收。
+
+### 2026-10-19 BLE 发现恢复（未发布）
+
+- 用户反馈蓝牙模式一直停在“正在发现”、找不到安卓。只读核对：iPhone 绑定 `android-d213…3846d9`，局域网 mDNS TXT 的 `agent_id` 与之相同，安卓在网；同日 VoWLAN 多次“鉴权失败”，说明 iPhone 保存的 VoWLAN 密钥已过期，属于独立凭据问题。
+- iOS 共享 Radio 新增 `rearmScan()`：前台恢复、重新进入配对页或模式切换时即使 `scanning` 仍为 true 也重新下发 `scanForPeripherals`；1 秒时间戳限制避免重复启停。新增 `voble-radio` Verbose 事件记录扫描／电源／发现数量，不记录设备身份。
+- 安卓 `VoBLEGatewayService` 监听 `ACTION_STATE_CHANGED`，蓝牙打开时重启广播、关闭时释放失效 GATT server；广播失败按 2/4/8 秒有界重试 3 次。GATT 生命周期回归新增成功／失败回调断言。
+- 验证：Android `phone-control-app/test.sh` 通过；iOS 全量 **281 项、0 失败、退出 0**。iOS Release build **96** 使用本机安装配置保留数据覆盖安装到 iPhone Air（Apple Development／sandbox）；安装后设备锁屏，启动与真实发现未取得回执。
+- 安卓仅生成 debug APK；已安装正式包使用 `CN=AirSIM Release` 证书，debug 包不能覆盖。正式安卓更新需要原 release keystore；真实 BLE 发现、SAS 认证、拨号与双向音频仍待两台真机复验。
+- **19:25 真机追加**：三星已安装同证书 debug build 95（覆盖 build 94，数据保留）。安卓日志出现 `voble_gatt_service_ready` / `voble_gatt_advertising_ready`，`dumpsys bluetooth_manager` 显示活动广播；iPhone build 96 同一秒 `PEER_DISCOVERED`（RSSI −42）。19:26 设备上 BLE 拨号被安卓接受并进入 active，媒体引擎运行，收到下行帧 91→226；输出 Speaker、输入内置麦克风。未做声学／双向质量验收，`dropped_frames` 17→108 增长，需复测；蓝牙开关恢复路径未在真机触发。
+- **19:30 卡顿回归修复**：旧版 `connect` 前会 `stopScan`，多设备共享 Radio 在通话中持续扫描，挤占 BLE 吞吐。现在任一会话 `audio.running` 时暂停扫描，通话结束恢复；re-arm 间隔改为 10 秒。新增 `testMediaPauseStopsSharedScanAndResumesWhenAudioEnds`；全量 **282 项、0 失败**；build 97 已保留数据安装并启动。
+- **19:31 复测**：`SCAN_PAUSED_MEDIA` 已触发，但扬声器通话 `dropped_frames` 仍 13→54→95→139（约 7 秒）；此前听筒通话仅 5，扬声器通话 108／139。丢帧与 Speaker 路由高度相关，扫描不是唯一原因。
+- 已用同一 Debug 证书构建非 debuggable 优化 APK 并覆盖安装（数据保留），用于排除 debug 构建性能因素；广告与前台服务正常。听筒／扬声器 A/B、长通话与双向音质仍待复验。
+- **用户定位**：卡顿来自后台运行的模拟蓝牙触摸板占用 BLE 通道，关闭后消失；不是 AirSIM 扫描或音频管线的唯一原因。暂停扫描保留为恢复旧版“连接后停扫”的回归修复；关闭外部 BLE 设备后需重跑一次通话，记录 `dropped_frames` 与听感。
+- **配对核对码延迟**：`pendingSAS` 变化未从中央控制器转发到 Hub/AppModel，视图只有在下一次点击改变 `selectedPeripheralID` 时重绘，导致已进入认证却要再点一次设备才显示六位码。Hub 现在转发所选控制器的 `objectWillChange`；新增回归，全量 **283 项、0 失败**；build 98 已安装。真实配对显示仍待复验。
+- **通话路径审查修复**：过滤未验证 peer、绑定离线设备不再显示另一台为当前；云端通话期间本地来电转为提醒；接听失败释放 media/registry 并恢复响铃页；直接拨号失败清 pending；BLE start_media 仅对 disconnected/notReady 重试一次；云端来电不再无谓启动本地浏览。全量 **286 项、0 失败**；build **100** 已保留数据安装并启动。真机 trace 可见 BLE 扫描/发现（同环境 8–9 个 peer）；覆盖安装时 trace 记录 21:03:56 结束了一通 outgoing 云端通话，可能是安装终止，未记作验收。
+- **PCM 探活误报**：`VoWLANGatewayService.portOpen()` 的裸 TCP 探活被桥当成客户端，桥先建音频端点再读握手→`handshake_failed`，并可能短暂抢占音频。修复为先读 hello 再建端点；`ProbeClosed` 静默关闭。空闲 health 日志降为状态变化/30s，通话中每秒并带 `in_call`。桥单测 65 项、Android JVM 通过；APK 已安装；未做通话复验。
+- **灵动岛双通道在线**：原离线判断只看 USB 本地控制/云端；双通道下 USB 断开但 VoBLE/VoWLAN 在线会误报。现在纳入当前 Agent 的 `vowlanOnline`/`bluetoothOnline`，任一路可达即待机；离线文案改为“Agent 离线”，待机/来电/兜底改为 Agent 文案。新增 2 项回归，**291 项、0 失败**；build 103 安装。
+- **多 SIM 卡槽选择**：安卓上报 `sim_slots`（BLE `device_info` / VoWLAN `/v1/health`），拨号携带 `sim_account`；iOS 在 >1 个卡槽时于当前设备卡显示 `simcard.2` 菜单，显示标签与号码并记住选择。iOS **289 项、0 失败**；Android JVM 与 Standalone 构建通过；build 102 安装。当前三星仅一个 call-capable 账号，选择按钮未在真机显示，双 SIM/eSIM 验收待执行；AVF/Cloud 尚未透传该字段。
+- **蓝牙 PCM 状态显示**：通话页原用 `vobleAudio.running` 判断，可能读到非通话会话，导致引擎已运行仍显示“正在建立蓝牙语音链路”。现按通话归属会话的 `audio.running`/`media.isRunning`（并回退检查所有 BLE 会话）判断；连接显示绿色“已连接蓝牙 PCM 链路”，未连接保持橙色。全量 **287 项、0 失败**；build 101 待安装复验。
+- **21:00 蓝牙关开真机回执**：`cmd bluetooth_manager disable/enable` 后，安卓广播以新 Advertising ID 于 **21:00:54** 重启，iPhone 同一秒 `PEER_DISCOVERED`（RSSI −56），三星通知随后为“已连接经过认证的 iPhone”。广播恢复、iPhone 重连与认证均通过；该窗口未拨打电话。接听失败、云端并发与双安卓提醒仍待复验。

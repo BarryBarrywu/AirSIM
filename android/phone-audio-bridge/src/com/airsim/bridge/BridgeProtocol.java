@@ -13,6 +13,11 @@ final class BridgeProtocol {
 
     private BridgeProtocol() {}
 
+    /** A liveness probe connected and closed without speaking PCM. Not a failure. */
+    static final class ProbeClosed extends IOException {
+        ProbeClosed() { super("client closed before PCM handshake"); }
+    }
+
     static void acceptHandshake(InputStream input, OutputStream output) throws IOException {
         acceptHandshake(input, output, () -> {});
     }
@@ -20,22 +25,27 @@ final class BridgeProtocol {
     interface AudioStartup { void start() throws IOException; }
 
     static void acceptHandshake(InputStream input, OutputStream output, AudioStartup startup) throws IOException {
+        readHello(input);
+        startup.start();
+        writeReady(output);
+    }
+
+    /** Validate the client hello before creating AudioRecord/AudioTrack. */
+    static void readHello(InputStream input) throws IOException {
         byte[] hello = new byte[CLIENT_HELLO.length];
         int offset = 0;
         while (offset < hello.length) {
             int count = input.read(hello, offset, hello.length - offset);
-            if (count < 0) {
-                throw new IllegalArgumentException("incomplete PCM handshake");
-            }
-            if (count == 0) {
-                continue;
-            }
+            if (count < 0) throw new ProbeClosed();
+            if (count == 0) continue;
             offset += count;
         }
         if (!Arrays.equals(hello, CLIENT_HELLO)) {
             throw new IllegalArgumentException("invalid PCM handshake");
         }
-        startup.start();
+    }
+
+    static void writeReady(OutputStream output) throws IOException {
         output.write(SERVER_READY);
         output.flush();
     }

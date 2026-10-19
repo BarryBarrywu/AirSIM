@@ -486,14 +486,22 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     }
 
     func send(command: String, callID: String = "", generation: UInt64 = 0, number: String = "") async throws -> VoBLEControlResponse {
+        try await send(command: command, callID: callID, generation: generation,
+                       number: number, simAccount: nil)
+    }
+
+    func send(command: String, callID: String, generation: UInt64,
+              number: String, simAccount: String?) async throws -> VoBLEControlResponse {
         guard state == .ready, let peer = activePeer, !sessionID.isEmpty,
               let controlRX else { throw VoBLECentralError.notReady }
         let requestID = UUID().uuidString
         let timestamp = Int64(Date().timeIntervalSince1970 * 1_000)
         let nonce = try randomData(count: 12)
-        let body = try JSONSerialization.data(withJSONObject: [
+        var fields: [String: Any] = [
             "request_id": requestID, "timestamp_ms": timestamp, "number": number,
-        ])
+        ]
+        if let simAccount, !simAccount.isEmpty { fields["sim_account"] = simAccount }
+        let body = try JSONSerialization.data(withJSONObject: fields)
         let keys = try VoBLESessionAuthenticator.deriveSessionKeys(
             pairingKey: peer.pairingKey, sessionID: sessionID, callID: callID, generation: generation)
         let unsigned = VoBLEControlEnvelope(

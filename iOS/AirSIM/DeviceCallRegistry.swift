@@ -94,6 +94,12 @@ struct DeviceCallRegistry: Sendable {
         return true
     }
 
+    /// Release an optimistic answer that the transport rejected. The ringing
+    /// event itself must stay in the registry so the user can retry.
+    mutating func deactivate(_ key: DeviceCallKey) {
+        if active == key { active = nil }
+    }
+
     mutating func finish(_ key: DeviceCallKey) {
         guard var event = entries[key]?.event, !event.state.isTerminal else { return }
         event = DeviceCallEvent(agentID: event.agentID, callID: event.callID, state: .ended,

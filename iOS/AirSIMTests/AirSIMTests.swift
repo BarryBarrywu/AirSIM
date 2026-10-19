@@ -9,6 +9,56 @@ import SwiftUI
 
 @MainActor
 final class CloudStandbyLifecycleRegressionTests: XCTestCase {
+    func testFailedFreshDialQueryClearsPreviousOnlinePresentation() async throws {
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        let online = try status(online: true)
+        var requests = 0, now = Date()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            cloudStatusFetcher: {
+                requests += 1
+                if requests > 1 { throw URLError(.notConnectedToInternet) }
+                return online
+            }, cloudStatusNow: { now })
+        defer { model.stop() }
+        _ = await model.refreshCloudStatusForDiagnostics()
+        now.addTimeInterval(600)
+        do {
+            try await model.callKitStart(number: "fixture")
+            XCTFail("failed fresh status query must not authorize a cached cloud dial")
+        } catch { XCTAssertEqual((error as? URLError)?.code, .notConnectedToInternet) }
+        XCTAssertEqual(requests, 2)
+        XCTAssertNil(model.cloudAgentStatus)
+        XCTAssertNil(model.cloudAgentDirectory)
+        XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline })
+        XCTAssertFalse(model.canStartOutgoingCommand)
+    }
+
+    func testForegroundIdleKeepsCloudDeviceCardWithoutRepeatingRelayQuery() async throws {
+        let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
+        ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
+        defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
+        var reply = try status(online: true)
+        var requests = 0, now = Date()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            cloudStatusFetcher: { requests += 1; return reply }, cloudStatusNow: { now })
+        defer { model.stop() }
+        _ = await model.refreshCloudStatusForDiagnostics()
+        XCTAssertEqual(model.currentAndroidAgent?.id, "standby-fixture")
+        now.addTimeInterval(600)
+        XCTAssertEqual(model.pairedAndroidAgents.map(\.id), ["standby-fixture"])
+        XCTAssertEqual(model.currentAndroidAgent?.id, "standby-fixture")
+        XCTAssertEqual(model.currentAndroidAgent?.cloudOnline, true, "keep the last confirmed observation, not a timed-out absence")
+        XCTAssertEqual(DialPadAgentSection.make(mode: .cloud, hasCurrent: model.currentAndroidAgent != nil,
+            pairedCount: model.pairedAndroidAgents.count), .current)
+        XCTAssertEqual(requests, 1, "reading an idle dial card must not poll Relay")
+        reply = try status(online: false)
+        _ = await model.refreshCloudStatusForDiagnostics()
+        XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline }, "a fresh offline observation replaces the cached online result")
+        XCTAssertEqual(requests, 2)
+    }
+
     private func status(online: Bool) throws -> CloudAgentStatus {
         try JSONDecoder().decode(CloudAgentStatus.self, from: Data("""
         {"cloud_online":\(online),"active_agent_id":"standby-fixture","cellular_state":"registered",
@@ -2370,7 +2420,7 @@ final class AirSIMTests: XCTestCase {
         for cloud in [CloudCallAudioState.idle, .failed("old relay failure")] {
             XCTAssertEqual(CallAudioStatusPresentation.text(
                 transport: .bluetooth, bluetoothRunning: true, bluetoothError: nil,
-                localAudioActive: false, cloudState: cloud), "蓝牙语音已连接")
+                localAudioActive: false, cloudState: cloud), "已连接蓝牙 PCM 链路")
         }
         XCTAssertEqual(CallAudioStatusPresentation.text(
             transport: .bluetooth, bluetoothRunning: false, bluetoothError: "音频启动失败",
@@ -2942,7 +2992,7 @@ final class AirSIMTests: XCTestCase {
         let agent = AndroidAgentPresentation(
             id: "samsung-1",
             deviceName: "samsung SM-F766U",
-            phoneNumber: "+8615502030017",
+            phoneNumber: "+15550100",
             agentKind: "standalone",
             cloudOnline: true,
             vowlanOnline: true,
@@ -2960,7 +3010,7 @@ final class AirSIMTests: XCTestCase {
         )
 
         XCTAssertEqual(state.agentDeviceName, "samsung SM-F766U")
-        XCTAssertEqual(state.agentPhoneNumber, "+8615502030017")
+        XCTAssertEqual(state.agentPhoneNumber, "+15550100")
         XCTAssertEqual(state.agentKind, "standalone")
         XCTAssertEqual(state.pairedAgentCount, 2)
         XCTAssertEqual(state.vowlanOnline, true)

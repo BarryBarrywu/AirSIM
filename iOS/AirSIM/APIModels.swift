@@ -155,20 +155,40 @@ struct CloudAgentStatus: Decodable, Equatable, Sendable {
     }
 }
 
+/// One call-capable SIM/PhoneAccount reported by the paired Android.
+/// The identifier is an opaque Telecom handle; the number is display-only.
+struct AndroidSIMSlot: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let label: String
+    let number: String?
+    let isDefault: Bool?
+    enum CodingKeys: String, CodingKey {
+        case id, label, number
+        case isDefault = "default"
+    }
+    var displayName: String {
+        let value = number?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? label : "\(label) · \(value)"
+    }
+}
+
 struct AndroidAgentMetadata: Decodable, Equatable, Sendable {
     let agentID: String
     let deviceName: String
     let phoneNumber: String?
     let agentKind: String?
     let callGeneration: UInt64?
-    init(agentID: String, deviceName: String, phoneNumber: String?, agentKind: String?, callGeneration: UInt64? = nil) {
+    let simSlots: [AndroidSIMSlot]?
+    init(agentID: String, deviceName: String, phoneNumber: String?, agentKind: String?,
+         callGeneration: UInt64? = nil, simSlots: [AndroidSIMSlot]? = nil) {
         self.agentID = agentID; self.deviceName = deviceName; self.phoneNumber = phoneNumber
-        self.agentKind = agentKind; self.callGeneration = callGeneration
+        self.agentKind = agentKind; self.callGeneration = callGeneration; self.simSlots = simSlots
     }
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id", deviceName = "device_name"
         case phoneNumber = "phone_number", agentKind = "agent_kind"
         case callGeneration = "call_generation"
+        case simSlots = "sim_slots"
     }
     static func decode(_ data: Data, expectedID: String) throws -> Self {
         let value = try JSONDecoder().decode(Self.self, from: data)
@@ -176,7 +196,7 @@ struct AndroidAgentMetadata: Decodable, Equatable, Sendable {
         let number = value.phoneNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
         return Self(agentID: value.agentID, deviceName: value.deviceName,
                     phoneNumber: number?.isEmpty == false ? number : nil, agentKind: value.agentKind,
-                    callGeneration: value.callGeneration)
+                    callGeneration: value.callGeneration, simSlots: value.simSlots ?? [])
     }
 }
 

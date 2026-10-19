@@ -5,19 +5,25 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.Manifest;
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothGatt;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 
 import com.airsim.phonecontrol.AndroidAgentIdentity;
 import com.airsim.phonecontrol.AppConfig;
 import com.airsim.phonecontrol.BridgeLog;
 import com.airsim.phonecontrol.CallRepository;
 import com.airsim.phonecontrol.RuntimeMode;
+import com.airsim.phonecontrol.SimSlotJson;
 import com.airsim.phonecontrol.RemoteAudioSessionRegistry;
 
 import org.json.JSONObject;
@@ -90,6 +96,31 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     private volatile VoBLEMediaSession media;
     private VoBLEMediaSession.Identity mediaIdentity;
     private volatile SessionContext session;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicLong advertisingRetries = new AtomicLong();
+    private final Runnable advertisingRetry = () -> {
+        if (destroyed) return;
+        if (gatt == null || !gatt.hasBluetoothPermissions()) return;
+        BridgeLog.info("voble_gatt_advertising_retry attempt=" + advertisingRetries.get());
+        if (!gatt.start()) BridgeLog.info("voble_gatt_advertising_retry_blocked");
+    };
+    /** Bluetooth can be toggled after the foreground service starts; retry advertising on STATE_ON. */
+    private final BroadcastReceiver bluetoothStateReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null || !BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) return;
+            int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+            if (state == BluetoothAdapter.STATE_ON) {
+                BridgeLog.info("voble_bluetooth_on_restart_advertising");
+                advertisingRetries.set(0);
+                mainHandler.removeCallbacks(advertisingRetry);
+                if (gatt != null && gatt.hasBluetoothPermissions()) gatt.start();
+            } else if (state == BluetoothAdapter.STATE_OFF) {
+                BridgeLog.info("voble_bluetooth_off_close_advertising");
+                mainHandler.removeCallbacks(advertisingRetry);
+                if (gatt != null) gatt.close();
+            }
+        }
+    };
 
     public static void start(Context context) {
         if (!hasPermissions(context)) return;
@@ -141,18 +172,51 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         pairingManager = new VoBLEPairingManager(credentials);
         calls = new VoBLECallController(request -> {
             CallRepository.ActionResult result = CallRepository.executeRemote(
-                    VoBLEGatewayService.this, request.requestId(), request.action(), request.callId(), request.number());
+                    VoBLEGatewayService.this, request.requestId(), request.action(), request.callId(),
+                    request.number(), request.simAccount());
             return result.success
                     ? VoBLECallController.Result.success("accepted")
                     : VoBLECallController.Result.failure("telecom_failed", result.error);
         });
         gatt = new VoBLEGattServer(this, this, channel);
+        try {
+            IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(bluetoothStateReceiver, filter);
+            }
+        } catch (RuntimeException error) {
+            BridgeLog.error("voble_bluetooth_receiver_register_failed", error);
+        }
         if (!gatt.start()) BridgeLog.info("voble_waiting_for_bluetooth_permission");
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (gatt != null && gatt.hasBluetoothPermissions()) gatt.start();
+        advertisingRetries.set(0);
+        mainHandler.removeCallbacks(advertisingRetry);
+        if (gatt != null && gatt.hasBluetoothPermissions() && !gatt.start()) {
+            BridgeLog.info("voble_gatt_start_deferred");
+        }
         return START_STICKY;
+    }
+
+    @Override public void onAdvertisingReady() {
+        advertisingRetries.set(0);
+        mainHandler.removeCallbacks(advertisingRetry);
+    }
+
+    @Override public void onAdvertisingFailed(int code) {
+        mainHandler.removeCallbacks(advertisingRetry);
+        long attempt = advertisingRetries.incrementAndGet();
+        if (attempt > 3) {
+            BridgeLog.info("voble_gatt_advertising_gave_up code=" + code);
+            return;
+        }
+        long delay = 2000L << (attempt - 1);
+        BridgeLog.info("voble_gatt_advertising_retry_scheduled attempt=" + attempt
+                + " delay_ms=" + delay + " code=" + code);
+        mainHandler.postDelayed(advertisingRetry, delay);
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
@@ -247,7 +311,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             }
             VoBLECallController.Request request = new VoBLECallController.Request(
                     requestId, action, envelope.callId(), body.optString("number", ""),
-                    envelope.generation());
+                    envelope.generation(), body.optString("sim_account", ""));
             VoBLECallController.Result result;
             boolean revokeAfterResponse = false;
             if ("ping".equals(action)) {
@@ -259,7 +323,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                         .put("device_name", AndroidAgentIdentity.deviceName())
                         .put("agent_kind", RuntimeMode.isStandalone(this) ? "standalone" : "avf")
                         .put("call_generation", calls.currentGeneration())
-                        .put("phone_number", AndroidAgentIdentity.phoneNumber(this)).toString());
+                        .put("phone_number", AndroidAgentIdentity.phoneNumber(this))
+                        .put("sim_slots", SimSlotJson.slots(this)).toString());
             } else if ("start_media".equals(action)) {
                 result = calls.executeOnce(request, true,
                         ignored -> startMedia(deviceId, identity, envelope));
@@ -577,6 +642,12 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         if (instance == this) instance = null;
         pendingPairingCode = "";
         diagnostics = VoBLEDiagnostics.idle(RuntimeMode.agentLabel(this));
+        mainHandler.removeCallbacks(advertisingRetry);
+        try {
+            unregisterReceiver(bluetoothStateReceiver);
+        } catch (RuntimeException ignored) {
+            // Already unregistered by the platform during shutdown.
+        }
         controlQueue.shutdownNow();
         mediaQueue.shutdownNow();
         if (gatt != null) gatt.close();

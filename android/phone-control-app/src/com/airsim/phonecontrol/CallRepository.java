@@ -116,7 +116,7 @@ public final class CallRepository {
             String error = TelecomInvocation.run(
                     task -> new Handler(Looper.getMainLooper()).post(task),
                     () -> context.getSystemService(TelecomManager.class).placeCall(
-                            Uri.parse("tel:" + command.number), DefaultCallAccount.dialExtras(context)),
+                            Uri.parse("tel:" + command.number), DefaultCallAccount.dialExtras(context, command.simAccount)),
                     2_000L);
             return error.isEmpty() ? ActionResult.success() : ActionResult.failure(error);
         }
@@ -169,7 +169,13 @@ public final class CallRepository {
 
     public static ActionResult executeRemote(
             Context context, String requestId, String action, String callId, String number) {
-        return execute(context, new AgentCommand(requestId, action, callId, number));
+        return executeRemote(context, requestId, action, callId, number, "");
+    }
+
+    public static ActionResult executeRemote(
+            Context context, String requestId, String action, String callId, String number,
+            String simAccount) {
+        return execute(context, new AgentCommand(requestId, action, callId, number, "", simAccount));
     }
 
     public static final class ActionResult {

@@ -6,22 +6,29 @@ public final class AgentCommand {
     public final String callId;
     public final String number;
 	public final String message;
+    /** Optional per-call iPhone SIM/PhoneAccount override; empty keeps the app default. */
+    public final String simAccount;
 
     AgentCommand(String id, String action, String callId, String number) {
-		this(id, action, callId, number, "");
+		this(id, action, callId, number, "", "");
 	}
 
 	AgentCommand(String id, String action, String callId, String number, String message) {
+		this(id, action, callId, number, message, "");
+	}
+
+	AgentCommand(String id, String action, String callId, String number, String message, String simAccount) {
         this.id = id;
         this.action = action;
         this.callId = callId;
         this.number = number;
 		this.message = message;
+        this.simAccount = simAccount == null ? "" : simAccount;
     }
 
     public static AgentCommand parse(String json) {
         return new AgentCommand(value(json, "id"), value(json, "action"), value(json, "call_id"),
-				value(json, "number"), value(json, "message"));
+				value(json, "number"), value(json, "message"), value(json, "sim_account"));
     }
 
     public boolean isSupported() {

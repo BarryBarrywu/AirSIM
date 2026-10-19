@@ -111,7 +111,7 @@ struct VoBLEPairingView: View {
     }
 
     private var stateTitle: String {
-        switch model.voble.state {
+        switch model.vobleHub.pairingState {
         case .stopped: "尚未启动"
         case .bluetoothUnavailable: "蓝牙不可用"
         case .scanning: "正在查找 Android Agent"
@@ -124,7 +124,7 @@ struct VoBLEPairingView: View {
     }
 
     private var stateDetail: String {
-        switch model.voble.state {
+        switch model.vobleHub.pairingState {
         case .ready: "控制通道已认证；音频通道将在通话时启动"
         case .failed(let message): message
         case .bluetoothUnavailable: "请在系统设置中打开蓝牙并允许 AirSIM 访问"
@@ -133,7 +133,7 @@ struct VoBLEPairingView: View {
     }
 
     private var stateSymbol: String {
-        switch model.voble.state {
+        switch model.vobleHub.pairingState {
         case .ready: "checkmark.circle.fill"
         case .failed, .bluetoothUnavailable: "exclamationmark.triangle.fill"
         case .stopped: "wave.3.right.circle"
@@ -142,7 +142,7 @@ struct VoBLEPairingView: View {
     }
 
     private var stateColor: Color {
-        switch model.voble.state {
+        switch model.vobleHub.pairingState {
         case .ready: .green
         case .failed, .bluetoothUnavailable: .orange
         case .stopped: .secondary

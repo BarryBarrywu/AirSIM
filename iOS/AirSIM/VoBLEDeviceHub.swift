@@ -30,7 +30,7 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     private let knownPeripheral: (UUID) -> Bool
     private var observations: [UUID: Set<AnyCancellable>] = [:]
     private var radioObservation: AnyCancellable?
-    private var enabled = false
+    @Published private var enabled = false
     private var handshake: UUID?
     private var pending: [VoBLEDiscoveredPeer] = []
 
@@ -52,10 +52,28 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
         }
     }
     var selected: VoBLEDeviceSession { selectedPeripheralID.flatMap { sessions[$0] } ?? placeholder }
+    /// Discovery UI only: the placeholder is not an authenticated peer/session.
+    var pairingState: VoBLEConnectionState {
+        if selectedPeripheralID != nil, selected.central.state != .stopped { return selected.central.state }
+        guard enabled else { return .stopped }
+        return radio.poweredOn ? .scanning : .bluetoothUnavailable
+    }
     func start() {
-        enabled = true
+        if !enabled { enabled = true }
         for value in sessions.values { value.central.start() }
         radio.start()
+        syncMediaScanPolicy()
+    }
+
+    /// Keep the shared scanner off while any session is carrying call audio.
+    /// Continuous scanning steals radio time from the BLE media connection and
+    /// backs up the uplink queue; pause while audio runs, resume when idle.
+    private func syncMediaScanPolicy() {
+        if sessions.values.contains(where: { $0.audio.running }) {
+            radio.pauseScanForMedia()
+        } else {
+            radio.resumeScanAfterMedia()
+        }
     }
     func restoreInBackgroundIfAuthorized() {
         guard UIApplication.shared.applicationState == .background,
@@ -68,7 +86,7 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     }
     func stop() { stop(except: nil) }
     func stop(except agentID: String?) {
-        enabled = false
+        if enabled { enabled = false }
         pending.removeAll(); handshake = nil
         for (id, value) in sessions where value.central.authenticatedIdentity != agentID || agentID == nil {
             value.central.stop()
@@ -110,6 +128,7 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
         pending.removeAll { $0.id == id }
         if selectedPeripheralID == id { selectedPeripheralID = nil }
         if handshake == id { handshake = nil; nextHandshake() }
+        syncMediaScanPolicy()
         objectWillChange.send()
     }
     @discardableResult
@@ -133,8 +152,16 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
         }.store(in: &subscriptions)
         value.central.$deviceInformation.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &subscriptions)
-        value.audio.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        // The pairing sheet reads pendingSAS/errorMessage directly from the
+        // selected central. Those @Published fields are not mirrored by $state,
+        // so without this forward the six-digit code appears only after another
+        // tap changes selectedPeripheralID and forces a re-render.
+        value.central.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &subscriptions)
+        value.audio.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+            self?.syncMediaScanPolicy()
+        }.store(in: &subscriptions)
         observations[peripheralID] = subscriptions
         return value
     }

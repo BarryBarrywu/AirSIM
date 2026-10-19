@@ -155,11 +155,18 @@ public final class PhoneAudioBridge {
     }
 
     private static void handleClient(Socket client, long started, BridgeStats stats) {
+        boolean probe = false;
         try (client) {
             client.setKeepAlive(true);
             client.setTcpNoDelay(true);
             client.setSoTimeout(3_000);
+            // Validate the hello before touching audio endpoints. A bare TCP
+            // liveness probe (VoWLANGatewayService.portOpen) closes immediately;
+            // never start AudioRecord/AudioTrack or record a session failure for it.
+            BridgeProtocol.readHello(client.getInputStream());
             streamCallAudio(client, started, stats);
+        } catch (BridgeProtocol.ProbeClosed closed) {
+            probe = true;
         } catch (Throwable error) {
             emit(started, "session_error", error instanceof AudioStartupFailure failure
                 ? failure.diagnosticFields() : Map.of(
@@ -167,7 +174,7 @@ public final class PhoneAudioBridge {
                 "error_message", safeMessage(error),
                 "result", "error"));
         } finally {
-            emit(started, "client_closed", statsFields(stats.snapshot()));
+            if (!probe) emit(started, "client_closed", statsFields(stats.snapshot()));
         }
     }
 
@@ -239,20 +246,19 @@ public final class PhoneAudioBridge {
                         "track_buffer_bytes", trackBufferSize,
                         "result", "ok"));
 
-                    // Transport READY is emitted only after the actual audio endpoints
-                    // start. A successful TCP/HELLO is not evidence of usable call audio.
-                    phase[0] = "handshake";
-                    BridgeProtocol.acceptHandshake(client.getInputStream(), client.getOutputStream(), () -> {
-                        phase[0] = "start_capture";
-                        recorder.startRecording();
-                        phase[0] = "start_playback";
-                        track.play();
-                        phase[0] = "verify_capture";
-                        if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-                            throw new IOException("VOICE_DOWNLINK AudioRecord did not start");
-                        }
-                        phase[0] = "send_ready";
-                    });
+                    // The hello was validated before any audio endpoint was created.
+                    // Start the real endpoints, then send READY; a successful TCP
+                    // handshake alone is not evidence of usable call audio.
+                    phase[0] = "start_capture";
+                    recorder.startRecording();
+                    phase[0] = "start_playback";
+                    track.play();
+                    phase[0] = "verify_capture";
+                    if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                        throw new IOException("VOICE_DOWNLINK AudioRecord did not start");
+                    }
+                    phase[0] = "send_ready";
+                    BridgeProtocol.writeReady(client.getOutputStream());
                     emit(started, "client_ready", Map.of("result", "audio_initialized", "route_verified", false));
 
                     phase[0] = "stream_audio";

@@ -10,12 +10,18 @@ protocol VoBLECallControlling: AnyObject {
     var onReady: (() -> Void)? { get set }
     func send(command: String, callID: String, generation: UInt64,
               number: String) async throws -> VoBLEControlResponse
+    func send(command: String, callID: String, generation: UInt64,
+              number: String, simAccount: String?) async throws -> VoBLEControlResponse
     func mediaKey(callID: String, generation: UInt64) throws -> Data
     func synchronizeCallGeneration() async throws -> UInt64
 }
 
 extension VoBLECallControlling {
     func synchronizeCallGeneration() async throws -> UInt64 { 0 }
+    func send(command: String, callID: String, generation: UInt64,
+              number: String, simAccount: String?) async throws -> VoBLEControlResponse {
+        try await send(command: command, callID: callID, generation: generation, number: number)
+    }
 }
 
 extension VoBLECentralController: VoBLECallControlling {}
@@ -133,6 +139,8 @@ final class VoBLECallCoordinator {
     private var recoveryTask: Task<Void, Never>?
     private var recoveringIdentity: VoBLECallIdentity?
     private var pendingOutgoing: (callID: String, token: UUID)?
+    private var mediaStartAttempts = 0
+    private var mediaStartIdentity: VoBLECallIdentity?
     private let generationKey = "airsim.voble.call-generation"
 
     init(
@@ -165,7 +173,8 @@ final class VoBLECallCoordinator {
         return true
     }
 
-    func startOutgoing(number: String, operationID: String? = nil, systemUUID: UUID? = nil) async throws -> VoBLECallIdentity {
+    func startOutgoing(number: String, operationID: String? = nil, systemUUID: UUID? = nil,
+                       simAccount: String? = nil) async throws -> VoBLECallIdentity {
         guard pendingOutgoing == nil, reducer.current == nil else { throw VoBLECentralError.bluetooth("call_in_progress") }
         let provisionalID = operationID ?? UUID().uuidString.lowercased()
         let token = UUID()
@@ -198,7 +207,7 @@ final class VoBLECallCoordinator {
             phase = "dial_command"
             let response = try await central.send(
                 command: "dial", callID: provisionalID,
-                generation: generation, number: number)
+                generation: generation, number: number, simAccount: simAccount)
             guard response.success else {
                 throw VoBLECentralError.bluetooth(response.detail.isEmpty ? response.code : response.detail)
             }
@@ -322,6 +331,10 @@ final class VoBLECallCoordinator {
     }
 
     private func startMedia(for identity: VoBLECallIdentity) async {
+        if mediaStartIdentity != identity {
+            mediaStartIdentity = identity
+            mediaStartAttempts = 0
+        }
         let permitted = mediaPermission(identity), matches = reducer.current == identity
         Task { await AgentVerboseTraceRecorder.shared.recordEvent(source: "ios", category: "voble",
             phase: "media_admission", title: "蓝牙媒体归属检查",
@@ -351,9 +364,24 @@ final class VoBLECallCoordinator {
                             mediaKey: central.mediaKey(
                                 callID: identity.callID, generation: identity.generation))
             audio.setMediaReady(true)
+            mediaStartAttempts = 0
         } catch {
             await AgentVerboseTraceRecorder.shared.recordFailure(category: "voble", phase: "start_media", error: error)
             onError?(error.localizedDescription)
+            // Only retry failures that prove the command never reached a ready
+            // peer. A protocol rejection or timeout is ambiguous and retrying
+            // start_media could double-start the Android media session.
+            let retryable: Bool
+            switch error {
+            case VoBLECentralError.disconnected, VoBLECentralError.notReady: retryable = true
+            default: retryable = false
+            }
+            guard retryable, mediaStartAttempts == 0,
+                  reducer.current == identity, mediaPermission(identity) else { return }
+            mediaStartAttempts = 1
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled, reducer.current == identity else { return }
+            await startMedia(for: identity)
         }
     }
 

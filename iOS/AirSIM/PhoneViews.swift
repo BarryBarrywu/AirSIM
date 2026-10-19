@@ -84,6 +84,17 @@ struct DialPadTransportPresentation: Equatable {
     }
 }
 
+enum DialPadAgentSection: Equatable {
+    case current, selection, bluetooth, none
+
+    static func make(mode: AirSIMConnectionMode, hasCurrent: Bool, pairedCount: Int) -> Self {
+        if hasCurrent { return .current }
+        if pairedCount > 0 { return .selection }
+        if mode == .bluetooth { return .bluetooth }
+        return .none
+    }
+}
+
 private enum PhoneListMetrics {
     static let rowHeight: CGFloat = 74
     static let avatarSize: CGFloat = 50
@@ -165,6 +176,10 @@ struct DialPadView: View {
                     availableWidth: proxy.size.width,
                     compactWidth: isCompact
                 )
+                let pairedAgents = model.pairedAndroidAgents
+                let currentAgent = pairedAgents.first(where: \.isCurrent)
+                let agentSection = DialPadAgentSection.make(mode: ConnectionModePreference.selected(),
+                    hasCurrent: currentAgent != nil, pairedCount: pairedAgents.count)
 
                 VStack(spacing: metrics.sectionSpacing) {
                     VStack(spacing: 2) {
@@ -187,15 +202,20 @@ struct DialPadView: View {
                     }
                     .padding(.horizontal, 12)
 
-                    if let currentAgent = model.currentAndroidAgent {
+                    if agentSection == .current, let currentAgent {
                         DialPadCurrentAgentCard(
                             agent: currentAgent,
-                            agentCount: model.pairedAndroidAgents.count,
-                            cloudModeEnabled: CloudModePreference.isEnabled()
+                            agentCount: pairedAgents.count,
+                            cloudModeEnabled: CloudModePreference.isEnabled(),
+                            simSlots: model.simSlots(for: currentAgent.id),
+                            selectedSIMSlotID: model.selectedSIMSlotID(for: currentAgent.id),
+                            selectSIMSlot: { slot in
+                                model.selectSIMSlot(slot.id, for: currentAgent.id)
+                            }
                         ) {
                             pairedAgentListPresentation = PairedAgentListPresentation()
                         }
-                    } else if ConnectionModePreference.selected() == .bluetooth {
+                    } else if agentSection == .bluetooth {
                         HStack(spacing: 10) {
                             Image(systemName: "wave.3.right")
                                 .foregroundStyle(model.voble.state == .ready ? .green : .orange)
@@ -216,17 +236,17 @@ struct DialPadView: View {
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    } else if !model.pairedAndroidAgents.isEmpty {
+                    } else if agentSection == .selection {
                         Button {
                             pairedAgentListPresentation = PairedAgentListPresentation()
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: "smartphone.slash")
+                                Image(systemName: ConnectionModePreference.selected() == .bluetooth ? "wave.3.right" : "smartphone")
                                     .foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("已配对 Android Agent · \(model.pairedAndroidAgents.count)")
+                                    Text("已配对 Android Agent · \(pairedAgents.count)")
                                         .font(.subheadline.weight(.semibold))
-                                    Text("当前没有可用的拨号路由")
+                                    Text(pairedAgents.count > 1 ? "请选择拨号设备" : "选择设备并检查拨号链路")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -240,6 +260,7 @@ struct DialPadView: View {
                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("dial-pad-device-selector")
                     }
 
                     dialKeyGrid(metrics: metrics)
@@ -415,7 +436,14 @@ private struct DialPadCurrentAgentCard: View {
     let agent: AndroidAgentPresentation
     let agentCount: Int
     let cloudModeEnabled: Bool
+    let simSlots: [AndroidSIMSlot]
+    let selectedSIMSlotID: String?
+    let selectSIMSlot: (AndroidSIMSlot) -> Void
     let showAll: () -> Void
+
+    private var selectedSlot: AndroidSIMSlot? {
+        simSlots.first { $0.id == selectedSIMSlotID } ?? simSlots.first
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -457,11 +485,45 @@ private struct DialPadCurrentAgentCard: View {
             HStack(spacing: 8) {
                 AgentTransportPill(title: "VoWLAN", online: agent.vowlanOnline, enabled: true)
                 AgentTransportPill(title: "VoBLE", online: agent.bluetoothOnline, enabled: true)
-                AgentTransportPill(title: "云端", online: agent.cloudOnline, enabled: cloudModeEnabled)
+                AgentTransportPill(title: "云端", online: agent.cloudOnline, enabled: cloudModeEnabled, lastConfirmed: true)
                 Spacer(minLength: 0)
                 Text(agent.agentKindTitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            if simSlots.count > 1 {
+                Divider().overlay(Color.primary.opacity(0.08))
+                Menu {
+                    ForEach(simSlots) { slot in
+                        Button {
+                            selectSIMSlot(slot)
+                        } label: {
+                            if slot.id == selectedSIMSlotID {
+                                Label(slot.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(slot.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "simcard.2")
+                            .font(.caption)
+                        Text(selectedSlot?.displayName ?? "选择通话卡")
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.10), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("dial-pad-sim-slot")
+                .accessibilityLabel("拨号使用的 SIM 卡槽")
             }
         }
         .padding(12)
@@ -478,14 +540,28 @@ private struct AgentTransportPill: View {
     let title: String
     let online: Bool
     let enabled: Bool
+    let lastConfirmed: Bool
+
+    init(title: String, online: Bool, enabled: Bool, lastConfirmed: Bool = false) {
+        self.title = title; self.online = online; self.enabled = enabled
+        self.lastConfirmed = lastConfirmed
+    }
+
+    private var statusText: String {
+        if !enabled { return "关闭" }
+        if !online { return "离线" }
+        return lastConfirmed ? "上次在线" : "在线"
+    }
 
     private var color: Color { !enabled ? .secondary : (online ? .green : .secondary) }
 
     var body: some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text("\(title) \(!enabled ? "关闭" : (online ? "在线" : "离线"))")
+            Text("\(title) \(statusText)")
                 .font(.caption2.weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .foregroundStyle(color)
         .padding(.horizontal, 8)
@@ -523,7 +599,7 @@ private struct PairedAndroidAgentsView: View {
                     HStack(spacing: 8) {
                         AgentTransportPill(title: "VoWLAN", online: agent.vowlanOnline, enabled: true)
                         AgentTransportPill(title: "VoBLE", online: agent.bluetoothOnline, enabled: true)
-                        AgentTransportPill(title: "云端", online: agent.cloudOnline, enabled: cloudModeEnabled)
+                        AgentTransportPill(title: "云端", online: agent.cloudOnline, enabled: cloudModeEnabled, lastConfirmed: true)
                         Spacer()
                         Text(agent.agentKindTitle)
                             .font(.caption)
@@ -1902,9 +1978,10 @@ struct ActiveCallView: View {
     }
 
     private var audioStatusBadge: some View {
-        HStack(spacing: 7) {
+        let statusColor = model.callAudioIsActive ? Color.green : audioStatusColor
+        return HStack(spacing: 7) {
             Circle()
-                .fill(model.callAudioIsActive ? Color.green : audioStatusColor)
+                .fill(statusColor)
                 .frame(width: 8, height: 8)
             Text(model.callAudioStatusText)
                 .font(.caption.weight(.semibold))
@@ -1918,7 +1995,7 @@ struct ActiveCallView: View {
         }
         .padding(.horizontal, 13)
         .frame(minHeight: 38)
-        .callControlGlass(tint: audioStatusColor.opacity(0.10))
+        .callControlGlass(tint: statusColor.opacity(0.10))
     }
 
     private var moduleIsReachable: Bool {

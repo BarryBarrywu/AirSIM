@@ -37,6 +37,8 @@ public final class VoBLEGattServer implements AutoCloseable {
         void onControlWrite(String deviceId, byte[] value);
         void onAudioWrite(String deviceId, byte[] value);
         void onDisconnected(String deviceId);
+        default void onAdvertisingReady() {}
+        default void onAdvertisingFailed(int code) {}
     }
 
     public static final UUID SERVICE_UUID = UUID.fromString("7e57a000-7a17-4d9f-9a3c-41a17b1e0001");
@@ -105,7 +107,10 @@ public final class VoBLEGattServer implements AutoCloseable {
                 .setIncludeDeviceName(false).addServiceUuid(new ParcelUuid(SERVICE_UUID)).build();
         advertiseCallback = new AdvertiseCallback() {
             @Override public void onStartSuccess(AdvertiseSettings ignored) {
-                if (isCurrent(token)) com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_ready");
+                if (isCurrent(token)) {
+                    com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_ready");
+                    listener.onAdvertisingReady();
+                }
             }
             @Override public void onStartFailure(int code) {
                 synchronized (VoBLEGattServer.this) {
@@ -113,6 +118,7 @@ public final class VoBLEGattServer implements AutoCloseable {
                     com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_failed code=" + code);
                     close();
                 }
+                listener.onAdvertisingFailed(code);
             }
         };
         try {

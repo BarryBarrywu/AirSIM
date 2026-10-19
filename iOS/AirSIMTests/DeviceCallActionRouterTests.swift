@@ -3,6 +3,102 @@ import XCTest
 
 @MainActor
 final class DeviceCallActionRouterTests: XCTestCase {
+    func testTerminalCleanupKeepsCapturedHangupBackendUntilReply() async throws {
+        let gate = BackendReplyGate(), started = expectation(description: "end awaiting reply")
+        var service: DeviceBackendProbe? = DeviceBackendProbe(id: "A")
+        service?.beforeEndReply = { started.fulfill(); await gate.wait() }
+        weak var retained = service
+        let router = DeviceCallActionRouter(context: DeviceCallContext()) { _, _ in service }
+        let route = try XCTUnwrap(router.registerIncoming(.init(agentID: "A", callID: "end-in-flight",
+            state: .ringing, transport: .bluetooth, transportEpoch: 1), mode: .bluetooth))
+        service = nil
+        let ending = Task { try await router.end(route.key, rejectIfRinging: true) }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(router.hasPendingTermination)
+        XCTAssertNotNil(retained)
+        XCTAssertEqual(retained?.commands, ["reject:end-in-flight"])
+        XCTAssertNil(router.route(for: route.systemUUID))
+        await gate.release()
+        try await ending.value
+        XCTAssertFalse(router.hasPendingTermination)
+        XCTAssertNil(retained)
+    }
+
+    func testDialCarriesSelectedSIMAccountToBackend() async throws {
+        let service = DeviceBackendProbe(id: "A")
+        let router = DeviceCallActionRouter(context: DeviceCallContext()) { _, _ in service }
+        let route = try await router.dial(agentID: "A", number: "10086", mode: .bluetooth,
+                                          simAccount: "slot-2")
+        XCTAssertEqual(service.lastSimAccount, "slot-2")
+        XCTAssertEqual(service.commands, ["dial:10086"])
+        router.finished(route.key)
+    }
+
+    func testFailedAnswerReleasesOwnershipAndAllowsRetry() async throws {
+        let service = DeviceBackendProbe(id: "A")
+        service.answerError = VoBLECentralError.disconnected
+        let router = DeviceCallActionRouter(context: DeviceCallContext()) { _, _ in service }
+        let route = try XCTUnwrap(router.registerIncoming(.init(agentID: "A", callID: "answer-retry",
+            state: .ringing, transport: .bluetooth, transportEpoch: 1), mode: .bluetooth))
+        do {
+            try await router.answer(route.key)
+            XCTFail("the failed answer must throw")
+        } catch {}
+        XCTAssertNil(router.context.registry.active)
+        XCTAssertNil(router.context.media.owner)
+        XCTAssertEqual(router.context.registry.latestEvent(for: route.key)?.state, .ringing)
+        service.answerError = nil
+        try await router.answer(route.key)
+        XCTAssertEqual(router.context.registry.active, route.key)
+        XCTAssertEqual(router.context.media.owner, route.key)
+        router.finished(route.key)
+    }
+
+    func testExpiredCallKitUUIDCannotHangupReplacementCall() async throws {
+        let service = DeviceBackendProbe(id: "A")
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            deviceBackend: { _, _ in service })
+        defer { model.stop() }
+        var oldest: UUID?
+        for index in 0..<300 {
+            let route = try XCTUnwrap(model.deviceCallRouter.registerIncoming(.init(agentID: "history",
+                callID: "ended-\(index)", state: .ringing, transport: .bluetooth, transportEpoch: 1), mode: .bluetooth))
+            if oldest == nil { oldest = route.systemUUID }
+            model.deviceCallRouter.finished(route.key)
+        }
+        let active = try await model.deviceCallRouter.dial(agentID: "A", number: "fixture", mode: .bluetooth)
+        do { try await model.callKitEnd(uuid: try XCTUnwrap(oldest)) } catch {
+            XCTAssertEqual(error as? DeviceCallRoutingError, .stale)
+        }
+        XCTAssertEqual(model.deviceCalls.active, active.key)
+        XCTAssertEqual(service.commands, ["dial:fixture"])
+        await model.hangup()
+    }
+
+    func testTerminalHistoryIsBoundedAndDoesNotRetainBackendResources() throws {
+        weak var retired: DeviceBackendProbe?
+        var service: DeviceBackendProbe?
+        let router = DeviceCallActionRouter(context: DeviceCallContext()) { _, _ in service }
+        var lastUUID: UUID?
+        for index in 0..<300 {
+            service = DeviceBackendProbe(id: "history")
+            retired = service
+            let route = try XCTUnwrap(router.registerIncoming(.init(agentID: "A", callID: "history-\(index)",
+                state: .ringing, transport: .bluetooth, transportEpoch: 1), mode: .bluetooth))
+            service = nil
+            lastUUID = route.systemUUID
+            router.finished(route.key)
+        }
+        XCTAssertLessThanOrEqual(router.routes.count, 128)
+        XCTAssertNil(retired, "terminal UUID tombstones must not retain live backend sessions")
+        XCTAssertTrue(router.contains(uuid: try XCTUnwrap(lastUUID)), "recent stale CallKit actions stay recognizable")
+        XCTAssertNil(router.route(for: try XCTUnwrap(lastUUID)))
+        service = DeviceBackendProbe(id: "B")
+        let active = try XCTUnwrap(router.registerIncoming(.init(agentID: "B", callID: "new", state: .ringing,
+            transport: .bluetooth, transportEpoch: 1), mode: .bluetooth))
+        XCTAssertEqual(router.route(for: active.systemUUID), active)
+    }
+
     func testOwnedAudioStartupSurvivesUnrelatedPollRestart() async throws {
         let old = ConnectionModePreference.selected()
         ConnectionModePreference.set(.vowlan)
@@ -307,6 +403,9 @@ private final class DeviceBackendProbe: DeviceCallBackend {
     let id: String
     var commands: [String] = []
     var beforeDialReply: () async -> Void = {}
+    var beforeEndReply: () async -> Void = {}
+    var answerError: Error?
+    var lastSimAccount: String?
     var provisionalReply = false
     init(id: String) { self.id = id }
     func dial(number: String, operationID: String, systemUUID: UUID) async throws -> DeviceBackendCall {
@@ -314,7 +413,18 @@ private final class DeviceBackendProbe: DeviceCallBackend {
         return DeviceBackendCall(callID: provisionalReply ? operationID : "shared",
             backendID: provisionalReply ? operationID : "shared", generation: 1)
     }
-    func answer(callID: String, generation: UInt64?) async throws { commands.append("answer:\(callID)") }
-    func end(callID: String, generation: UInt64?, reject: Bool) async throws { commands.append("\(reject ? "reject" : "end"):\(callID)") }
+    func dial(number: String, operationID: String, systemUUID: UUID,
+              simAccount: String?) async throws -> DeviceBackendCall {
+        lastSimAccount = simAccount
+        return try await dial(number: number, operationID: operationID, systemUUID: systemUUID)
+    }
+    func answer(callID: String, generation: UInt64?) async throws {
+        commands.append("answer:\(callID)")
+        if let answerError { throw answerError }
+    }
+    func end(callID: String, generation: UInt64?, reject: Bool) async throws {
+        commands.append("\(reject ? "reject" : "end"):\(callID)")
+        await beforeEndReply()
+    }
     func dtmf(_ digits: String, callID: String, generation: UInt64?) async throws { commands.append("dtmf:\(callID):\(digits)") }
 }

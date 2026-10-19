@@ -1,6 +1,6 @@
 # AirSIM Android Standalone
 
-2026-10-19 发布准备：[Apps v0.9.8.1](../docs/releases/0.9.8.1.md)，Android `0.9.8.1 (95)`。推荐 Android 10–13 用户升级；包含应用更新检测、PCM 启动失败资源清理与诊断，以及臻情最低非零音量兼容策略。问题设备双向声音仍待实测；下文93／94候选记录为历史依据。
+2026-10-19 发布：[Apps v0.9.8.2](../docs/releases/0.9.8.2.md)，Android `0.9.8.2 (96)`。推荐 Android 10–13 用户升级；包含通话路径修复、多 SIM 卡槽选择、PCM 探活误报与空闲日志修复。双 SIM 与问题设备双向声音仍待实测；下文旧候选记录为历史依据。
 
 0.9.8.1 新增应用更新入口：首次安装／升级启动展示离线版本说明；「设置 → 关于」可重看并检查 Standalone APK 新版。前台每日最多自动检查一次（失败也限频），与 Linux Agent 更新分开，不自动下载或安装、不修改配对或通话。[说明与验证边界](../docs/app-updates.md)。
 
@@ -163,12 +163,24 @@ adb install -r android-standalone/build/android/AirSIM-Android-Standalone-debug.
 
 完整项目级结果、未连接设备和失败场景记录在 [VoBLE 真机测试矩阵](../docs/voble-real-device-test-matrix.md)。
 
+## 未发布：VoBLE 广播恢复（2026-10-19）
+
+蓝牙在服务启动时关闭、之后才打开，旧实现不会自动恢复 GATT 广播，只能等下一次 `startService`；广播 `onStartFailure` 也会永久关闭 server。现在 `VoBLEGatewayService` 监听 `BluetoothAdapter.ACTION_STATE_CHANGED`：`STATE_ON` 重新 `gatt.start()`，`STATE_OFF` 关闭失效 server。广播失败仍先关闭失效 server，再由服务按 2/4/8 秒有界重试 3 次，成功或服务重启重置；超过次数记录 `voble_gatt_advertising_gave_up`。日志新增 `voble_bluetooth_on_restart_advertising`、`voble_gatt_advertising_retry_scheduled` 与 `voble_gatt_advertising_confirmed`，不含设备名、地址或密钥。JVM GATT 生命周期回归通过；正式 APK 需用原 release keystore 重新构建，本轮未安装，不能用 debug 包覆盖或先卸载（会清配对数据）。
+
 ## 安全边界
 
 - 通话 PCM 只在内存与网络中处理，不落盘；
 - 日志不得包含完整短信、电话号码、Push token、配对密钥或 Relay 密钥；
 - APK 不包含 APNs 私钥、Cloudflare token、Android 发布私钥或 Apple 签名身份；
 - 本项目仅限 [PolyForm Noncommercial License 1.0.0](../LICENSE) 允许的非商业用途。
+## 未发布：PCM 探活与空闲日志修复（2026-10-19）
+
+空闲时 `pcm_health ... bridge_listening pcm_initialized=false` 是桥等待通话的正常状态。此前 `VoWLANGatewayService.portOpen()` 的 TCP 探活会让桥先创建 AudioRecord/AudioTrack 再读握手，探活关闭后产生 `session_error/handshake_failed`，并可能短暂占用音频。现在桥先校验 `AIRSIMPCM1` hello 再建端点；纯探活以 `ProbeClosed` 静默关闭。空闲 health 日志降为状态变化/30s 心跳，通话中保持每秒并带 `in_call`。桥单测 65 项、Android JVM 通过。注意同 versionCode 覆盖安装可能复用旧 Shizuku daemon，正式升级应递增 versionCode。
+
+## 未发布：多 SIM 卡槽选择（2026-10-19）
+
+配对 iPhone 可在拨号页选择**本次通话**使用的 SIM/PhoneAccount：BLE `device_info` 与 VoWLAN `/v1/health` 新增 `sim_slots`（id/label/number/default），BLE `dial` 与 VoWLAN `/api/calls/dial` 接受 `sim_account`。安卓通过 `DefaultCallAccount.dialExtras(context, simAccount)` 只覆盖本次 `placeCall`，不修改 App 的全局默认通话卡；卡槽 ID 只用于匹配 Telecom handle，号码不写入日志。只有多于一个 call-capable 账号时 iPhone 才显示选择按钮。当前三星仅一个 SIM 账号，真机未显示该按钮；AVF Go Agent 与 Cloud Relay 命令尚未透传 `sim_account`，会回退默认卡。
+
 # 未发布：Relay 命令路由
 
 工作区新增 Agent 定向云端命令、稳定连接后才重置的退避，以及 WSS / HTTP 共用冷却；不改变正常心跳或本地通路。[协议与升级顺序](../docs/relay-agent-routing.md)。未安装或发布本轮构建。

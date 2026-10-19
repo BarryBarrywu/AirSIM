@@ -7,6 +7,46 @@ import WatchConnectivity
 
 @MainActor
 final class LocalDeviceDirectoryTests: XCTestCase {
+    func testHealthWithoutDeviceNameCannotPersistSpoofedBonjourName() async throws {
+        let id = "nameless-" + UUID().uuidString
+        defer { PairedAndroidDeviceStore.forget(id); PairedAndroidDeviceStore.allowPairing(id) }
+        let peer = try AuthenticatedHealthPeer(agentID: id, secret: aSecret, deviceName: nil)
+        defer { peer.stop() }
+        let endpoint = try await peer.start()
+        let directory = LocalDeviceDirectory(credentials: MemoryWLANCredentials(), healthTransport: AuthenticatedHealthPeer.transport)
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()), localDirectory: directory)
+        defer { model.stop() }
+        let candidate = VoWLANDiscoveredAgent(id: id, endpoint: endpoint, deviceName: "Spoofed TXT name",
+            manufacturer: nil, model: nil, phoneNumber: nil, agentKind: nil)
+        model.rememberVerifiedLocalDevice(candidate)
+        XCTAssertFalse(PairedAndroidDeviceStore.records().contains { $0.id == id })
+        try await directory.verifyPairing(agentID: id, endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
+        model.rememberVerifiedLocalDevice(candidate)
+        XCTAssertEqual(PairedAndroidDeviceStore.records().first { $0.id == id }?.deviceName, "Android 手机")
+        PairedAndroidDeviceStore.remember(.init(id: id, deviceName: "Previously paired phone", agentKind: nil))
+        model.rememberVerifiedLocalDevice(candidate)
+        XCTAssertEqual(PairedAndroidDeviceStore.records().first { $0.id == id }?.deviceName, "Previously paired phone")
+    }
+
+    func testUnauthenticatedDiscoveryNeverAppearsAsPairedOrOverridesVerifiedIdentity() async throws {
+        let id = "discovery-" + UUID().uuidString
+        let peer = try AuthenticatedHealthPeer(agentID: id, secret: aSecret)
+        defer { peer.stop() }
+        let endpoint = try await peer.start()
+        let directory = LocalDeviceDirectory(credentials: MemoryWLANCredentials(), healthTransport: AuthenticatedHealthPeer.transport)
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()), localDirectory: directory)
+        defer { model.stop() }
+        let advertisement = VoWLANDiscoveredAgent(id: id, endpoint: endpoint, deviceName: "Unauthenticated name",
+            manufacturer: nil, model: nil, phoneNumber: "untrusted-number", agentKind: "untrusted-kind")
+        XCTAssertFalse(model.androidAgentPresentations(discoveredAgents: [advertisement]).contains { $0.id == id })
+        try await directory.verifyPairing(agentID: id, endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
+        let verified = try XCTUnwrap(model.androidAgentPresentations(discoveredAgents: [advertisement]).first { $0.id == id })
+        XCTAssertTrue(verified.vowlanOnline)
+        XCTAssertNotEqual(verified.deviceName, "Unauthenticated name")
+        XCTAssertNotEqual(verified.phoneNumber, "untrusted-number")
+        XCTAssertNotEqual(verified.agentKind, "untrusted-kind")
+    }
+
     private let aSecret = Data(repeating: 0x41, count: 32)
     private let bSecret = Data(repeating: 0x42, count: 32)
     func testSMSIngestionCapturesAuthenticatedProducerAndAcknowledgesRawDeliveryIDs() async throws {
@@ -562,6 +602,7 @@ private final class AuthenticatedHealthPeer: @unchecked Sendable {
     private let callID: String
     private let backendCallID: String
     private let dialSuffix: String
+    private let deviceName: String?
     struct Command { let path: String; let callID: String? }
     private var commandLog = [Command]()
     private var callState: String? = "incoming"
@@ -573,11 +614,12 @@ private final class AuthenticatedHealthPeer: @unchecked Sendable {
     var commands: [Command] { lock.withLock { commandLog } }
     func setCallState(_ value: String?) { lock.withLock { callState = value } }
 
-    init(agentID: String, secret: Data, includeProof: Bool = true, callID: String? = nil, backendCallID: String? = nil, dialSuffix: String = "") throws {
+    init(agentID: String, secret: Data, includeProof: Bool = true, callID: String? = nil, backendCallID: String? = nil, dialSuffix: String = "", deviceName: String? = "Fixture Android") throws {
         self.agentID = agentID; self.secret = secret; self.includeProof = includeProof
         self.callID = callID ?? "call-\(agentID)"
         self.backendCallID = backendCallID ?? self.callID
         self.dialSuffix = dialSuffix
+        self.deviceName = deviceName
         listener = try NWListener(using: .tcp)
     }
     func start() async throws -> VoWLANEndpoint {
@@ -636,7 +678,8 @@ private final class AuthenticatedHealthPeer: @unchecked Sendable {
             let input = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any]
             lock.withLock { commandLog.append(.init(path: path, callID: input?["call_id"] as? String)) }
         }
-        var json: [String: Any] = ["ok": valid, "agent_id": agentID, "device_name": "Fixture Android", "canonical_call_ids": true]
+        var json: [String: Any] = ["ok": valid, "agent_id": agentID, "canonical_call_ids": true]
+        json["device_name"] = deviceName
         if includeProof { json["identity_proof"] = mac("AIRSIM-HEALTH1\n\(nonce)\n\(agentID)") }
         if path == "/api/calls/dial" {
             let input = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: String] ?? [:]

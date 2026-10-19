@@ -174,7 +174,8 @@ struct AirSIMAPI: Sendable {
             throw originalError
         }
     }
-    func dialOwnedCall(number: String, operationID: String) async throws -> DeviceBackendCall {
+    func dialOwnedCall(number: String, operationID: String,
+                       simAccount: String? = nil) async throws -> DeviceBackendCall {
         struct Receipt: Decodable {
             let operation_id: String?
             let android_id: String?
@@ -185,7 +186,9 @@ struct AirSIMAPI: Sendable {
         let nonce = VoWLANRequestSigner.makeNonce()
         var request = URLRequest(url: endpoint("api/calls/dial"))
         request.httpMethod = "POST"
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["number": number, "operation_id": operationID])
+        var payload: [String: Any] = ["number": number, "operation_id": operationID]
+        if let simAccount, !simAccount.isEmpty { payload["sim_account"] = simAccount }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = Self.voWLANDialTimeout
         let response = try await tracedResponse(for: request, authenticationNonce: nonce)

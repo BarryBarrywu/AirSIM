@@ -63,7 +63,9 @@ final class VoBLERadioController: NSObject, ObservableObject {
     private var enabled = false
     private var recoveryScan: Task<Void, Never>?
     private var lastRecoveryScan = Date.distantPast
-    private(set) var scanning = false
+    private var lastScanRestart = Date.distantPast
+    private var mediaPaused = false
+    @Published private(set) var scanning = false
     var poweredOn: Bool { io.poweredOn }
     var manager: CBCentralManager? { io.manager }
 
@@ -75,32 +77,76 @@ final class VoBLERadioController: NSObject, ObservableObject {
     func start() {
         enabled = true
         io.start(delegate: self)
+        // iOS may stop a scan without a state callback while the app is
+        // suspended. Re-arm once per foreground transition instead of trusting
+        // the in-memory flag; otherwise the UI can sit at "discovering" forever.
+        if Date().timeIntervalSince(lastScanRestart) >= 10 { rearmScan() }
+        scanIfNeeded()
+    }
+
+    /// Re-issue the shared scan even when the in-memory scanning flag still
+    /// reads true. The timestamp bound keeps repeated session starts in one
+    /// render pass from churning the OS scanner.
+    func rearmScan() {
+        guard enabled, poweredOn, !mediaPaused else { return }
+        if scanning { io.stopScan() }
+        scanning = false
+        lastScanRestart = Date()
+        trace("scan_rearmed", fields: ["powered": "true"])
         scanIfNeeded()
     }
     func scanIfNeeded() {
-        guard enabled, poweredOn, !scanning else { return }
+        guard enabled, poweredOn, !scanning, !mediaPaused else { return }
         scanning = true
         io.scan()
+        trace("scan_started", fields: ["powered": "true"])
     }
+
+    /// Scanning competes with the BLE connection for radio time. The old
+    /// single-device controller stopped scanning on connect; the shared radio
+    /// must do the same while a call is actually carrying audio.
+    func pauseScanForMedia() {
+        guard !mediaPaused else { return }
+        mediaPaused = true
+        if scanning { io.stopScan() }
+        scanning = false
+        trace("scan_paused_media")
+    }
+
+    func resumeScanAfterMedia() {
+        guard mediaPaused else { return }
+        mediaPaused = false
+        lastScanRestart = Date()
+        trace("scan_resumed_media")
+        scanIfNeeded()
+    }
+
     func stop() {
         recoveryScan?.cancel(); recoveryScan = nil
         enabled = false
+        mediaPaused = false
         if scanning { io.stopScan() }
         scanning = false
         for id in sessions.keys { cancel(peripheralID: id) }
+        trace("scan_stopped")
     }
     func connect(peripheralID: UUID) { guard enabled, poweredOn else { return }; io.connect(peripheralID) }
     func cancel(peripheralID: UUID) { io.cancel(peripheralID) }
     func peripheral(_ id: UUID) -> CBPeripheral? { io.peripheral(id) }
     func rescan() {
-        guard enabled else { return }
+        guard enabled, !mediaPaused else {
+            if mediaPaused { trace("scan_reset_ignored_media") }
+            return
+        }
         if scanning { io.stopScan() }
         scanning = false
+        lastScanRestart = Date()
         discoveredPeers.removeAll()
+        trace("scan_reset")
         scanIfNeeded()
     }
     func restartDiscoveryAfterDisconnect() {
-        guard enabled, poweredOn else { return }
+        guard enabled, poweredOn, !mediaPaused else { return }
         let remaining = 0.5 - Date().timeIntervalSince(lastRecoveryScan)
         if remaining > 0 {
             guard recoveryScan == nil else { return }
@@ -121,6 +167,12 @@ final class VoBLERadioController: NSObject, ObservableObject {
         }
     }
 
+    private func trace(_ phase: String, detail: String = "", fields: [String: String] = [:]) {
+        Task { await AgentVerboseTraceRecorder.shared.recordEvent(
+            source: "ios", category: "voble-radio", phase: phase,
+            title: "蓝牙共享扫描", detail: detail, fields: fields) }
+    }
+
     private func adoptRestored(_ value: CBPeripheral, central: CBCentralManager) {
         guard PairedAndroidDeviceStore.permitsPeripheral(value.identifier.uuidString) else { return }
         sessions[value.identifier]?.value?.centralManager(central,
@@ -131,6 +183,8 @@ final class VoBLERadioController: NSObject, ObservableObject {
 extension VoBLERadioController: @preconcurrency CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state != .poweredOn { scanning = false }
+        trace("radio_state", fields: ["state": String(central.state.rawValue),
+                                      "authorization": String(CBManager.authorization.rawValue)])
         for slot in sessions.values { slot.value?.centralManagerDidUpdateState(central) }
         scanIfNeeded()
     }
@@ -149,7 +203,11 @@ extension VoBLERadioController: @preconcurrency CBCentralManagerDelegate {
             signal: RSSI.intValue)
         if let index = discoveredPeers.firstIndex(where: { $0.id == peer.id }) {
             if discoveredPeers[index] != peer { discoveredPeers[index] = peer }
-        } else { discoveredPeers.append(peer) }
+        } else {
+            discoveredPeers.append(peer)
+            trace("peer_discovered", fields: ["peers": String(discoveredPeers.count),
+                                              "rssi": String(peer.signal)])
+        }
         onDiscovered?(peer)
         sessions[peer.id]?.value?.centralManager(central, didDiscover: peripheral,
             advertisementData: advertisementData, rssi: RSSI)

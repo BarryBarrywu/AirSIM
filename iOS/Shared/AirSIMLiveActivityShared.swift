@@ -105,12 +105,12 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
 
             var title: String {
                 switch self {
-                case .standby: return "模块待机"
+                case .standby: return "Agent 待机"
                 case .cloudStandby: return "云端在线"
-                case .incoming: return "模块来电"
+                case .incoming: return "Agent 来电"
                 case .active: return "通话中"
                 case .held: return "通话保持"
-                case .offline: return "模块离线"
+                case .offline: return "Agent 离线"
                 }
             }
         }

@@ -474,7 +474,7 @@ struct AirSIMSettingsView: View {
     }
 
     private var voBLEStatus: String {
-        switch model.voble.state {
+        switch model.vobleHub.pairingState {
         case .stopped: return runtimePolicy.startsBluetooth ? "待启动" : "当前模式已关闭"
         case .bluetoothUnavailable: return "蓝牙不可用"
         case .scanning: return "正在发现"

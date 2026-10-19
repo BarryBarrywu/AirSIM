@@ -87,6 +87,13 @@ struct CallLifecycleStore: Sendable {
             endedAt: nil, missed: record.missed)
     }
 
+    /// Restore a snapshot captured before an optimistic local transition when
+    /// the transport rejected the answer/reject. Only call this while the
+    /// authoritative event for that identity is still the pre-action state.
+    mutating func restore(_ value: CallLifecycleSnapshot) {
+        snapshot = value
+    }
+
     mutating func retire(callID: String, uuid: UUID) {
         let identity = RetiredCall(id: callID, uuid: uuid)
         guard !retired.contains(identity) else { return }

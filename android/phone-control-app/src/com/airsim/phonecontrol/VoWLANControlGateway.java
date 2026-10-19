@@ -103,6 +103,7 @@ public final class VoWLANControlGateway implements Closeable {
                         .put("manufacturer", android.os.Build.MANUFACTURER)
                         .put("model", android.os.Build.MODEL)
                         .put("phone_number", AndroidAgentIdentity.phoneNumber(context))
+                        .put("sim_slots", SimSlotJson.slots(context))
                         .toString();
             } else {
                 String local = peer.getLocalAddress().getHostAddress();

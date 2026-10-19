@@ -38,16 +38,27 @@ struct DeviceBackendCall: Sendable {
 protocol DeviceCallBackend: AnyObject {
     var epoch: UInt64 { get }
     func dial(number: String, operationID: String, systemUUID: UUID) async throws -> DeviceBackendCall
+    /// Optional per-call SIM/PhoneAccount override from the dial-pad selector.
+    func dial(number: String, operationID: String, systemUUID: UUID,
+              simAccount: String?) async throws -> DeviceBackendCall
     func answer(callID: String, generation: UInt64?) async throws
     func end(callID: String, generation: UInt64?, reject: Bool) async throws
     func dtmf(_ digits: String, callID: String, generation: UInt64?) async throws
 }
 
+extension DeviceCallBackend {
+    func dial(number: String, operationID: String, systemUUID: UUID,
+              simAccount: String?) async throws -> DeviceBackendCall {
+        try await dial(number: number, operationID: operationID, systemUUID: systemUUID)
+    }
+}
+
 enum DeviceCallRoutingError: LocalizedError, Equatable {
-    case unavailable, busy, stale, unsupportedPeer
+    case unavailable, noSelection, busy, stale, unsupportedPeer
     var errorDescription: String? {
         switch self {
         case .unavailable: return "所选安卓没有可用的拨号链路，不会切换到另一台设备"
+        case .noSelection: return "有多台安卓在线，请先在拨号页选择要使用的设备"
         case .busy: return "当前通话尚未结束，其他设备来电仅提醒"
         case .stale: return "此通话已结束或已失效"
         case .unsupportedPeer: return "安卓端尚不支持设备归属明确的通话回执，请更新对应 App／Agent"
@@ -72,13 +83,14 @@ final class DeviceCallActionRouter {
     var systemUUID: () -> UUID = { UUID() }
     var onActivate: ((LockedDeviceCallRoute) -> Void)?
     var onFinish: ((DeviceCallKey) -> Void)?
+    var onAnswerFailed: ((DeviceCallKey) -> Void)?
     var onTerminationSettled: (() -> Void)?
     init(context: DeviceCallContext,
          backend: @escaping (String, CallTransport) -> (any DeviceCallBackend)?) {
         self.context = context; self.backend = backend
     }
     func dial(agentID: String, number: String, mode: AirSIMConnectionMode,
-              reservationID: UUID? = nil) async throws -> LockedDeviceCallRoute {
+              reservationID: UUID? = nil, simAccount: String? = nil) async throws -> LockedDeviceCallRoute {
         guard context.registry.active == nil, context.media.owner == nil,
               context.admissionReservation == nil || context.admissionReservation == reservationID else { throw DeviceCallRoutingError.busy }
         guard let (transport, service) = preferred(agentID: agentID, mode: mode) else { throw DeviceCallRoutingError.unavailable }
@@ -93,7 +105,8 @@ final class DeviceCallActionRouter {
         pendingDials.insert(key)
         onActivate?(route)
         do {
-            let reply = try await service.dial(number: number, operationID: operation, systemUUID: uuid)
+            let reply = try await service.dial(number: number, operationID: operation,
+                systemUUID: uuid, simAccount: simAccount)
             guard context.registry.active == key, context.media.owner == key,
                   context.registry.latestEvent(for: key)?.state.isTerminal == false else {
                 // A hangup may beat this reply. Clean up this exact source only;
@@ -140,6 +153,7 @@ final class DeviceCallActionRouter {
     }
     @discardableResult
     func ingest(_ event: DeviceCallEvent, mode: AirSIMConnectionMode) -> [DeviceCallEffect] {
+        defer { pruneRetiredCalls() }
         // The authenticated dial receipt, not arrival order, proves the alias.
         // Preserve early Telecom events until that proof names this operation.
         if event.replacesCallID == nil, event.direction == "outgoing",
@@ -226,7 +240,17 @@ final class DeviceCallActionRouter {
         do {
             try await target.backend.answer(callID: target.identity.backendID, generation: target.identity.generation)
             guard context.registry.active == key else { throw CancellationError() }
-        } catch { finished(key); throw error }
+        } catch {
+            // An answer failure must not retire the ringing call. Release the
+            // optimistic ownership only; a late agent .active (the Android
+            // answered) still flows through the normal "answered elsewhere"
+            // branch, and a definitive failure leaves the ringing UI usable.
+            let stillRinging = context.registry.latestEvent(for: key)?.state == .ringing
+            context.media.release(key)
+            context.registry.deactivate(key)
+            if stillRinging { onAnswerFailed?(key) }
+            throw error
+        }
     }
     func end(_ key: DeviceCallKey, rejectIfRinging: Bool) async throws {
         guard let target = targets[key], context.registry.latestEvent(for: key)?.state.isTerminal == false else { return }
@@ -250,6 +274,15 @@ final class DeviceCallActionRouter {
         context.registry.finish(key)
         context.media.release(key)
         onFinish?(key)
+        pruneRetiredCalls()
+    }
+    private func pruneRetiredCalls() {
+        // Keep lightweight UUID tombstones only as long as the registry's
+        // bounded terminal history. Presentation callbacks run before pruning.
+        routes = routes.filter { context.registry.latestEvent(for: $0.key) != nil }
+        // Async dial/answer/end operations capture their exact backend locally;
+        // a terminal call must not keep its sessions alive through this cache.
+        targets = targets.filter { context.registry.latestEvent(for: $0.key)?.state.isTerminal == false }
     }
     private func preferred(agentID: String, mode: AirSIMConnectionMode) -> (CallTransport, any DeviceCallBackend)? {
         let wlan = backend(agentID, .vowlan), ble = backend(agentID, .bluetooth)
@@ -265,8 +298,12 @@ final class WLANDeviceCallBackend: DeviceCallBackend {
     let api: AirSIMAPI
     init(api: AirSIMAPI, epoch: UInt64) { self.api = api; self.epoch = epoch }
     func dial(number: String, operationID: String, systemUUID: UUID) async throws -> DeviceBackendCall {
+        try await dial(number: number, operationID: operationID, systemUUID: systemUUID, simAccount: nil)
+    }
+    func dial(number: String, operationID: String, systemUUID: UUID,
+              simAccount: String?) async throws -> DeviceBackendCall {
         try? await api.warmAudioHost()
-        return try await api.dialOwnedCall(number: number, operationID: operationID)
+        return try await api.dialOwnedCall(number: number, operationID: operationID, simAccount: simAccount)
     }
     func answer(callID: String, generation: UInt64?) async throws {
         try? await api.warmAudioHost()
@@ -287,7 +324,12 @@ final class BLEDeviceCallBackend: DeviceCallBackend {
     var epoch: UInt64 { central.transportEpoch }
     init(session: VoBLEDeviceSession) { central = session.central; calls = session.calls }
     func dial(number: String, operationID: String, systemUUID: UUID) async throws -> DeviceBackendCall {
-        let identity = try await calls.startOutgoing(number: number, operationID: operationID, systemUUID: systemUUID)
+        try await dial(number: number, operationID: operationID, systemUUID: systemUUID, simAccount: nil)
+    }
+    func dial(number: String, operationID: String, systemUUID: UUID,
+              simAccount: String?) async throws -> DeviceBackendCall {
+        let identity = try await calls.startOutgoing(number: number, operationID: operationID,
+            systemUUID: systemUUID, simAccount: simAccount)
         return .init(callID: identity.callID, backendID: identity.callID, generation: identity.generation)
     }
     private func require(_ id: String, _ generation: UInt64?) throws {

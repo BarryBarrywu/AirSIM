@@ -42,6 +42,8 @@ final class ShizukuBridgeManager {
     private String audioWatchdogKey = "";
     private final ExecutorService audioProbeWorker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean audioProbeInFlight = new AtomicBoolean();
+    private volatile String lastPCMHealthReport = "";
+    private volatile long lastPCMHealthLogAt;
     private DialerRoleCallback pendingRoleCallback;
     private boolean roleRequestInFlight;
 
@@ -399,7 +401,18 @@ final class ShizukuBridgeManager {
                 if (privilegedClient != null) {
                     String report = coordinator.refreshStatus();
                     status = "Shizuku 已连接 · " + report;
-                    BridgeLog.watchdog("pcm_health " + report);
+                    // Idle PCM stays at bridge_listening / initialized=false by design.
+                    // Log every probe only during a call (where it is diagnostic); when
+                    // idle, log state changes and a 30s heartbeat instead of every second.
+                    boolean inCall = !CallRepository.callIDs().isEmpty();
+                    long now = android.os.SystemClock.elapsedRealtime();
+                    boolean changed = !report.equals(lastPCMHealthReport);
+                    boolean heartbeat = now - lastPCMHealthLogAt >= 30_000;
+                    if (inCall || changed || heartbeat) {
+                        lastPCMHealthReport = report;
+                        lastPCMHealthLogAt = now;
+                        BridgeLog.watchdog("pcm_health in_call=" + inCall + " " + report);
+                    }
                 }
             } catch (Exception error) {
                 status = "Shizuku PCM 状态检查失败";

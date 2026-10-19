@@ -1,6 +1,6 @@
 # AirSIM 三星 Android 控制 App
 
-2026-10-19 发布准备：[Apps v0.9.8.1](../../docs/releases/0.9.8.1.md)，共享 APK `0.9.8.1 (95)`。Standalone 推荐用于新安装；AVF Bridge 不等于 Linux Agent 更新。本版包含应用更新说明／检测、PCM 失败清理和诊断及臻情兼容策略，实际 OEM 音频仍需验证。
+2026-10-19 发布：[Apps v0.9.8.2](../../docs/releases/0.9.8.2.md)，共享 APK `0.9.8.2 (96)`。Standalone 推荐用于新安装；AVF Bridge 不等于 Linux Agent 更新。本版包含通话路径修复、多 SIM 卡槽选择、PCM 探活误报与空闲日志修复，实际 OEM 音频仍需验证。
 
 0.9.8.1 新增应用更新入口：首次安装／升级启动展示包内版本说明；「设置 → 关于」可重看和检查对应 Standalone／AVF Bridge APK 的新版。每日自动检查有界，与「检查并安装最新 Agent」的 Debian 更新完全分开，不自动下载、安装或卸载 App。[行为与维护约定](../../docs/app-updates.md)。
 
@@ -128,6 +128,10 @@ AirSIM 会识别小米、Redmi、OPPO、OnePlus、realme、vivo、iQOO 和荣耀
 ## 短信发送
 
 iPhone 经 VoWLAN 或云端 Relay 提交发信请求后，AVF Agent 把 `send_sms` 命令交给 Android Bridge。Android Bridge 使用系统短信服务和默认短信 SIM 分段发送；每一段都收到系统「已发送」回执后，才向 Agent 回报成功。这个回执表示手机已把短信交给运营商网络，不代表收件人已收到。超时或失败时，请先在手机短信记录中核对，避免重复发送。短信命令与 Telecom 通话 ID 控制相互独立。
+
+## VoBLE 广播生命周期（未发布，2026-10-19）
+
+共享 `VoBLEGatewayService` 现在监听系统蓝牙状态：打开时重新启动 GATT server／广播，关闭时释放失效 server；广播启动失败会关闭失效 server 并按 2/4/8 秒有界重试 3 次。此前服务先于蓝牙启动时不会自动恢复，iPhone 会一直停在“正在发现”。诊断日志只记录尝试次数、错误码和状态，不记录设备地址、号码或密钥。JVM GATT 生命周期回归通过；正式包仍需原 release keystore，未安装或发布。
 
 ## 网络与安全
 
