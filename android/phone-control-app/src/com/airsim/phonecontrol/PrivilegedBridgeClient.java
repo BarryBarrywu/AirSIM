@@ -21,7 +21,28 @@ final class PrivilegedBridgeClient implements PrivilegedBridgeCoordinator.Transp
     }
 
     @Override public String setLocalOutputMuted(boolean muted) throws RemoteException {
-        return transact(PrivilegedBridgeProtocol.TRANSACTION_SET_LOCAL_OUTPUT_MUTED, true, muted);
+        return setLocalOutputMuted(muted, PrivilegedBridgeProtocol.TRANSPORT_VOWLAN);
+    }
+
+    @Override public String setLocalOutputMuted(boolean muted, String transport) throws RemoteException {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(PrivilegedBridgeProtocol.DESCRIPTOR);
+            data.writeInt(muted ? 1 : 0);
+            data.writeString(PrivilegedBridgeProtocol.TRANSPORT_VOBLE.equals(transport)
+                    ? PrivilegedBridgeProtocol.TRANSPORT_VOBLE
+                    : PrivilegedBridgeProtocol.TRANSPORT_VOWLAN);
+            if (!binder.transact(PrivilegedBridgeProtocol.TRANSACTION_SET_LOCAL_OUTPUT_MUTED, data, reply, 0)) {
+                throw new RemoteException("privileged transaction rejected");
+            }
+            reply.readException();
+            String result = reply.readString();
+            return result == null ? "" : result;
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
     }
 
     @Override public String audioSnapshot() throws RemoteException {
@@ -30,6 +51,26 @@ final class PrivilegedBridgeClient implements PrivilegedBridgeCoordinator.Transp
 
     String ensureDialerRole() throws RemoteException {
         return transact(PrivilegedBridgeProtocol.TRANSACTION_ENSURE_DIALER_ROLE, false, false);
+    }
+
+    String sendSms(String destination, String body, int subscriptionId) throws RemoteException {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(PrivilegedBridgeProtocol.DESCRIPTOR);
+            data.writeString(destination);
+            data.writeString(body);
+            data.writeInt(subscriptionId);
+            if (!binder.transact(PrivilegedBridgeProtocol.TRANSACTION_SEND_SMS, data, reply, 0)) {
+                throw new RemoteException("privileged SMS transaction rejected");
+            }
+            reply.readException();
+            String result = reply.readString();
+            return result == null ? "" : result;
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
     }
 
     private String transact(int code, boolean hasBoolean, boolean value) throws RemoteException {

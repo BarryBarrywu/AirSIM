@@ -1,6 +1,6 @@
 # AirSIM — Android 与 iPhone / Apple Watch 跨设备通话、短信和 VoWLAN
 
-[Apps v0.9.8.2 · build 96](docs/releases/0.9.8.2.md)：通话路径审查修复、双 SIM 卡槽选择、双通道灵动岛在线判断与 Agent 文案、PCM 探活误报与空闲日志修复。推荐 Android 10–13 用户升级 Standalone；双 SIM、问题机型双向音频及更多后台场景仍待复验。本次不部署 Relay 或发布新 Linux Agent。
+[Apps v0.9.8.8 · build 102 / iOS 113](docs/releases/0.9.8.8.md)：配对时钟校正、双卡短信与通话卡槽、KernelSU Root 通道、私有网段与可配置端口、VoBLE 下行采集修复；灵动岛只保留 Agent 状态。推荐 Android 10–13 用户升级 Standalone；双 SIM、Root、特殊网段与问题机型双向音频仍待真机复验。本次不部署 Relay 或发布新 Linux Agent。
 
 [![Android Standalone](https://img.shields.io/badge/Android-Standalone%20APK-3DDC84?logo=android&logoColor=white)](android-standalone/README.md)
 [![iOS](https://img.shields.io/badge/iOS-16.3%2B-000000?logo=apple&logoColor=white)](iOS/README.md)

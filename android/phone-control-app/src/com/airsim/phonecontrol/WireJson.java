@@ -4,13 +4,20 @@ public final class WireJson {
     private WireJson() {}
 
     public static String callEvent(String eventId, String callId, String direction, String state, String number, String mode) {
+        return callEvent(eventId, callId, direction, state, number, mode, -1);
+    }
+
+    public static String callEvent(String eventId, String callId, String direction, String state,
+                                   String number, String mode, int slotIndex) {
         return "{" +
                 field("event_id", eventId) + "," +
                 field("call_id", callId) + "," +
                 field("direction", direction) + "," +
                 field("state", state) + "," +
                 field("number", number) + "," +
-                field("mode", mode) + "}";
+                field("mode", mode) + "," +
+                "\"slot_index\":" + slotIndex + "," +
+                "\"slot_id\":" + slotIndex + "}";
     }
 
     public static String commandResult(String id, boolean success, String error) {

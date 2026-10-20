@@ -677,22 +677,20 @@ final class VoWLANController: ObservableObject {
         let epoch = identityEpoch
         let probe = probeGeneration.begin()
         do {
-            let (data, response, nonce) = try await VoWLANProbeRecovery.run {
-                let signed = try VoWLANRequestSigner(secret: credential.secret).sign(
+            let (data, status, nonce) = try await VoWLANProbeRecovery.run {
+                let signed = try VoWLANRequestSigner(credential: credential).sign(
                     method: "GET", path: "/v1/health", body: Data()
                 )
                 var request = URLRequest(url: endpoint.controlBaseURL.appendingPathComponent("v1/health"))
                 request.timeoutInterval = 3
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 Self.apply(signed, to: &request)
-                let configuration = URLSessionConfiguration.ephemeral
-                configuration.waitsForConnectivity = false
-                let session = URLSession(configuration: configuration)
-                defer { session.finishTasksAndInvalidate() }
-                let (data, response) = try await session.data(for: request)
-                return (data, response, signed.nonce)
+                // NWConnection-based transport: ATS does not apply to the
+                // 100.64/10 tailnet address, and the system route is used.
+                let response = try await WiredHTTPTransport(policy: .vowlan).send(request)
+                return (response.body, response.statusCode, signed.nonce)
             }
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+            guard status == 200,
                   let identity = try? JSONDecoder().decode(VoWLANHealthIdentity.self, from: data),
                   identity.ok else {
                 throw VoWLANControllerError.authenticationFailed

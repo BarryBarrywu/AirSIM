@@ -47,7 +47,7 @@ struct SamsungPairingView: View {
 
             if manual {
                 Section {
-                    TextField("安卓 IPv4，例如 192.168.1.2 或 100.64.1.2", text: $host)
+                    TextField("安卓 IPv4，例如 192.168.1.2、100.64.1.2 或 30.0.0.2", text: $host)
                         .keyboardType(.decimalPad)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -62,7 +62,8 @@ struct SamsungPairingView: View {
                     .disabled(code.count != 6 || host.isEmpty || port.isEmpty || pairingServiceID != nil)
                     if pairingServiceID != nil { ProgressView("正在连接与认证…") }
                 } header: { Text("手动地址配对") } footer: {
-                    Text("先在安卓打开一次性配对窗口，填写该页的配对端口，不是 ADB 或通话端口。使用 Tailscale 时填安卓的 Tailscale IPv4，两端须已接入且允许互访；无需开启 AirSIM 云端模式。配对后选择 VoWLAN 或自动连接模式。")
+                    Text("先在安卓打开一次性配对窗口，填写该页的配对端口，不是 ADB 或通话端口。使用 Tailscale 时填安卓的 Tailscale IPv4，两端须已接入且允许互访；无需开启 AirSIM 云端模式。"
+                        + "若局域网使用特殊网段（如 30.0.0.0/8），先在设置 → 私有网络中添加该网段。配对后选择 VoWLAN 或自动连接模式。")
                 }
                 .disabled(pairingServiceID != nil)
             } else {
@@ -145,7 +146,8 @@ struct SamsungPairingView: View {
                 let result = try await SamsungPairingClient.pairManually(address: address, code: code, registration: registration)
                 try Task.checkCancellation()
                 try await model.completeLocalPairing(agentID: result.route.agentID,
-                    registration: registration, endpoint: result.route.endpoint)
+                    registration: registration, endpoint: result.route.endpoint,
+                    clockOffset: result.clockOffset)
                 try await model.vowlan.installManualRoute(result.route)
                 return model.vowlan.availability.isOnlineForDisplay
                     ? "配对成功，直连网关已通过认证。选择 VoWLAN 或自动连接模式后可用于通话与短信。"

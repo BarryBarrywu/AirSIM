@@ -17,6 +17,8 @@ struct CallRecord: Codable, Equatable, Sendable, Identifiable {
     var sourceAgentID: String? = nil
     var sourceCallID: String? = nil
     var historyEstimated: Bool? = nil
+    var slotIndex: Int? = nil
+    var slotID: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, index, direction, state, number, missed
@@ -26,6 +28,7 @@ struct CallRecord: Codable, Equatable, Sendable, Identifiable {
         case androidID = "android_id"
         case sourceAgentID = "source_agent_id", sourceCallID = "source_call_id"
         case historyEstimated = "history_estimated"
+        case slotIndex = "slot_index", slotID = "slot_id"
     }
     func scopedHistory(to agentID: String) -> CallRecord {
         var copy = CallRecord(id: "agent-call:\(Data(agentID.utf8).base64EncodedString()):\(Data((androidID ?? id).utf8).base64EncodedString())",
@@ -61,11 +64,15 @@ struct AgentEventStatus: Codable, Sendable {
     let smsRevision: UInt64
     let smsPending: Int
     let call: CallStatus
+    let simRevision: UInt64?
+    let simSlots: [AndroidSIMSlot]?
 
     enum CodingKeys: String, CodingKey {
         case revision, call
         case smsRevision = "sms_revision"
         case smsPending = "sms_pending"
+        case simRevision = "sim_revision"
+        case simSlots = "sim_slots"
     }
 }
 
@@ -162,13 +169,42 @@ struct AndroidSIMSlot: Codable, Equatable, Identifiable, Sendable {
     let label: String
     let number: String?
     let isDefault: Bool?
+    let slotIndex: Int?
+    let subID: Int?
+    let carrierName: String?
+    let isEmbedded: Bool?
+    let isDefaultVoice: Bool?
+    let isDefaultSMS: Bool?
     enum CodingKeys: String, CodingKey {
         case id, label, number
         case isDefault = "default"
+        case slotIndex = "slot_index"
+        case subID = "sub_id"
+        case carrierName = "carrier_name"
+        case isEmbedded = "is_embedded"
+        case isDefaultVoice = "is_default_voice"
+        case isDefaultSMS = "is_default_sms"
+    }
+    var displayNumber: String? {
+        let value = number?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
     }
     var displayName: String {
-        let value = number?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? label : "\(label) · \(value)"
+        guard let value = displayNumber else { return label }
+        return "\(label) · \(value)"
+    }
+    var detail: String? {
+        var values: [String] = []
+        if isEmbedded == true, !label.localizedCaseInsensitiveContains("eSIM") {
+            values.append("eSIM")
+        }
+        if let carrierName = carrierName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !carrierName.isEmpty, !label.localizedCaseInsensitiveContains(carrierName) {
+            values.append(carrierName)
+        }
+        if isDefaultVoice == true { values.append("默认语音") }
+        if isDefaultSMS == true { values.append("默认短信") }
+        return values.isEmpty ? nil : values.joined(separator: " · ")
     }
 }
 

@@ -3,10 +3,12 @@ package com.airsim.phonecontrol;
 import android.content.Context;
 import android.media.AudioManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Process;
 import android.os.RemoteException;
+import android.telephony.SmsManager;
 import android.util.Log;
 
 import java.io.BufferedReader;
@@ -34,6 +36,7 @@ public final class ShizukuBridgeUserService extends Binder {
     private boolean bridgeDesired;
     private Context serviceContext;
     private volatile LocalOutputMuteController outputMute;
+    private volatile String outputStrategy = "vowlan";
     private volatile CallOutputPolicyMute callOutputPolicyMute;
     private final PCMHealthEvidence pcmEvidence = new PCMHealthEvidence();
 
@@ -64,10 +67,16 @@ public final class ShizukuBridgeUserService extends Binder {
             String result = switch (code) {
                 case PrivilegedBridgeProtocol.TRANSACTION_START_BRIDGE -> ensureBridgeStarted();
                 case PrivilegedBridgeProtocol.TRANSACTION_STATUS -> status();
-                case PrivilegedBridgeProtocol.TRANSACTION_SET_LOCAL_OUTPUT_MUTED ->
-                        setLocalOutputMuted(data.readInt() != 0);
+                case PrivilegedBridgeProtocol.TRANSACTION_SET_LOCAL_OUTPUT_MUTED -> {
+                    boolean target = data.readInt() != 0;
+                    // New clients append the transport; older clients read as VoWLAN.
+                    yield setLocalOutputMuted(target,
+                            data.dataAvail() > 0 ? data.readString() : "vowlan");
+                }
                 case PrivilegedBridgeProtocol.TRANSACTION_ENSURE_DIALER_ROLE -> ensureDialerRole();
                 case PrivilegedBridgeProtocol.TRANSACTION_AUDIO_SNAPSHOT -> audioSnapshot();
+                case PrivilegedBridgeProtocol.TRANSACTION_SEND_SMS ->
+                        sendSms(data.readString(), data.readString(), data.readInt());
                 default -> null;
             };
             if (result == null) return super.onTransact(code, data, reply, flags);
@@ -78,6 +87,35 @@ public final class ShizukuBridgeUserService extends Binder {
             Log.e(TAG, "transaction failed code=" + code, error);
             reply.writeException(new IllegalStateException(safeMessage(error)));
             return true;
+        }
+    }
+
+    private String sendSms(String destination, String body, int subscriptionId) {
+        if (serviceContext == null) return "error:no_context";
+        if (destination == null || destination.trim().isEmpty()
+                || body == null || body.trim().isEmpty()) return "error:invalid";
+        try {
+            SmsManager base = serviceContext.getSystemService(SmsManager.class);
+            if (base == null) return "error:no_service";
+            SmsManager manager;
+            if (subscriptionId < 0) manager = base;
+            else if (Build.VERSION.SDK_INT >= 31) manager = base.createForSubscriptionId(subscriptionId);
+            else manager = SmsManager.getSmsManagerForSubscriptionId(subscriptionId);
+            ArrayList<String> parts = manager.divideMessage(body);
+            if (parts == null || parts.isEmpty()) return "error:divide";
+            if (parts.size() == 1) {
+                manager.sendTextMessage(destination, null, parts.get(0), null, null);
+            } else {
+                manager.sendMultipartTextMessage(destination, null, parts, null, null);
+            }
+            Log.i(TAG, "shizuku_sms_accepted segments=" + parts.size());
+            return "ok:" + parts.size();
+        } catch (SecurityException error) {
+            Log.w(TAG, "shizuku_sms_permission_denied");
+            return "error:permission";
+        } catch (RuntimeException error) {
+            Log.w(TAG, "shizuku_sms_runtime_failed");
+            return "error:runtime";
         }
     }
 
@@ -191,12 +229,66 @@ public final class ShizukuBridgeUserService extends Binder {
     }
 
     private String setLocalOutputMuted(boolean muted) throws Exception {
+        return setLocalOutputMuted(muted, "vowlan");
+    }
+
+    /**
+     * @param strategy "voble" or "vowlan". Both currently resolve to the vendor's
+     *                 capture-safe policy on capture-coupled HALs (Samsung must never
+     *                 use index 0, which also silences the forwarded VOICE_DOWNLINK).
+     */
+    private String setLocalOutputMuted(boolean muted, String strategy) throws Exception {
         synchronized (audioLock) {
             verifyIdentity();
+            LocalOutputMuteController.Strategy desired = "voble".equals(strategy)
+                    ? LocalOutputMuteController.vobleStrategy()
+                    : LocalOutputMuteController.vowlanStrategy();
+            if (outputMute != null && !outputStrategy.equals(strategy)) {
+                // A different policy now owns the stream. Restoring the old snapshot can
+                // only be trusted when it is still muted; if we are not applying a new
+                // restriction, the old policy's release below is the restore path.
+                if (!muted) {
+                    try { outputMute.setMuted(false); }
+                    catch (Exception ignored) { /* release path below still runs */ }
+                }
+                // Never let a stale minimum-volume snapshot leak into the next policy.
+                outputMute.suspend();
+                if (!muted) {
+                    outputMute = null;
+                    outputStrategy = strategy;
+                    return "local_output_unchanged";
+                }
+            }
+            outputStrategy = strategy;
             if (outputMute == null && !muted) return "local_output_unchanged";
-            if (outputMute == null) outputMute = new LocalOutputMuteController(audioBackend(),
-                    LocalOutputMuteController.strategyForManufacturer(android.os.Build.MANUFACTURER));
-            return outputMute.setMuted(muted);
+            Exception failure = null;
+            if (outputMute == null) {
+                outputMute = new LocalOutputMuteController(audioBackend(), desired);
+            } else if (!muted || outputMute.policyName().equals(LocalOutputMuteController.policyName(desired))) {
+                return outputMute.setMuted(muted);
+            } else {
+                outputMute = new LocalOutputMuteController(audioBackend(), desired);
+            }
+            try {
+                return outputMute.setMuted(muted);
+            } catch (Exception error) {
+                failure = error;
+            }
+            // A verified mute may be refused (e.g. shell cannot change the mute bit).
+            // Fall back to the vendor's inaudible strategy instead of leaving the
+            // downlink audible; if that also fails the original error is reported.
+            if (desired != LocalOutputMuteController.Strategy.MUTE) throw failure;
+            LocalOutputMuteController fallback = new LocalOutputMuteController(
+                    audioBackend(), LocalOutputMuteController.strategyForManufacturer(
+                    android.os.Build.MANUFACTURER));
+            if (fallback.policyName().equals(LocalOutputMuteController.policyName(desired))) throw failure;
+            outputMute = fallback;
+            try {
+                return fallback.setMuted(muted) + " fallback=verified_mute_refused";
+            } catch (Exception fallbackFailure) {
+                fallbackFailure.addSuppressed(failure);
+                throw fallbackFailure;
+            }
         }
     }
 
@@ -263,7 +355,7 @@ public final class ShizukuBridgeUserService extends Binder {
                 + " volume=" + (outputMute != null && outputMute.usesMinimumVolume()
                     ? audibleCallVolume(audio) : audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL))
                 + " mode=" + audio.getMode() + " speaker=" + audio.isSpeakerphoneOn()
-                + " pcm=" + pcmRunning + " output_policy="
+                + " pcm=" + pcmRunning + " output_transport=" + outputStrategy + " output_policy="
                 + outputPolicyDiagnostic()
                 + " " + pcmEvidence.snapshot());
     }

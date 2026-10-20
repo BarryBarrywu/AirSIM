@@ -500,9 +500,23 @@ private struct DialPadCurrentAgentCard: View {
                             selectSIMSlot(slot)
                         } label: {
                             if slot.id == selectedSIMSlotID {
-                                Label(slot.displayName, systemImage: "checkmark")
+                                Label {
+                                    VStack(alignment: .leading) {
+                                        Text(slot.displayName)
+                                        if let detail = slot.detail {
+                                            Text(detail).font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                } icon: {
+                                    Image(systemName: "checkmark")
+                                }
                             } else {
-                                Text(slot.displayName)
+                                VStack(alignment: .leading) {
+                                    Text(slot.displayName)
+                                    if let detail = slot.detail {
+                                        Text(detail).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
                             }
                         }
                     }
@@ -766,6 +780,11 @@ struct RecentsView: View {
                 Text(RecentCallTimeFormatter.string(for: call.startedAt))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let slot = call.slotIndex, slot >= 0 {
+                    Text("SIM \(slot + 1)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Button {
@@ -1751,6 +1770,15 @@ struct ActiveCallView: View {
     }
     private var controlSize: CGFloat { isCompact ? 62 : 68 }
     private var displayName: String { model.contacts.displayName(for: call.number) }
+    private var callSIMLabel: String? {
+        guard let slot = call.slotIndex, slot >= 0 else { return nil }
+        let agentID = call.sourceAgentID ?? model.currentAndroidAgent?.id
+        if let agentID,
+           let info = model.simSlots(for: agentID).first(where: { $0.slotIndex == slot }) {
+            return "SIM \(slot + 1) · \(info.label)"
+        }
+        return "SIM \(slot + 1)"
+    }
     private var contactPhotoData: Data? {
         guard let number = call.number else { return nil }
         return model.contacts.contact(for: number)?.photoData
@@ -1810,6 +1838,11 @@ struct ActiveCallView: View {
                         .font(.title3.weight(.regular).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.68))
                         .textSelection(.enabled)
+                }
+                if let simLabel = callSIMLabel {
+                    Text(simLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.62))
                 }
 
                 Text(L10n.t("等待接听"))
@@ -1872,6 +1905,11 @@ struct ActiveCallView: View {
                         .font(.title3.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.66))
                         .textSelection(.enabled)
+                }
+                if let simLabel = callSIMLabel {
+                    Text(simLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.60))
                 }
                 if content.showsDuration {
                     TimelineView(.periodic(from: .now, by: 1)) { context in

@@ -20,6 +20,25 @@ final class SMSCommandExecutor {
     private static final long SENT_TIMEOUT_MS = 45_000L;
     private static final String SEGMENT_EXTRA = "segment";
 
+    interface PrivilegedSender {
+        String send(String destination, String body, int subscriptionId);
+    }
+
+    interface RootSender {
+        String send(String destination, String body, int subscriptionId);
+    }
+
+    private static volatile PrivilegedSender privilegedSender;
+    private static volatile RootSender rootSender;
+
+    static void setPrivilegedSender(PrivilegedSender sender) {
+        privilegedSender = sender;
+    }
+
+    static void setRootSender(RootSender sender) {
+        rootSender = sender;
+    }
+
     private SMSCommandExecutor() {}
 
     static AgentCommandDispatcher.Result execute(Context context, AgentCommand command) {
@@ -36,8 +55,46 @@ final class SMSCommandExecutor {
 
         try {
             int subscriptionID = SmsManager.getDefaultSmsSubscriptionId();
+            if (!command.simAccount.isEmpty()) {
+                subscriptionID = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+                DefaultCallAccount.Snapshot slots = DefaultCallAccount.snapshot(context);
+                if (!slots.error().isEmpty()) {
+                    return AgentCommandDispatcher.Result.failure(slots.error());
+                }
+                for (DefaultCallAccount.Account account : slots.accounts()) {
+                    if (command.simAccount.equals(account.key())) {
+                        subscriptionID = account.subscriptionId();
+                        break;
+                    }
+                }
+                if (subscriptionID == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                    return AgentCommandDispatcher.Result.failure("所选短信卡槽已移除，请重新选择");
+                }
+            }
             if (subscriptionID == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
                 return AgentCommandDispatcher.Result.failure("请在三星 SIM 卡设置中选择默认短信 SIM");
+            }
+            RootSender root = rootSender;
+            if (root != null) {
+                String result = root.send(destination, command.message, subscriptionID);
+                if (result != null && result.startsWith("ok:")) {
+                    int segments = segments(result);
+                    BridgeLog.info("sms_send_root accepted segments=" + segments);
+                    return AgentCommandDispatcher.Result.success(segments);
+                }
+                BridgeLog.info("sms_send_root_fallback result="
+                        + (result == null || result.isEmpty() ? "unknown" : result));
+            }
+            PrivilegedSender privileged = privilegedSender;
+            if (privileged != null) {
+                String result = privileged.send(destination, command.message, subscriptionID);
+                if (result != null && result.startsWith("ok:")) {
+                    int segments = segments(result);
+                    BridgeLog.info("sms_send_shizuku accepted segments=" + segments);
+                    return AgentCommandDispatcher.Result.success(segments);
+                }
+                BridgeLog.info("sms_send_shizuku_fallback result="
+                        + (result == null || result.isEmpty() ? "unknown" : result));
             }
             SmsManager manager = managerForSubscription(context, subscriptionID);
             if (manager == null) {
@@ -107,6 +164,11 @@ final class SMSCommandExecutor {
             BridgeLog.error("sms_send_failed", error);
             return AgentCommandDispatcher.Result.failure("Android 短信发送失败：" + error.getClass().getSimpleName());
         }
+    }
+
+    private static int segments(String result) {
+        try { return Math.max(1, Integer.parseInt(result.substring(3))); }
+        catch (NumberFormatException ignored) { return 1; }
     }
 
     static SmsManager managerForSubscription(Context context, int subscriptionID) {

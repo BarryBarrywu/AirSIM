@@ -10,7 +10,11 @@ final class PrivilegedBridgeProtocol {
     static final int TRANSACTION_SET_LOCAL_OUTPUT_MUTED = 3;
     static final int TRANSACTION_ENSURE_DIALER_ROLE = 4;
     static final int TRANSACTION_AUDIO_SNAPSHOT = 5;
+    static final int TRANSACTION_SEND_SMS = 6;
     static final int STREAM_VOICE_CALL = 0;
+    /** Transport tag appended to TRANSACTION_SET_LOCAL_OUTPUT_MUTED. */
+    static final String TRANSPORT_VOWLAN = "vowlan";
+    static final String TRANSPORT_VOBLE = "voble";
     private static final String DIALER_ROLE = "android.app.role.DIALER";
     private static final Pattern PACKAGE_NAME = Pattern.compile(
             "[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+");

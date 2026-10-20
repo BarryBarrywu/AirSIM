@@ -178,6 +178,9 @@ struct AirSIMSettingsView: View {
     @State private var selfTestTask: Task<Void, Never>?
     @State private var deletingDevice: AndroidAgentPresentation?
     @State private var deviceDeletionInProgress = false
+    @State private var networkPrefixesText = NetworkRoutePreferences.storedText()
+    @State private var networkPrefixError: String?
+    @FocusState private var networkPrefixesFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -229,6 +232,38 @@ struct AirSIMSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                Section {
+                    // 单行输入 + 默认回车键：按“返回”直接收起键盘，多行输入会让回车变成换行。
+                    TextField("例如 30.0.0.0/8, 100.64.0.0/10", text: $networkPrefixesText)
+                        .keyboardType(.numbersAndPunctuation)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .focused($networkPrefixesFocused)
+                        .onSubmit {
+                            networkPrefixesFocused = false
+                            saveNetworkPrefixes()
+                        }
+                        .accessibilityIdentifier("privateNetworkPrefixes")
+                    if let networkPrefixError {
+                        Text(networkPrefixError).font(.footnote).foregroundStyle(.red)
+                    } else {
+                        Text("用逗号分隔多个网段，例如 30.0.0.0/8, 100.64.0.0/10。保存后重新配对或重新发现即可使用。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("保存私有网段") {
+                        networkPrefixesFocused = false
+                        saveNetworkPrefixes()
+                    }
+                    .accessibilityIdentifier("savePrivateNetworkPrefixes")
+                } header: {
+                    Text("私有网络")
+                } footer: {
+                    Text("内置支持 10/8、172.16/12、192.168/16、169.254/16 与 100.64/10（Tailscale）。"
+                        + "公网地址始终不会被视为私有网段。")
                 }
 
                 Section("三星连接") {
@@ -471,6 +506,22 @@ struct AirSIMSettingsView: View {
 
     private var runtimePolicy: ConnectionModeRuntimePolicy {
         ConnectionModeRuntimePolicy(mode: selectedMode)
+    }
+
+    private func saveNetworkPrefixes() {
+        // 单行输入可能包含粘贴进来的换行，统一视为分隔符。
+        let invalid = networkPrefixesText
+            .split { $0 == "," || $0 == ";" || $0.isWhitespace }
+            .map(String.init)
+            .filter { NetworkRoutePreferences.parse($0) == nil }
+        guard invalid.isEmpty else {
+            networkPrefixError = "网段格式无效：\(invalid.joined(separator: "、"))"
+            return
+        }
+        NetworkRoutePreferences.save(networkPrefixesText)
+        networkPrefixError = nil
+        // 端点白名单在建立连接时重新读取，发现流程需要重新开始才能生效。
+        model.vowlan.restartBrowsing()
     }
 
     private var voBLEStatus: String {

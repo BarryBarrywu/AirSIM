@@ -10,7 +10,31 @@ final class LocalOutputMuteController {
         // TYH123U/API 33 diagnostics show near-zero VOICE_DOWNLINK during stream mute.
         // Keep this workaround scoped to the reported vendor, not every UNISOC device.
         if ("zhenqing".equalsIgnoreCase(name)) return Strategy.MINIMUM_NONZERO_VOLUME;
-        return "samsung".equalsIgnoreCase(name) ? Strategy.MINIMUM_VOLUME : Strategy.MUTE;
+        // Samsung's standalone VOICE_DOWNLINK capture is volume-coupled: index 0 also
+        // silences the downlink that is forwarded to the iPhone, so a remote caller
+        // hears nothing until the user raises the volume (which then also makes the
+        // handset audible). Keep the lowest NONZERO index instead; never use 0.
+        if ("samsung".equalsIgnoreCase(name)) return Strategy.MINIMUM_NONZERO_VOLUME;
+        return Strategy.MUTE;
+    }
+
+    /**
+     * VoBLE does not share Samsung's VOICE_DOWNLINK capture coupling: its uplink
+     * arrives from the iPhone over BLE. Lowering the local call volume there left the
+     * phone silent until the user raised it by hand, while Android also played the
+     * downlink. The default is therefore a verified stream mute, with the vendor's
+     * inaudible strategy as fallback when the platform refuses to mute.
+     */
+    static Strategy vobleStrategy() {
+        // VoBLE forwards the Android VOICE_DOWNLINK capture over BLE. On capture-coupled
+        // HALs a real mute or a zero index also silences that capture, so use the same
+        // vendor capture-safe strategy as VoWLAN.
+        return strategyForManufacturer(android.os.Build.MANUFACTURER);
+    }
+
+    /** VoWLAN keeps the vendor strategy: Samsung capture depends on this stream. */
+    static Strategy vowlanStrategy() {
+        return strategyForManufacturer(android.os.Build.MANUFACTURER);
     }
     interface Backend {
         boolean isMuted() throws Exception;
@@ -39,6 +63,8 @@ final class LocalOutputMuteController {
     boolean isVerifiedMuted() { return verifiedMuted; }
     boolean isVerifiedMinimum() { return verifiedMinimum; }
     boolean usesMinimumVolume() { return strategy != Strategy.MUTE; }
+    /** Exposes the exact OS boundary this controller owns (tests and diagnostics). */
+    Backend backend() { return backend; }
     private boolean requiresUnmutedCapture() { return strategy == Strategy.MINIMUM_NONZERO_VOLUME; }
     static String policyName(Strategy strategy) {
         return switch (strategy) {
@@ -95,6 +121,14 @@ final class LocalOutputMuteController {
             catch (Exception restoreFailure) { failure.addSuppressed(restoreFailure); }
             throw failure;
         }
+    }
+
+    /** Drops this controller's snapshot when another policy now owns the same stream. */
+    void suspend() {
+        started = false;
+        verifiedMuted = false;
+        verifiedMinimum = false;
+        targetMinimum = -1;
     }
 
     private String restore() throws Exception {

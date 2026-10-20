@@ -182,6 +182,7 @@ mkdir -p "$OUT"
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANReplayCache.java \
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANPCMProtocol.java \
   "$ROOT"/src/com/airsim/phonecontrol/VoWLANPortBinder.java \
+	"$ROOT"/src/com/airsim/phonecontrol/PrivateNetworkPolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/VoWLANNetworkPolicy.java \
     "$ROOT"/src/com/airsim/phonecontrol/DirectGatewayRoutes.java \
     "$ROOT"/src/com/airsim/phonecontrol/DirectCallOwnership.java \
@@ -210,13 +211,15 @@ mkdir -p "$OUT"
   "$ROOT"/test/com/airsim/phonecontrol/NotificationUpdateGateTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/CallRepositoryTests.java \
   "$ROOT"/test/com/airsim/phonecontrol/DefaultCallAccountTests.java \
-  "$ROOT"/test/com/airsim/phonecontrol/ShizukuStartupPolicyTests.java
+  "$ROOT"/test/com/airsim/phonecontrol/ShizukuStartupPolicyTests.java \
+  "$ROOT"/test/com/airsim/phonecontrol/PrivateNetworkPolicyTests.java
 "$JAVAC" --release 17 -cp "$OUT" -d "$OUT" \
   "$ROOT"/src/com/airsim/phonecontrol/AndroidAgentIdentity.java \
   "$ROOT"/test/com/airsim/phonecontrol/AndroidAgentIdentityTests.java
 sh "$ROOT/verify-io-api.sh" "$OUT"
 "$JAVA" -cp "$OUT:$CRYPTO_JAR" com.airsim.phonecontrol.CoreTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.PairingPeerPolicyTests
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.PrivateNetworkPolicyTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.HealthIdentityProofTests
 "$JAVA" -cp "$OUT:$CRYPTO_JAR" com.airsim.phonecontrol.PairingCryptoCompatibilityTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.PCMHealthEvidenceTests

@@ -25,9 +25,11 @@ public class Call {
         public static final int DIRECTION_OUTGOING = 1;
         private final int direction;
         private final android.net.Uri handle;
+        private final PhoneAccountHandle accountHandle = null;
         Details(int direction, String number) { this.direction = direction; handle = android.net.Uri.parse("tel:" + number); }
         public int getCallDirection() { return direction; }
         public android.net.Uri getHandle() { return handle; }
+        public PhoneAccountHandle getAccountHandle() { return accountHandle; }
     }
     public Call(int state, int direction, String number) { this.state = state; details = new Details(direction, number); }
     public Details getDetails() { return details; }

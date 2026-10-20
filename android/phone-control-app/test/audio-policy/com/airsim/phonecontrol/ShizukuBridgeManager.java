@@ -7,7 +7,12 @@ final class ShizukuBridgeManager {
     final Platform platform = new Platform();
     LocalOutputMuteController output = new LocalOutputMuteController(platform);
     boolean watchdog;
+    String lastTransport = PrivilegedBridgeProtocol.TRANSPORT_VOWLAN;
     void setLocalOutputMuted(boolean value) {
+        setLocalOutputMuted(value, PrivilegedBridgeProtocol.TRANSPORT_VOWLAN);
+    }
+    void setLocalOutputMuted(boolean value, String transport) {
+        lastTransport = transport;
         try { output.setMuted(value); }
         catch (Exception error) { throw new AssertionError(error); }
     }

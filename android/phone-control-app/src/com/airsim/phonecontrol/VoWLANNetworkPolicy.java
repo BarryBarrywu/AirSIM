@@ -2,9 +2,19 @@ package com.airsim.phonecontrol;
 
 import java.net.InetAddress;
 import java.net.Inet6Address;
+import java.util.List;
 
 public final class VoWLANNetworkPolicy {
     private VoWLANNetworkPolicy() {}
+
+    /** User-configured extra private ranges; empty by default. */
+    static volatile List<PrivateNetworkPolicy.Prefix> customPrefixes = List.of();
+
+    public static void setCustomPrefixes(List<PrivateNetworkPolicy.Prefix> values) {
+        customPrefixes = values == null ? List.of() : List.copyOf(values);
+    }
+
+    public static List<PrivateNetworkPolicy.Prefix> customPrefixes() { return customPrefixes; }
 
     public static boolean isOverlayInterface(String name, String host) {
         return name != null && (name.startsWith("tun") || name.startsWith("tailscale"))
@@ -18,9 +28,15 @@ public final class VoWLANNetworkPolicy {
         // Userspace Tailscale forwards incoming TCP to loopback. App-level HMAC
         // authentication remains mandatory; loopback never makes a peer trusted.
         if (l[0] == 127) return r[0] == 127;
-        if (isOverlayIPv4(local)) return isOverlayIPv4(remote);
-        return (isPrivateIPv4(local) || isLinkLocal(local))
-                && (isPrivateIPv4(remote) || isLinkLocal(remote));
+        boolean localPrivate = isPrivateIPv4(local) || isLinkLocal(local)
+                || PrivateNetworkPolicy.contains(customPrefixes, local);
+        boolean remotePrivate = isPrivateIPv4(remote) || isLinkLocal(remote)
+                || PrivateNetworkPolicy.contains(customPrefixes, remote);
+        // One-end Tailscale subnet routing: the Android-local address is the LAN
+        // address while the peer arrives from the 100.64/10 tailnet. App-level
+        // HMAC still authenticates the request; public peers remain rejected.
+        if (isOverlayIPv4(local)) return isOverlayIPv4(remote) || remotePrivate;
+        return localPrivate && (remotePrivate || isOverlayIPv4(remote));
     }
 
     public static boolean permitsPairingPeer(String remote, String local, String interfaceName) {
@@ -71,6 +87,7 @@ public final class VoWLANNetworkPolicy {
 
     public static boolean isHotspotInterface(String name, String host) {
         if (name == null || host == null || !(name.startsWith("swlan") || name.startsWith("ap"))) return false;
+        if (isCustomPrivate(host)) return true;
         String[] fields = host.split("\\.");
         if (fields.length != 4) return false;
         int first;
@@ -81,19 +98,26 @@ public final class VoWLANNetworkPolicy {
         } catch (NumberFormatException error) {
             return false;
         }
-        return first == 10 || (first == 172 && second >= 16 && second <= 31)
-                || (first == 192 && second == 168);
+        if (first == 10 || (first == 172 && second >= 16 && second <= 31)
+                || (first == 192 && second == 168)) return true;
+        return isCustomPrivate(host);
     }
 
     public static boolean isVoWLANInterface(String name, String host) {
-        if (!isPrivateIPv4(host) || name == null) return false;
-        return isHotspotInterface(name, host) || name.startsWith("wlan");
+        if (name == null) return false;
+        boolean custom = PrivateNetworkPolicy.contains(customPrefixes, host);
+        if (!isPrivateIPv4(host) && !custom) return false;
+        return custom || isHotspotInterface(name, host) || name.startsWith("wlan");
     }
 
     private static boolean isPrivateIPv4(String host) {
         int[] fields = ipv4(host);
         return fields != null && (fields[0] == 10 || (fields[0] == 172 && fields[1] >= 16 && fields[1] <= 31)
                 || (fields[0] == 192 && fields[1] == 168));
+    }
+
+    static boolean isCustomPrivate(String host) {
+        return PrivateNetworkPolicy.contains(customPrefixes, host);
     }
 
     public static boolean shouldAdvertise(

@@ -857,7 +857,8 @@ final class AppModel: ObservableObject {
             values[bluetoothID] = AndroidAgentPresentation(
                 id: bluetoothID,
                 deviceName: information?.deviceName ?? central.currentDeviceName ?? "Android 蓝牙 Agent",
-                phoneNumber: information?.phoneNumber,
+                phoneNumber: Self.agentPhoneNumber(information?.phoneNumber, slots: information?.simSlots)
+                    ?? previous?.phoneNumber,
                 agentKind: information?.agentKind ?? previous?.agentKind,
                 cloudOnline: previous?.cloudOnline ?? false,
                 vowlanOnline: previous?.vowlanOnline ?? false,
@@ -870,7 +871,9 @@ final class AppModel: ObservableObject {
             guard let health = localDevices.metadata(for: id), PairedAndroidDeviceStore.permits(id) else { continue }
             let previous = values[id]
             values[id] = .init(id: id, deviceName: health.deviceName ?? previous?.deviceName ?? "Android 手机",
-                phoneNumber: health.phoneNumber, agentKind: health.agentKind ?? previous?.agentKind,
+                phoneNumber: Self.agentPhoneNumber(health.phoneNumber, slots: health.simSlots)
+                    ?? previous?.phoneNumber,
+                agentKind: health.agentKind ?? previous?.agentKind,
                 cloudOnline: previous?.cloudOnline ?? false, vowlanOnline: true,
                 bluetoothOnline: previous?.bluetoothOnline ?? false, isCurrent: false)
         }
@@ -944,7 +947,21 @@ final class AppModel: ObservableObject {
         pairedAndroidAgents.first(where: \.isCurrent)
     }
 
+    /// The Agent identity number can arrive via BLE metadata or VoWLAN health;
+    /// one transport may omit it while SIM slots still carry a display number.
+    /// Never let a nil/empty refresh erase a previously known number.
+    private static func agentPhoneNumber(_ direct: String?, slots: [AndroidSIMSlot]?) -> String? {
+        if let value = direct?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+            return value
+        }
+        let slots = slots ?? []
+        return slots.first(where: { $0.isDefault == true })?.displayNumber
+            ?? slots.compactMap(\.displayNumber).first
+    }
+
     // MARK: - SIM / PhoneAccount selection
+
+    private var simSlotOverrides: [String: [AndroidSIMSlot]] = [:]
 
     private func simSlotPreferenceKey(_ agentID: String) -> String {
         "airsim.sim-account.\(agentID)"
@@ -953,6 +970,7 @@ final class AppModel: ObservableObject {
     /// Slots are authoritative from the session that owns this agent: BLE
     /// device_info first, then VoWLAN health. Both are in-memory only.
     func simSlots(for agentID: String) -> [AndroidSIMSlot] {
+        if let slots = simSlotOverrides[agentID], !slots.isEmpty { return slots }
         if let bundle = vobleHub.retainedBundle(for: agentID),
            let slots = bundle.central.deviceInformation?.simSlots, !slots.isEmpty {
             return slots
@@ -1049,9 +1067,10 @@ final class AppModel: ObservableObject {
     private var boundAgentID: String? { AndroidAgentBindingPreference.selected() }
 
     func completeLocalPairing(agentID: String, registration: AgentPushRegistration,
-                              endpoint: VoWLANEndpoint? = nil) async throws {
+                              endpoint: VoWLANEndpoint? = nil,
+                              clockOffset: TimeInterval = 0) async throws {
         guard let encoded = registration.vowlanSecret else { throw VoWLANAuthError.invalidSecret }
-        let credential = try VoWLANCredential(encodedSecret: encoded)
+        let credential = try VoWLANCredential(encodedSecret: encoded, clockOffset: clockOffset)
         localDevices.stagePairing(agentID: agentID, credential: credential)
         if let endpoint {
             try await localDevices.verifyPairing(agentID: agentID, endpoint: endpoint, credential: credential)
@@ -1282,15 +1301,26 @@ final class AppModel: ObservableObject {
         IPhoneCloudCallSession.shared.onLifecycleEvent = { [weak self] event in
             guard let self else { return }
             guard self.deviceCalls.active == nil else { return }
-            guard self.applyCallLifecycle(event) else { return }
+            let applied = self.applyCallLifecycle(event)
+            if event.state.isTerminal {
+                self.callPresentationSurface = nil
+                if event.state == .failed { self.errorMessage = event.failure }
+                // End even when applyCallLifecycle rejected a duplicate/reordered ended
+                // event; otherwise the island keeps counting with a dead hangup button.
+                Task { @MainActor [weak self] in
+                    await self?.refreshLiveActivityIdle()
+                }
+            }
+            guard applied else { return }
             if event.state == .active {
                 self.callKit.reportCurrentOutgoingConnected()
                 self.updateRemoteCallState("active")
                 Task { @MainActor [weak self] in await self?.startCallAudioIfReady() }
-            } else if event.state.isTerminal {
-                self.callPresentationSurface = nil
-                if event.state == .failed { self.errorMessage = event.failure }
             }
+        }
+        LiveActivityActionBridge.handler = { [weak self] action, callID in
+            guard let self else { return false }
+            return await self.performLiveActivityAction(action, callID: callID)
         }
         vowlan.onAvailabilityChange = { [weak self] availability in
             guard let self else { return }
@@ -2195,6 +2225,10 @@ final class AppModel: ObservableObject {
                     timeout: AgentEventPollingPolicy.timeout(hasActiveCall: callLifecycleSnapshot.state.representsCall)
                 )
                 eventStreamSupported = true
+                if let slots = event.simSlots, let sourceAgentID, !slots.isEmpty {
+                    simSlotOverrides[sourceAgentID] = slots
+                    objectWillChange.send()
+                }
                 eventRevision = AgentEventCursor.advanced(from: eventRevision, to: event.revision)
                 let shouldFetchSMS = AgentEventPollingPolicy.shouldFetchSMS(
                     pending: event.smsPending,
@@ -2491,6 +2525,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Unified entry point for Live Activity buttons. Matches the same call by any
+    /// transport, then reuses the normal answer/reject/hangup paths.
+    @MainActor
+    func performLiveActivityAction(_ action: AirSIMLiveActivityAction, callID: String) async -> Bool {
+        let matchesLifecycle = callLifecycleSnapshot.callID == callID
+        let matchesPush = callKit.currentIncomingPush?.callID == callID
+        let matchesCloud = IPhoneCloudCallSession.shared.call?.callID == callID
+        let matchesVoBLE = vobleCalls.currentIdentity?.callID == callID
+        let matchesDevice = presentedDeviceCall.map { localPresentationID($0) == callID } ?? false
+        guard matchesLifecycle || matchesPush || matchesCloud || matchesVoBLE || matchesDevice else {
+            // Stale island: keep the persistent standby activity, but stop showing a call.
+            await refreshLiveActivityIdle()
+            return true
+        }
+        if callLifecycleSnapshot.state.isTerminal || callLifecycleSnapshot.state == .ending {
+            await refreshLiveActivityIdle()
+            return true
+        }
+        switch action {
+        case .answer: await answer()
+        case .reject: await reject()
+        case .hangup: await hangup()
+        }
+        return true
+    }
+
+    /// Returns the island to standby without ending the persistent activity.
+    @MainActor
+    private func refreshLiveActivityIdle() async {
+        await liveActivity.update(
+            call: nil,
+            callerName: nil,
+            moduleOnline: isOnline,
+            cloudOnline: CloudModePreference.isEnabled() && cloudAgentStatus?.cloudOnline == true,
+            transport: liveActivityTransport,
+            radio: modemStatus,
+            agent: liveActivityAgentSnapshot,
+            appIsActive: appIsActive,
+            force: true
+        )
+    }
+
     func performVoBLELiveActivityAction(
         _ action: AirSIMLiveActivityAction,
         callID: String
@@ -2662,9 +2738,11 @@ final class AppModel: ObservableObject {
             // A signed VoWLAN health check is the reachability authority. The global
             // polling flags can briefly lag during route switches and must not disable SMS.
             let localReachable = localAPI != nil
+            let smsSlot = (boundAtStart ?? currentAndroidAgent?.id)
+                .flatMap { selectedSIMSlotID(for: $0) }
             let result: SMSSendResult
             if localReachable {
-                result = try await localAPI!.sendSMS(to: target, message: body)
+                result = try await localAPI!.sendSMS(to: target, message: body, simAccount: smsSlot)
             } else if CloudModePreference.isEnabled() {
                 let status: CloudAgentStatus
                 if let cloudAgentStatus {
@@ -3146,23 +3224,20 @@ final class AppModel: ObservableObject {
         if event.state == .ending || event.state.isTerminal {
             callPresentationSurface = nil
             pendingOutgoingCall = nil
+            if event.state.isTerminal {
+                // A remote end must not leave .bluetooth/.cloud behind for the next
+                // incoming call: callKitAnswer used to answer a cloud push over a
+                // stale VoBLE transport, showing a "Bluetooth link ended" status.
+                clearLockedTransport()
+            }
             audio.stopCallTone()
             WatchCallCoordinator.shared.publish(
                 call: nil, previous: activeCall ?? remoteCall, callerName: nil
             )
+            // Return to the persistent standby activity (the island must remain visible
+            // in the background); force the update so a stale call timer cannot linger.
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let current = self.lifecycleRecord(from: self.activeCall ?? self.remoteCall)
-                await self.liveActivity.update(
-                    call: current,
-                    callerName: current.map { self.contacts.displayName(for: $0.number) },
-                    moduleOnline: self.isOnline,
-                    cloudOnline: CloudModePreference.isEnabled() && self.cloudAgentStatus?.cloudOnline == true,
-                    transport: self.liveActivityTransport,
-                    radio: self.modemStatus,
-                    agent: self.liveActivityAgentSnapshot,
-                    appIsActive: self.appIsActive
-                )
+                await self?.refreshLiveActivityIdle()
             }
         }
         return true

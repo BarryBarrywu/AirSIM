@@ -100,8 +100,8 @@ public final class LocalOutputMuteControllerTests {
             LocalOutputMuteController controller = new LocalOutputMuteController(audio,
                     LocalOutputMuteController.strategyForManufacturer(vendor));
             controller.setMuted(true);
-            if ("samsung".equals(vendor)) check(!audio.muted && audio.volume == 0,
-                    "Samsung must retain its existing OS-minimum policy, including zero minimum");
+            if ("samsung".equals(vendor)) check(!audio.muted && audio.volume == 1,
+                    "Samsung must use the lowest NONZERO index: 0 silences VOICE_DOWNLINK capture");
             else check(audio.muted && audio.volume == 4,
                     "one reported OEM must not change the mute policy of every chipset/vendor");
             controller.setMuted(false);

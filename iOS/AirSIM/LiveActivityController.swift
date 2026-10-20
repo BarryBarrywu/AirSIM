@@ -67,48 +67,22 @@ enum LiveActivityStateBuilder {
                 cloudOnline: agent?.cloudOnline
             )
         }
-        guard let call, call.endedAt == nil,
-              ["incoming", "waiting", "dialing", "alerting", "connecting", "active", "held"].contains(call.state) else {
-            let cloudOnly = cloudOnline && !moduleOnline
-            return .init(
-                callID: "",
-                number: "",
-                displayName: cloudOnly ? "公网中继已连接" : "等待 Agent 来电",
-                phase: cloudOnly ? .cloudStandby : .standby,
-                startedAt: idleStartedAt,
-                transport: cloudOnly ? .cloud : transport,
-                signalDBM: radio?.signalDBM,
-                operatorName: radio?.operatorName,
-                networkMode: radio?.networkMode,
-                radioBand: radio?.radioBand,
-                downloadBytesPerSecond: nil,
-                uploadBytesPerSecond: nil,
-                agentDeviceName: agent?.deviceName,
-                agentPhoneNumber: agent?.phoneNumber,
-                agentKind: agent?.agentKind,
-                pairedAgentCount: agent?.pairedAgentCount,
-                vowlanOnline: agent?.vowlanOnline,
-                bluetoothOnline: agent?.bluetoothOnline,
-                cloudOnline: agent?.cloudOnline
-            )
-        }
-
-        let phase: AirSIMCallActivityAttributes.ContentState.Phase
-        if call.direction == "incoming", ["incoming", "waiting"].contains(call.state) {
-            phase = .incoming
-        } else if call.state == "held" {
-            phase = .held
-        } else {
-            phase = .active
-        }
-        let number = call.number?.isEmpty == false ? call.number! : "未知号码"
+        // Calls are managed exclusively by CallKit; the Live Activity is an Agent-status
+        // surface only. Never publish incoming/active/held phases or call action buttons.
+        let cloudOnly = cloudOnline && !moduleOnline
         return .init(
-            callID: call.id,
-            number: number,
-            displayName: callerName?.isEmpty == false ? callerName! : number,
-            phase: phase,
-            startedAt: call.startedAt,
-            transport: transport,
+            callID: "",
+            number: "",
+            displayName: cloudOnly ? "公网中继已连接" : "等待 Agent 来电",
+            phase: cloudOnly ? .cloudStandby : .standby,
+            startedAt: idleStartedAt,
+            transport: cloudOnly ? .cloud : transport,
+            signalDBM: radio?.signalDBM,
+            operatorName: radio?.operatorName,
+            networkMode: radio?.networkMode,
+            radioBand: radio?.radioBand,
+            downloadBytesPerSecond: nil,
+            uploadBytesPerSecond: nil,
             agentDeviceName: agent?.deviceName,
             agentPhoneNumber: agent?.phoneNumber,
             agentKind: agent?.agentKind,
@@ -153,7 +127,8 @@ final class LiveActivityController {
         agent: LiveActivityAgentSnapshot? = nil,
         appIsActive: Bool,
         downloadBytesPerSecond: Double? = nil,
-        uploadBytesPerSecond: Double? = nil
+        uploadBytesPerSecond: Double? = nil,
+        force: Bool = false
     ) async {
         guard enabled, UIDevice.current.userInterfaceIdiom == .phone else { return }
         resolveExistingActivity()
@@ -221,7 +196,8 @@ final class LiveActivityController {
                 uploadBytesPerSecond: uploadBytesPerSecond
             )
             // 在线/离线由真实模块请求决定；不以 ActivityKit stale 代替连通性探测。
-            guard nextState != lastState else { return }
+            // force 用于挂断后强制回到待机，避免残留 old state 让计时器继续走。
+            guard force || nextState != lastState else { return }
             await activity.update(
                 ActivityContent(
                     state: nextState,
@@ -253,6 +229,7 @@ final class LiveActivityController {
         activity = nil
         lastState = nil
     }
+
 
     private func resolveExistingActivity() {
         guard activity == nil else { return }

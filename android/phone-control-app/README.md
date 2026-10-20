@@ -1,6 +1,6 @@
 # AirSIM 三星 Android 控制 App
 
-2026-10-19 发布：[Apps v0.9.8.2](../../docs/releases/0.9.8.2.md)，共享 APK `0.9.8.2 (96)`。Standalone 推荐用于新安装；AVF Bridge 不等于 Linux Agent 更新。本版包含通话路径修复、多 SIM 卡槽选择、PCM 探活误报与空闲日志修复，实际 OEM 音频仍需验证。
+2026-10-20 发布：[Apps v0.9.8.8](../../docs/releases/0.9.8.8.md)，共享 APK `0.9.8.8 (102)`。Standalone 推荐用于新安装；AVF Bridge 不等于 Linux Agent 更新。本版包含配对时钟校正、双卡短信/卡槽、KernelSU Root 通道、私有网段与可配置端口、VoBLE 静音修复；实际 OEM 音频仍需验证。
 
 0.9.8.1 新增应用更新入口：首次安装／升级启动展示包内版本说明；「设置 → 关于」可重看和检查对应 Standalone／AVF Bridge APK 的新版。每日自动检查有界，与「检查并安装最新 Agent」的 Debian 更新完全分开，不自动下载、安装或卸载 App。[行为与维护约定](../../docs/app-updates.md)。
 

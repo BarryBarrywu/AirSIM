@@ -39,6 +39,8 @@
 		A10000000000000000000013 /* AirSIMLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* AirSIMLiveActivityWidget.swift */; };
 		A10000000000000000000014 /* AirSIMLiveActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* AirSIMLiveActivityShared.swift */; };
 		A10000000000000000000015 /* WiredHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* WiredHTTPTransport.swift */; };
+		A10000000000000000000042 /* NetworkRoutePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000042 /* NetworkRoutePreferences.swift */; };
+		A10000000000000000000043 /* NetworkRoutePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000042 /* NetworkRoutePreferences.swift */; };
 		A10000000000000000000016 /* AirSIMLiveActivityExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* AirSIMLiveActivityExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000017 /* LocalHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* LocalHistoryStore.swift */; };
 		A10000000000000000000018 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* AppIcon.icon */; };
@@ -155,6 +157,7 @@
 		B1000000000000000000000C /* AirSIM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AirSIM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000010 /* CallKitController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallKitController.swift; sourceTree = "<group>"; };
 		B10000000000000000000011 /* WiredHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredHTTPTransport.swift; sourceTree = "<group>"; };
+		B10000000000000000000042 /* NetworkRoutePreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkRoutePreferences.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* BackgroundStandbyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundStandbyController.swift; sourceTree = "<group>"; };
 		B10000000000000000000013 /* AirSIMLiveActivityShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirSIMLiveActivityShared.swift; sourceTree = "<group>"; };
 		B10000000000000000000014 /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
@@ -250,6 +253,7 @@
 				B10000000000000000000002 /* APIModels.swift */,
 				B10000000000000000000003 /* AirSIMAPI.swift */,
 				B10000000000000000000011 /* WiredHTTPTransport.swift */,
+				B10000000000000000000042 /* NetworkRoutePreferences.swift */,
 				B10000000000000000000012 /* BackgroundStandbyController.swift */,
 				B10000000000000000000014 /* LiveActivityController.swift */,
 				B10000000000000000000004 /* AppSettings.swift */,
@@ -516,6 +520,7 @@
 				A10000000000000000000002 /* APIModels.swift in Sources */,
 				A10000000000000000000003 /* AirSIMAPI.swift in Sources */,
 				A1000000000000000000000F /* WiredHTTPTransport.swift in Sources */,
+				A10000000000000000000042 /* NetworkRoutePreferences.swift in Sources */,
 				A10000000000000000000010 /* BackgroundStandbyController.swift in Sources */,
 				A10000000000000000000011 /* AirSIMLiveActivityShared.swift in Sources */,
 				A10000000000000000000012 /* LiveActivityController.swift in Sources */,
@@ -572,6 +577,7 @@
 				A10000000000000000000013 /* AirSIMLiveActivityWidget.swift in Sources */,
 				A10000000000000000000014 /* AirSIMLiveActivityShared.swift in Sources */,
 				A10000000000000000000015 /* WiredHTTPTransport.swift in Sources */,
+				A10000000000000000000043 /* NetworkRoutePreferences.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

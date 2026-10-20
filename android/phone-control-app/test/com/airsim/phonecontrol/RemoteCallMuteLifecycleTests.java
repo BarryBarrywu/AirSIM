@@ -24,7 +24,80 @@ public final class RemoteCallMuteLifecycleTests {
             wireDecodedCallIdentityTriggersMinimumVolume(transport);
         }
         differentDecodedCallCannotLowerVolume();
+        vobleKeepsDownlinkCaptureAlive();
+        transportSwitchRestoresPreviousPolicySnapshot();
         System.out.println("RemoteCallMuteLifecycleTests passed: " + passed + " scenarios");
+    }
+
+    /**
+     * Regression (0.9.7.2 / VoBLE): Samsung used the OS minimum voice-call index, which on
+     * this capture-coupled HAL also silenced VOICE_DOWNLINK. The iPhone then heard nothing
+     * until the user raised the Android volume, at which point Android also played the call.
+     * The fix must always target a NONZERO index so downlink capture survives.
+     */
+    private static void vobleKeepsDownlinkCaptureAlive() {
+        ShizukuBridgeManager manager = ShizukuBridgeManager.INSTANCE;
+        try (Fixture f = new Fixture(Call.STATE_ACTIVE)) {
+            manager.output = new LocalOutputMuteController(f.audio,
+                    LocalOutputMuteController.vobleStrategy());
+            Object media = new Object();
+            RemoteAudioSessionRegistry.setVoBLE(true);
+            check(RemoteAudioSessionRegistry.streamPolicy().equals(
+                            PrivilegedBridgeProtocol.TRANSPORT_VOBLE),
+                    "a VoBLE-only owner must select the voble stream policy");
+            RemoteAudioSessionRegistry.ownCall(media, f.id);
+            check(RemoteAudioSessionRegistry.ownsCall(java.util.List.of(f.id)),
+                    "VoBLE owner must own the answered call");
+            check(manager.lastTransport.equals(PrivilegedBridgeProtocol.TRANSPORT_VOBLE),
+                    "VoBLE ownership must reach the privileged side as the voble transport");
+            waitForDispatch();
+            check(f.audio.volume >= 1,
+                    "VoBLE must never target index 0, which also silences downlink capture: volume="
+                            + f.audio.volume + " policy=" + manager.output.policyName());
+            check(manager.output.policyName().equals("minimum_nonzero_volume"),
+                    "Samsung must select the capture-safe nonzero policy, got "
+                            + manager.output.policyName());
+            RemoteAudioSessionRegistry.setVoBLE(false);
+            RemoteAudioSessionRegistry.releaseCall(media);
+            AirSIMInCallService.refreshAudioPolicy();
+            waitForDispatch();
+            check(!f.audio.muted && f.audio.volume == 6,
+                    "VoBLE hangup must restore the original volume");
+            check(f.call.getState() == Call.STATE_ACTIVE, "volume restoration must never disconnect");
+        } finally { manager.output = new LocalOutputMuteController(manager.platform); }
+        passed++;
+    }
+
+    /**
+     * A suspended policy snapshot must never overwrite a volume the user raised between
+     * transports; the next policy snapshots (and restores) that raised value.
+     */
+    private static void transportSwitchRestoresPreviousPolicySnapshot() throws Exception {
+        ShizukuBridgeManager manager = ShizukuBridgeManager.INSTANCE;
+        try (Fixture f = new Fixture(Call.STATE_ACTIVE)) {
+            LocalOutputMuteController vowlan = new LocalOutputMuteController(f.audio,
+                    LocalOutputMuteController.vowlanStrategy());
+            manager.output = vowlan;
+            vowlan.setMuted(true);
+            check(f.audio.volume == vowlan.targetMinimumVolume() && f.audio.volume >= 1,
+                    "VoWLAN policy lowers to the capture-safe nonzero minimum");
+            vowlan.suspend();
+            // The user raises the volume by hand between transports (the exact recovery
+            // action reported on device). The next policy must snapshot THIS value.
+            f.audio.volume = 10;
+            LocalOutputMuteController voble = new LocalOutputMuteController(f.audio,
+                    LocalOutputMuteController.vobleStrategy());
+            manager.output = voble;
+            voble.setMuted(true);
+            check(f.audio.volume == 1,
+                    "the new policy reduces to its own nonzero minimum, not a stale snapshot");
+            voble.setMuted(false);
+            check(f.audio.volume == 10,
+                    "release must restore the raised value, never the suspended stale index");
+        } finally {
+            manager.output = new LocalOutputMuteController(manager.platform);
+        }
+        passed++;
     }
 
     private static void wireDecodedCallIdentityTriggersMinimumVolume(String transport) {
@@ -302,6 +375,12 @@ public final class RemoteCallMuteLifecycleTests {
         }
         void destroy() { service.onDestroy(); destroyed = true; }
     }
+    /** The fixture dispatches mute requests on a real worker thread. */
+    private static void waitForDispatch() {
+        try { Thread.sleep(200); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    }
+
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
     }

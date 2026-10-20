@@ -33,6 +33,8 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -93,6 +95,10 @@ public final class MainActivity extends Activity {
     private String selectedMode;
     private TextView status;
     private TextView shizukuStatus;
+    private RadioGroup privilegeChannelGroup;
+    private final java.util.Map<Integer, PrivilegeChannelPreference.Channel> privilegeChannelIDs
+            = new java.util.LinkedHashMap<>();
+    private boolean updatingPrivilegeChannel;
 	private TextView installerStatus;
     private TextView pairingStatus;
     private TextView pairingCodeView;
@@ -709,13 +715,40 @@ public final class MainActivity extends Activity {
 		refreshInstallerStatus();
 		}
 
-        root.addView(sectionTitle("Shizuku 权限与 PCM 桥"), matchWithTop(22));
+        root.addView(sectionTitle("Shizuku / Root 权限与 PCM 桥"), matchWithTop(22));
         LinearLayout shizukuCard = card(SURFACE, 22);
         shizukuCard.setOrientation(LinearLayout.VERTICAL);
         shizukuCard.setPadding(dp(16), dp(16), dp(16), dp(16));
         shizukuStatus = label("", 14, TEXT, Gravity.START);
         shizukuCard.addView(shizukuStatus);
-        shizukuCard.addView(description("首次通过无线调试启动并授权；之后 AirSIM 会自动恢复 PCM 桥。"), matchWithTop(6));
+        shizukuCard.addView(description("通话音频桥需要 Shizuku 或 KernelSU Root。自动模式优先 Root，失败回 Shizuku。"), matchWithTop(6));
+
+        privilegeChannelGroup = new RadioGroup(this);
+        privilegeChannelGroup.setOrientation(RadioGroup.VERTICAL);
+        privilegeChannelGroup.setId(View.generateViewId());
+        privilegeChannelIDs.clear();
+        PrivilegeChannelPreference.Channel currentChannel = PrivilegeChannelPreference.get(this);
+        for (PrivilegeChannelPreference.Channel channel : PrivilegeChannelPreference.Channel.values()) {
+            RadioButton option = new RadioButton(this);
+            option.setText(PrivilegeChannelPreference.label(channel));
+            option.setTextColor(TEXT);
+            option.setButtonTintList(ColorStateList.valueOf(PRIMARY));
+            option.setId(View.generateViewId());
+            privilegeChannelIDs.put(option.getId(), channel);
+            privilegeChannelGroup.addView(option);
+            if (channel == currentChannel) option.setChecked(true);
+        }
+        privilegeChannelGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            if (updatingPrivilegeChannel) return;
+            PrivilegeChannelPreference.Channel selected = privilegeChannelIDs.get(checkedId);
+            if (selected == null) return;
+            ShizukuBridgeManager.get(this).setPrivilegeChannel(selected);
+            refreshShizukuStatus();
+            toast("权限通道已切换");
+        });
+        shizukuCard.addView(privilegeChannelGroup, matchWithTop(8));
+        shizukuCard.addView(description("切换通道会重建 PCM 桥；选择 Root 后首次会请求 KernelSU 授权。"), matchWithTop(4));
+
         LinearLayout shizukuActions = row();
         TextView authorize = secondaryButton("授权并启动");
         authorize.setOnClickListener(ignored -> {
@@ -730,7 +763,73 @@ public final class MainActivity extends Activity {
         shizukuActions.addView(authorize, weightedWithEnd(5));
         shizukuActions.addView(open, weightedWithStart(5));
         shizukuCard.addView(shizukuActions, matchWithTop(12));
+
+        LinearLayout rootActions = row();
+        TextView rootAuth = secondaryButton("Root 授权 / 重试");
+        rootAuth.setOnClickListener(ignored -> {
+            ShizukuBridgeManager.get(this).requestRootPermission();
+            refreshShizukuStatus();
+            toast("正在请求 Root 授权");
+        });
+        TextView refreshChannel = secondaryButton("刷新通道状态");
+        refreshChannel.setOnClickListener(ignored -> refreshShizukuStatus());
+        rootActions.addView(rootAuth, weightedWithEnd(5));
+        rootActions.addView(refreshChannel, weightedWithStart(5));
+        shizukuCard.addView(rootActions, matchWithTop(10));
         root.addView(shizukuCard, matchWithTop(10));
+
+        root.addView(sectionTitle("私有网络与端口"), matchWithTop(22));
+        LinearLayout networkCard = card(SURFACE, 22);
+        networkCard.setOrientation(LinearLayout.VERTICAL);
+        networkCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        networkCard.addView(description("内置已支持 10/8、172.16/12、192.168/16、169.254/16、100.64/10（Tailscale）。"
+                + "如局域网使用其他网段，请在此追加，例如 30.0.0.0/8。"), matchWithTop(0));
+        EditText rangesInput = new EditText(this);
+        rangesInput.setText(NetworkSettings.rangesText(this));
+        rangesInput.setHint("例如 30.0.0.0/8, 100.64.0.0/10");
+        rangesInput.setTextColor(TEXT);
+        rangesInput.setHintTextColor(MUTED);
+        rangesInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        networkCard.addView(rangesInput, matchWithTop(10));
+
+        networkCard.addView(description("首选端口（1024–65535；被占用或受限时会自动改用空闲端口，"
+                + "Bonjour 通告实际端口）。留 0 表示自动选择。"), matchWithTop(12));
+        EditText controlInput = portField("VoWLAN 控制端口", NetworkSettings.controlPort(this));
+        networkCard.addView(controlInput, matchWithTop(8));
+        EditText pcmInput = portField("VoWLAN PCM 端口", NetworkSettings.pcmPort(this));
+        networkCard.addView(pcmInput, matchWithTop(6));
+        EditText pairingInput = portField("配对端口（0 = 自动）", NetworkSettings.pairingPort(this));
+        networkCard.addView(pairingInput, matchWithTop(6));
+
+        TextView saveNetwork = primaryButton("保存网络与端口设置", BLUE);
+        saveNetwork.setOnClickListener(ignored -> {
+            String text = rangesInput.getText().toString().trim();
+            java.util.List<String> invalid = new java.util.ArrayList<>();
+            for (String item : text.split("[,\\s]+")) {
+                if (!item.isEmpty() && PrivateNetworkPolicy.parse(item) == null) invalid.add(item);
+            }
+            if (!invalid.isEmpty()) {
+                toast("网段格式无效：" + String.join(", ", invalid));
+                return;
+            }
+            int control = parsePort(controlInput, NetworkSettings.DEFAULT_CONTROL_PORT);
+            int pcm = parsePort(pcmInput, NetworkSettings.DEFAULT_PCM_PORT);
+            int pairing = parsePort(pairingInput, NetworkSettings.DEFAULT_PAIRING_PORT);
+            if (control < 0 || pcm < 0 || pairing < 0) {
+                toast("端口需在 1024–65535 之间，配对端口可填 0");
+                return;
+            }
+            if (control == pcm) {
+                toast("控制端口与 PCM 端口不能相同");
+                return;
+            }
+            NetworkSettings.setRangesText(this, text);
+            NetworkSettings.setPorts(this, control, pcm, pairing);
+            VoWLANGatewayService.restartAfterSettingsChange(this);
+            toast("已保存；VoWLAN 网关正在按新端口重启");
+        });
+        networkCard.addView(saveNetwork, matchWithTop(14));
+        root.addView(networkCard, matchWithTop(10));
 
         root.addView(sectionTitle("电话角色与诊断"), matchWithTop(22));
         TextView dialer = secondaryButton("设为默认电话应用");
@@ -1798,8 +1897,40 @@ public final class MainActivity extends Activity {
         refreshShizukuStatus();
     }
 
+    private EditText portField(String hint, int value) {
+        EditText input = new EditText(this);
+        input.setText(value <= 0 && hint.contains("0 = 自动") ? "0" : Integer.toString(value));
+        input.setHint(hint);
+        input.setTextColor(TEXT);
+        input.setHintTextColor(MUTED);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        return input;
+    }
+
+    /** Returns the port, or -1 when the text is not a usable port. */
+    private static int parsePort(EditText input, int fallback) {
+        String text = input.getText().toString().trim();
+        if (text.isEmpty()) return fallback;
+        if (text.length() > 5 || !text.chars().allMatch(Character::isDigit)) return -1;
+        int value = Integer.parseInt(text);
+        return NetworkSettings.isUsablePort(value) ? value : -1;
+    }
+
     private void refreshShizukuStatus() {
         if (shizukuStatus != null) shizukuStatus.setText(ShizukuBridgeManager.get(this).status());
+        if (privilegeChannelGroup == null) return;
+        PrivilegeChannelPreference.Channel selected = PrivilegeChannelPreference.get(this);
+        for (java.util.Map.Entry<Integer, PrivilegeChannelPreference.Channel> entry
+                : privilegeChannelIDs.entrySet()) {
+            if (entry.getValue() != selected) continue;
+            int id = entry.getKey();
+            if (privilegeChannelGroup.getCheckedRadioButtonId() != id) {
+                updatingPrivilegeChannel = true;
+                privilegeChannelGroup.check(id);
+                updatingPrivilegeChannel = false;
+            }
+            return;
+        }
     }
 
     private void refreshDebugLog() {

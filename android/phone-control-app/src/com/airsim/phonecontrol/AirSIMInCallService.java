@@ -45,7 +45,7 @@ public final class AirSIMInCallService extends InCallService {
     public void onCallRemoved(Call call) {
         String callId = CallRepository.id(call);
         BridgeLog.info("telecom_call_removed call_id=" + DebugRedactor.safeIdentifier(callId));
-        emit(callId, direction(call), "ended", number(call));
+        emit(callId, direction(call), "ended", number(call), slotIndex(call));
 		deduplicator.remove(callId);
 		callStates.remove(call);
 		updateLocalAudioPolicy();
@@ -67,7 +67,7 @@ public final class AirSIMInCallService extends InCallService {
         BridgeLog.debug("telecom_state_changed call_id=" + DebugRedactor.safeIdentifier(callId)
                 + " direction=" + callDirection + " state=" + wireState);
         if (!"unknown".equals(wireState) && deduplicator.shouldSend(callId, callDirection, wireState, callNumber)) {
-			emit(callId, callDirection, wireState, callNumber);
+			emit(callId, callDirection, wireState, callNumber, slotIndex(call));
 		}
     }
 
@@ -93,7 +93,7 @@ public final class AirSIMInCallService extends InCallService {
         // This also restores local audio immediately on media loss, even if Telecom
         // has not removed the carrier call yet. Microphone and PCM gain are untouched.
         boolean shouldSilence = relayingAudio && ownsRemoteCall;
-        localAudio.update(shouldSilence);
+        localAudio.update(shouldSilence, RemoteAudioSessionRegistry.streamPolicy());
         // Multiple native calls cannot safely share a global mute-repair decision.
         localAudio.updateWatchdog(shouldSilence,
                 liveCalls.toString() + transports, transports);
@@ -104,11 +104,17 @@ public final class AirSIMInCallService extends InCallService {
         if (active != null) MAIN.post(active::updateLocalAudioPolicy);
     }
 
-    private void emit(String callId, String direction, String state, String number) {
+    private int slotIndex(Call call) {
+        Call.Details details = call.getDetails();
+        return details == null ? -1 : DefaultCallAccount.slotIndex(this, details.getAccountHandle());
+    }
+
+    private void emit(String callId, String direction, String state, String number, int slotIndex) {
         com.airsim.phonecontrol.voble.VoBLEGatewayService.publishCallState(
                 this, callId, direction, state, number);
         String eventId = Long.toString(System.currentTimeMillis()) + "-" + events.incrementAndGet();
-        String json = WireJson.callEvent(eventId, callId, direction, state, number, AppConfig.mode(this));
+        String json = WireJson.callEvent(eventId, callId, direction, state, number, AppConfig.mode(this),
+                slotIndex);
         network.execute(() -> {
             try {
                 new AgentClient(this).sendEvent(json);

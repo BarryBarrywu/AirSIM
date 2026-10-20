@@ -5,12 +5,17 @@ final class PrivilegedBridgeCoordinator {
         String startBridge() throws Exception;
         String status() throws Exception;
         String setLocalOutputMuted(boolean muted) throws Exception;
+        /** Transport tag lets the privileged side choose a stream-safe policy. */
+        default String setLocalOutputMuted(boolean muted, String transport) throws Exception {
+            return setLocalOutputMuted(muted);
+        }
         default String audioSnapshot() throws Exception { throw new java.io.IOException("snapshot unsupported"); }
     }
 
     private Transport transport;
     private boolean desiredMuted;
     private boolean hasMuteIntent;
+    private String desiredTransport = PrivilegedBridgeProtocol.TRANSPORT_VOWLAN;
     private String lastResult = "disconnected";
     private String lastBridgeStatus = "disconnected";
 
@@ -18,7 +23,7 @@ final class PrivilegedBridgeCoordinator {
         transport = value;
         lastBridgeStatus = value.startBridge();
         lastResult = lastBridgeStatus;
-        if (hasMuteIntent) lastResult = value.setLocalOutputMuted(desiredMuted);
+        if (hasMuteIntent) lastResult = value.setLocalOutputMuted(desiredMuted, desiredTransport);
     }
 
     synchronized void disconnect() {
@@ -28,10 +33,17 @@ final class PrivilegedBridgeCoordinator {
     }
 
     synchronized void setLocalOutputMuted(boolean muted) throws Exception {
+        setLocalOutputMuted(muted, desiredTransport);
+    }
+
+    synchronized void setLocalOutputMuted(boolean muted, String transportTag) throws Exception {
         desiredMuted = muted;
         hasMuteIntent = hasMuteIntent || muted;
+        desiredTransport = PrivilegedBridgeProtocol.TRANSPORT_VOBLE.equals(transportTag)
+                ? PrivilegedBridgeProtocol.TRANSPORT_VOBLE
+                : PrivilegedBridgeProtocol.TRANSPORT_VOWLAN;
         if (transport != null && hasMuteIntent) {
-            lastResult = transport.setLocalOutputMuted(muted);
+            lastResult = transport.setLocalOutputMuted(muted, desiredTransport);
         }
     }
 
@@ -54,7 +66,7 @@ final class PrivilegedBridgeCoordinator {
             current = transport;
         }
         if (current == null) throw new java.io.IOException("privileged transport disconnected");
-        String result = current.setLocalOutputMuted(true);
+        String result = current.setLocalOutputMuted(true, desiredTransport);
         synchronized (this) { if (current == transport && desiredMuted) lastResult = result; }
     }
 
@@ -72,5 +84,9 @@ final class PrivilegedBridgeCoordinator {
 
     synchronized boolean bridgeRunning() {
         return PCMBridgeStatus.isRunning(lastBridgeStatus);
+    }
+
+    synchronized boolean connected() {
+        return transport != null;
     }
 }

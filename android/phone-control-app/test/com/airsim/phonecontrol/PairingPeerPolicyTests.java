@@ -32,6 +32,15 @@ public final class PairingPeerPolicyTests {
         check(VoWLANNetworkPolicy.permitsPairingPeer(
                 InetAddress.getByName("100.64.1.3"), InetAddress.getByName("100.64.1.2"), "tun0"),
                 "Tailscale IPv4 pairing must remain available");
+        check(VoWLANNetworkPolicy.permitsPairingPeer(
+                InetAddress.getByName("100.64.1.3"), InetAddress.getByName("192.168.1.2"), "wlan0"),
+                "one-end Tailscale subnet routing must pair over the LAN address");
+        check(VoWLANNetworkPolicy.permitsPeer("100.64.1.3", "192.168.1.2"),
+                "tailnet peer arriving on the LAN must pass control/PCM policy");
+        check(VoWLANNetworkPolicy.permitsPeer("192.168.1.3", "100.64.1.2"),
+                "LAN peer arriving on a tailnet address must pass control/PCM policy");
+        check(!VoWLANNetworkPolicy.permitsPeer("100.64.1.3", "127.0.0.1"),
+                "loopback must not accept a tailnet peer");
         check(!VoWLANNetworkPolicy.permitsPairingPeer(
                 InetAddress.getByName("8.8.8.8"), InetAddress.getByName("192.168.1.2"), "wlan0"),
                 "public IPv4 must stay rejected");

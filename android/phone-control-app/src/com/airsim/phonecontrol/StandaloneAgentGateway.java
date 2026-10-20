@@ -34,6 +34,7 @@ final class StandaloneAgentGateway {
     private final Object commandsLock = new Object();
     private final StandaloneLongPoll callEvents = new StandaloneLongPoll();
     private final StandaloneLongPoll agentEvents = new StandaloneLongPoll();
+    private volatile long simRevision;
     private final Map<String, String> commandResults = new LinkedHashMap<>();
     private JSONObject activeCall;
     private final JSONArray callHistory = new JSONArray();
@@ -129,7 +130,7 @@ final class StandaloneAgentGateway {
             case "/api/calls/hangup" -> command("end", localCallTarget("end", input), "", "");
             case "/api/calls/dtmf" -> command("dtmf", localCallTarget("dtmf", input), input.optString("digit", ""), "");
             case "/api/sms/send" -> command("send_sms", "", input.optString("phone", ""),
-                    input.optString("message", ""));
+                    input.optString("message", ""), input.optString("sim_account", ""));
             case "/api/calls/audio/host/warmup" -> ok("{\"warming\":true}");
             case "/api/calls/audio/host/register" -> ok(new JSONObject()
                     .put("enabled", input.optBoolean("enabled", false)).toString());
@@ -142,6 +143,11 @@ final class StandaloneAgentGateway {
             case "/api/sms/refresh" -> ok("{\"accepted\":true}");
             default -> error(404, "not_found");
         };
+    }
+
+    synchronized void simSlotsChanged() {
+        simRevision++;
+        agentEvents.advance();
     }
 
     synchronized JSONObject executeCloudCommand(JSONObject command) throws Exception {
@@ -284,6 +290,10 @@ final class StandaloneAgentGateway {
                 activeCall.put("direction", event.optString("direction"))
                         .put("state", state).put("number", event.optString("number"))
                         .put("updated_at", Instant.now().toString());
+                if (event.has("slot_index")) {
+                    activeCall.put("slot_index", event.optInt("slot_index", -1))
+                            .put("slot_id", event.optInt("slot_id", event.optInt("slot_index", -1)));
+                }
             }
         }
         callEvents.advance();
@@ -310,6 +320,8 @@ final class StandaloneAgentGateway {
         agentEvents.awaitChange(request.after(), request.timeoutMillis());
         return ok(new JSONObject().put("revision", agentEvents.revision())
                 .put("sms_revision", smsStore.revision()).put("sms_pending", smsStore.pendingCount())
+                .put("sim_revision", simRevision)
+                .put("sim_slots", SimSlotJson.slots(context))
                 .put("call", callSnapshot()).toString());
     }
 

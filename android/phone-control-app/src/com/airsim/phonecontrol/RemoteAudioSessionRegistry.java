@@ -36,6 +36,15 @@ public final class RemoteAudioSessionRegistry {
 
     public static synchronized boolean active() { return vowlan || voble || !cloud.isEmpty(); }
 
+    /**
+     * Stream policy for the current owner. VoBLE mutes the local stream because its
+     * uplink is BLE; every other remote transport keeps the vendor capture-safe policy.
+     */
+    public static synchronized String streamPolicy() {
+        return voble && !vowlan ? PrivilegedBridgeProtocol.TRANSPORT_VOBLE
+                : PrivilegedBridgeProtocol.TRANSPORT_VOWLAN;
+    }
+
     public static void ownCall(Object owner, String confirmedCall) {
         RemoteCallAudioScope.SHARED.bind(owner, confirmedCall);
         AirSIMInCallService.refreshAudioPolicy();

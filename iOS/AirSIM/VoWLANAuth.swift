@@ -4,19 +4,23 @@ import Security
 
 struct VoWLANCredential: Equatable, Sendable {
     let secret: Data
+    /// Server clock minus the local clock at pairing time. Signed requests use
+    /// this to avoid a 401 when the two devices are not time-synchronised.
+    let clockOffset: TimeInterval
 
     var encodedSecret: String { secret.base64URL }
 
-    init(secret: Data) throws {
+    init(secret: Data, clockOffset: TimeInterval = 0) throws {
         guard secret.count >= 32 else { throw VoWLANAuthError.invalidSecret }
         self.secret = secret
+        self.clockOffset = clockOffset.isFinite ? clockOffset : 0
     }
-    init(encodedSecret: String) throws {
+    init(encodedSecret: String, clockOffset: TimeInterval = 0) throws {
         let value = encodedSecret.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         guard let data = Data(base64Encoded: value + String(repeating: "=", count: (4 - value.count % 4) % 4)) else {
             throw VoWLANAuthError.invalidSecret
         }
-        try self.init(secret: data)
+        try self.init(secret: data, clockOffset: clockOffset)
     }
 }
 
@@ -46,14 +50,20 @@ struct VoWLANRequestSigner: Sendable {
         credential = try VoWLANCredential(secret: secret)
     }
 
+    init(credential: VoWLANCredential) {
+        self.credential = credential
+    }
+
     func sign(
         method: String,
         path: String,
         body: Data,
-        timestamp: Int64 = Int64(Date().timeIntervalSince1970),
+        timestamp: Int64? = nil,
         nonce: String = VoWLANRequestSigner.makeNonce()
     ) throws -> VoWLANSignedRequest {
         guard !nonce.isEmpty else { throw VoWLANAuthError.randomUnavailable }
+        let timestamp = timestamp ?? Int64(Date().addingTimeInterval(credential.clockOffset)
+            .timeIntervalSince1970)
         let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
         let canonical = "\(method.uppercased())\n\(path)\n\(digest)\n\(timestamp)\n\(nonce)"
         let key = SymmetricKey(data: credential.secret)
@@ -85,6 +95,26 @@ enum VoWLANCredentialStore {
         return try VoWLANCredential(secret: Data(bytes))
     }
 
+    private struct StoredCredential: Codable {
+        let secret: String
+        let clockOffset: Double?
+    }
+
+    private static func encode(_ credential: VoWLANCredential) -> Data {
+        let stored = StoredCredential(secret: credential.encodedSecret, clockOffset: credential.clockOffset)
+        return (try? JSONEncoder().encode(stored)) ?? credential.secret
+    }
+
+    private static func decode(_ data: Data) -> VoWLANCredential? {
+        if let stored = try? JSONDecoder().decode(StoredCredential.self, from: data),
+           let credential = try? VoWLANCredential(encodedSecret: stored.secret,
+                                                  clockOffset: stored.clockOffset ?? 0) {
+            return credential
+        }
+        // Credentials written by older builds are the raw 32-byte secret.
+        return try? VoWLANCredential(secret: data)
+    }
+
     private static func deviceAccount(_ agentID: String) -> String {
         "agent-v1-" + SHA256.hash(data: Data(agentID.utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -96,16 +126,17 @@ enum VoWLANCredentialStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return try? VoWLANCredential(secret: data)
+        return decode(data)
     }
     static func save(_ credential: VoWLANCredential, agentID: String) throws {
         guard !agentID.isEmpty else { throw VoWLANAuthError.invalidSecret }
         var query = queryWithoutValue()
         query[kSecAttrAccount as String] = deviceAccount(agentID)
-        let update = [kSecValueData as String: credential.secret]
+        let payload = encode(credential)
+        let update = [kSecValueData as String: payload]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
-            query[kSecValueData as String] = credential.secret
+            query[kSecValueData as String] = payload
             query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else { throw VoWLANAuthError.randomUnavailable }
         } else if status != errSecSuccess { throw VoWLANAuthError.randomUnavailable }
@@ -130,7 +161,7 @@ enum VoWLANCredentialStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: credential.secret,
+            kSecValueData as String: encode(credential),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         SecItemDelete(queryWithoutValue() as CFDictionary)
@@ -147,7 +178,7 @@ enum VoWLANCredentialStore {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let data = item as? Data else { return nil }
-        return try? VoWLANCredential(secret: data)
+        return decode(data)
     }
 
     static func remove() {

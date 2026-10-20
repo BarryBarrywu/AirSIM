@@ -183,6 +183,8 @@ enum SamsungPairingClient {
     struct ManualResult {
         let message: String
         let route: VoWLANManualRoute
+        /// Server clock minus local clock, captured while the pairing window is open.
+        let clockOffset: TimeInterval
     }
 
     private struct SessionInfo: Decodable {
@@ -191,9 +193,11 @@ enum SamsungPairingClient {
         let sessionID: String
         let serverPublicKey: String
         let expiresAt: Double
+        let serverTime: Double?
         enum CodingKeys: String, CodingKey {
             case product, version
             case sessionID = "session_id", serverPublicKey = "server_public_key", expiresAt = "expires_at"
+            case serverTime = "server_time"
         }
     }
     private struct Claim: Encodable {
@@ -266,9 +270,13 @@ enum SamsungPairingClient {
         }
         let route = VoWLANManualRoute(agentID: agentID, host: address.host, controlPort: controlPort, pcmPort: pcmPort)
         guard route.endpoint != nil else { throw SamsungPairingClientError.directGatewayUnavailable }
+        // Server clock lets the signer avoid 401 when the phone and the paired
+        // Android are not time-synchronised (common across Tailscale carriers).
+        let clockOffset = info.serverTime.map { $0 / 1_000 - Date().timeIntervalSince1970 } ?? 0
         // Do not persist an unverified server response or silently trust an old port.
         PairedAndroidDeviceStore.allowPairing(agentID)
-        return ManualResult(message: "加密配对成功，正在验证直连通话网关…", route: route)
+        return ManualResult(message: "加密配对成功，正在验证直连通话网关…", route: route,
+                            clockOffset: clockOffset)
     }
 
     private static func claim(service: SamsungPairingService, code: String,

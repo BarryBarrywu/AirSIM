@@ -136,7 +136,7 @@ final class LocalDeviceDirectory: ObservableObject {
 
     private func authenticatedHealth(agentID: String, endpoint: VoWLANEndpoint,
                                      credential: VoWLANCredential) async throws -> VoWLANHealthIdentity {
-        let signature = try VoWLANRequestSigner(secret: credential.secret).sign(method: "GET", path: "/v1/health", body: Data())
+        let signature = try VoWLANRequestSigner(credential: credential).sign(method: "GET", path: "/v1/health", body: Data())
         var request = URLRequest(url: endpoint.controlBaseURL.appendingPathComponent("v1/health"))
         request.timeoutInterval = 4
         request.cachePolicy = .reloadIgnoringLocalCacheData

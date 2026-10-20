@@ -17,7 +17,13 @@ import java.util.List;
 
 /** App-local outgoing account preference; never changes the system default. */
 public final class DefaultCallAccount {
-    public record Account(String key, String label, String number, PhoneAccountHandle handle) {}
+    public record Account(String key, String label, String number, PhoneAccountHandle handle,
+                          int slotIndex, int subscriptionId, String carrierName,
+                          boolean embedded, boolean defaultVoice, boolean defaultSms) {
+        public Account(String key, String label, String number, PhoneAccountHandle handle) {
+            this(key, label, number, handle, -1, -1, "", false, false, false);
+        }
+    }
     public record Snapshot(List<Account> accounts, String error) {}
     private static final String SYSTEM = "跟随系统默认";
     private DefaultCallAccount() {}
@@ -40,11 +46,16 @@ public final class DefaultCallAccount {
                 if (account == null || !account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) continue;
                 String label = account.getLabel() == null ? "蜂窝通话卡" : account.getLabel().toString();
                 String number = "";
+                int slotIndex = -1;
+                int subscriptionId = -1;
+                String carrierName = "";
+                boolean embedded = false;
+                boolean defaultVoice = false;
+                boolean defaultSms = false;
                 // Metadata is optional. Never infer subscription IDs from opaque Telecom IDs.
                 try {
                     TelephonyManager telephony = context.getSystemService(TelephonyManager.class);
                     SubscriptionManager subscriptions = context.getSystemService(SubscriptionManager.class);
-                    int subscriptionId = -1;
                     if (telephony != null) {
                         if (Build.VERSION.SDK_INT >= 30) subscriptionId = telephony.getSubscriptionId(handle);
                         else {
@@ -55,11 +66,17 @@ public final class DefaultCallAccount {
                     if (subscriptions != null && subscriptionId >= 0) {
                         SubscriptionInfo info = subscriptions.getActiveSubscriptionInfo(subscriptionId);
                         if (info != null) {
-                            String slot = info.getSimSlotIndex() >= 0
-                                    ? " " + (info.getSimSlotIndex() + 1) : "";
+                            slotIndex = info.getSimSlotIndex();
+                            embedded = info.isEmbedded();
                             CharSequence carrier = info.getCarrierName();
-                            label = (info.isEmbedded() ? "eSIM" : "SIM") + slot + " · "
-                                    + (carrier == null || carrier.length() == 0 ? label : carrier);
+                            carrierName = carrier == null ? "" : carrier.toString();
+                            String slot = slotIndex >= 0 ? " " + (slotIndex + 1) : "";
+                            label = (embedded ? "eSIM" : "SIM") + slot + " · "
+                                    + (carrierName.isEmpty() ? label : carrierName);
+                            defaultVoice = subscriptionId == SubscriptionManager.getDefaultVoiceSubscriptionId();
+                            // Resolved by SimSlotJson (Android-only) without
+                            // pulling SmsManager into the JVM core test classpath.
+                            defaultSms = false;
                             if (context.checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS)
                                     == PackageManager.PERMISSION_GRANTED) {
                                 number = Build.VERSION.SDK_INT >= 33
@@ -72,12 +89,23 @@ public final class DefaultCallAccount {
                 }
                 String key = handle.getComponentName().flattenToString() + "\n"
                         + handle.getId() + "\n" + handle.getUserHandle();
-                accounts.add(new Account(key, label, number == null ? "" : number, handle));
+                accounts.add(new Account(key, label, number == null ? "" : number, handle,
+                        slotIndex, subscriptionId, carrierName, embedded, defaultVoice, defaultSms));
             }
             return new Snapshot(List.copyOf(accounts), "");
         } catch (RuntimeException error) {
             return new Snapshot(List.of(), "无法读取通话卡，请检查电话状态权限及系统设置");
         }
+    }
+
+    public static int slotIndex(Context context, PhoneAccountHandle handle) {
+        if (handle == null) return -1;
+        Snapshot snapshot = snapshot(context);
+        if (!snapshot.error().isEmpty()) return -1;
+        for (Account account : snapshot.accounts()) {
+            if (handle.equals(account.handle())) return account.slotIndex();
+        }
+        return -1;
     }
 
     public static String selectedKey(Context context) {

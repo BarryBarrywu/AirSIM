@@ -23,11 +23,14 @@ final class StandaloneLongPoll {
                 query.putIfAbsent(decode(name), decode(value));
             }
         }
-        long after;
-        try {
-            after = Long.parseUnsignedLong(query.getOrDefault("after", ""));
-        } catch (NumberFormatException error) {
-            throw new IllegalArgumentException("after cursor is invalid", error);
+        long after = 0L;
+        String afterParam = query.get("after");
+        if (afterParam != null && !afterParam.trim().isEmpty()) {
+            try {
+                after = Long.parseUnsignedLong(afterParam.trim());
+            } catch (NumberFormatException error) {
+                throw new IllegalArgumentException("after cursor is invalid", error);
+            }
         }
         int timeout = defaultTimeoutMillis;
         if (query.containsKey("timeout_ms")) {

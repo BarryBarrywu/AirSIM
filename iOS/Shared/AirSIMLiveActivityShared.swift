@@ -123,7 +123,24 @@ extension AirSIMCallActivityAttributes.ContentState {
     /// ActivityKit 的 stale 只表示主 App 暂时没有提交新内容，不能证明 USB 模块离线。
     /// 模块离线由主 App 的真实 HTTP 探测失败显式写入 `.offline`。
     func liveActivityDisplayState(isStale: Bool) -> Self {
-        self
+        // CallKit exclusively owns in-call UI. Even an activity created by an older
+        // build must never render a call phase, timer or hangup button.
+        guard phase == .incoming || phase == .active || phase == .held else { return self }
+        return Self(
+            callID: "",
+            number: "",
+            displayName: "等待 Agent 来电",
+            phase: .standby,
+            startedAt: startedAt,
+            transport: transport,
+            agentDeviceName: agentDeviceName,
+            agentPhoneNumber: agentPhoneNumber,
+            agentKind: agentKind,
+            pairedAgentCount: pairedAgentCount,
+            vowlanOnline: vowlanOnline,
+            bluetoothOnline: bluetoothOnline,
+            cloudOnline: cloudOnline
+        )
     }
 }
 
@@ -202,6 +219,23 @@ enum AirSIMLiveActivityActionURL {
     }
 }
 
+/// The Live Activity intent runs in the app process. AppModel installs this
+/// handler so cloud/VoBLE/VoWLAN calls use the same authoritative path as the
+/// in-app buttons instead of the hard-coded USB ECM address.
+@MainActor
+enum LiveActivityActionBridge {
+    static var handler: ((AirSIMLiveActivityAction, String) async -> Bool)?
+
+    static func perform(_ action: AirSIMLiveActivityAction, callID: String) async -> Bool {
+        // A cold launch may still be initializing AppModel; give it a short window.
+        for _ in 0..<20 {
+            if let handler { return await handler(action, callID) }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+}
+
 /// 灵动岛动作使用最小化模块客户端，确保扩展无需启动主 App 也能走 USB ECM 控制通话。
 private enum LiveActivityCallClient {
     enum Action {
@@ -214,6 +248,14 @@ private enum LiveActivityCallClient {
             case .answer: return "api/calls/answer"
             case .reject: return "api/calls/reject"
             case .hangup: return "api/calls/hangup"
+            }
+        }
+
+        var liveAction: AirSIMLiveActivityAction {
+            switch self {
+            case .answer: return .answer
+            case .reject: return .reject
+            case .hangup: return .hangup
             }
         }
     }
@@ -229,6 +271,8 @@ private enum LiveActivityCallClient {
     }
 
     static func perform(_ action: Action, callID: String) async throws {
+        // Cloud and VoWLAN calls have no USB ECM address; use the in-app action first.
+        if await LiveActivityActionBridge.perform(action.liveAction, callID: callID) { return }
         let transport = WiredHTTPTransport()
         let statusResponse = try await transport.send(request(method: "GET", path: "api/calls/status"))
         guard (200..<300).contains(statusResponse.statusCode) else {

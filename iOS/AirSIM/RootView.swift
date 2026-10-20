@@ -255,7 +255,9 @@ struct RootView: View {
         case let .message(recipient):
             composeMessage(recipient)
         case let .liveActivity(action, callID):
-            Task { await model.performVoBLELiveActivityAction(action, callID: callID) }
+            // Legacy links still open the app; use the same unified path as intents
+            // so a stale island is dismissed instead of showing a Bluetooth-call error.
+            Task { _ = await model.performLiveActivityAction(action, callID: callID) }
         case nil:
             break
         }

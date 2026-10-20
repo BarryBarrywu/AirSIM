@@ -4,17 +4,24 @@ import Darwin
 
 /// Shared by the app and its extension; no AppModel/controller dependency.
 enum VoWLANNetworkRoutePolicy {
-    static func permitsDirectIPv4(_ host: String) -> Bool {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts.allSatisfy({ !$0.isEmpty && $0.count <= 3
-            && !($0.count > 1 && $0.first == "0") && $0.utf8.allSatisfy { (48...57).contains($0) } }) else { return false }
-        let fields = parts.compactMap { UInt8($0) }
-        guard fields.count == 4 else { return false }
-        return fields[0] == 10 || (fields[0] == 172 && (16...31).contains(fields[1]))
-            || (fields[0] == 192 && fields[1] == 168) || (fields[0] == 100 && (64...127).contains(fields[1]))
+    static func permitsDirectIPv4(_ host: String,
+                                  custom: [NetworkRoutePreferences.Prefix] = NetworkRoutePreferences.stored()) -> Bool {
+        // 公网地址始终拒绝；内置私网加上用户在设置页追加的网段。
+        NetworkRoutePreferences.permitsPrivateIPv4(host, custom: custom)
     }
     static func usesSystemRouting(host: String) -> Bool {
-        permitsDirectIPv4(host) && host.hasPrefix("100.")
+        // All supported VoWLAN hosts may be reached through the system route:
+        // a LAN address can be behind a Tailscale subnet router, while a
+        // 100.64/10 address is a direct tailnet peer. Requests still carry
+        // VoWLAN HMAC authentication; public hosts remain rejected above.
+        permitsDirectIPv4(host)
+    }
+
+    /// True only for tailnet/CGNAT addresses. A plain 192.168/10 LAN must not be
+    /// labelled as a VPN route just because it travels through the system route.
+    static func isOverlayHost(_ host: String) -> Bool {
+        guard let value = NetworkRoutePreferences.parseIPv4(host) else { return false }
+        return value >> 24 == 100 && (64...127).contains((value >> 16) & 0xFF)
     }
 }
 
@@ -238,7 +245,7 @@ private enum WiredInterfaceRoute {
 
     var description: String {
         switch self {
-        case .system: return "system-vpn-route"
+        case .system: return "system-route"
         case let .exact(interface): return "\(interface.name):\(interface.type)"
         case let .type(type): return String(describing: type)
         }

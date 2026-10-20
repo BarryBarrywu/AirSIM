@@ -1257,6 +1257,13 @@ private struct AgentSMSInboxProbe: AgentSMSInboxServicing {
 }
 
 final class AirSIMTests: XCTestCase {
+    func testVoWLANSignedRequestUsesCredentialClockOffset() throws {
+        let credential = try VoWLANCredential(secret: Data(repeating: 1, count: 32), clockOffset: -120)
+        let signed = try VoWLANRequestSigner(credential: credential).sign(
+            method: "GET", path: "/v1/health", body: Data())
+        XCTAssertLessThanOrEqual(abs(signed.timestamp - Int64(Date().timeIntervalSince1970 - 120)), 2)
+    }
+
     func testOverlayControlAndPCMUseSystemRoutingNotWiFiOrWiredEthernet() throws {
         XCTAssertNil(WiredHTTPTransport.pathSetupTimeout(systemRouting: true, requestTimeout: 20))
         XCTAssertEqual(WiredHTTPTransport.pathSetupTimeout(systemRouting: false, requestTimeout: 20), 1.5)
@@ -1267,6 +1274,8 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(pcm.requiresWiFi)
         XCTAssertTrue(pcm.usesSystemRouting)
         XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host))
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(host: "192.168.1.5"))
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.usesSystemRouting(host: "8.8.8.8"))
         let api = AirSIMAPI(route: .vowlan(endpoint: endpoint, credential: credential))
         XCTAssertEqual(api.baseURL.absoluteString, "http://100.64.1.2:39001/")
         XCTAssertFalse(AirSIMAPI.isAllowedLocalURL(URL(string: "http://8.8.8.8:39001/")!))
@@ -3182,5 +3191,35 @@ final class AirSIMTests: XCTestCase {
         XCTAssertNil(payload["device_secret"])
         XCTAssertNil(payload["voip_token"])
         XCTAssertNil(payload["alert_token"])
+    }
+
+    func testCustomPrivatePrefixWidensOnlyConfiguredRanges() throws {
+        // Unconfigured non-RFC1918 LANs stay rejected.
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.permitsDirectIPv4("30.0.0.5", custom: []))
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.permitsDirectIPv4("192.168.1.5", custom: []))
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.permitsDirectIPv4("100.64.1.5", custom: []))
+
+        let custom = NetworkRoutePreferences.parseAll("30.0.0.0/8, 172.20.0.0/16")
+        XCTAssertEqual(custom.map(\.text), ["30.0.0.0/8", "172.20.0.0/16"])
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.permitsDirectIPv4("30.1.2.3", custom: custom))
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.permitsDirectIPv4("172.20.9.9", custom: custom))
+        // Public addresses never become private, even with custom ranges.
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.permitsDirectIPv4("8.8.8.8", custom: custom))
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.permitsDirectIPv4("31.1.2.3", custom: custom))
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.permitsDirectIPv4("30.0.0", custom: custom))
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.permitsDirectIPv4("030.0.0.1", custom: custom))
+
+        // Malformed entries are dropped instead of widening the allowlist.
+        XCTAssertNil(NetworkRoutePreferences.parse("30.0.0.0/33"))
+        XCTAssertNil(NetworkRoutePreferences.parse("bogus"))
+        XCTAssertEqual(NetworkRoutePreferences.parseAll("bogus, 30.0.0.0/8").count, 1)
+
+        // A removable default domain keeps the test hermetic.
+        let suite = UserDefaults(suiteName: "airsim.tests.network-prefixes")!
+        suite.removePersistentDomain(forName: "airsim.tests.network-prefixes")
+        XCTAssertTrue(NetworkRoutePreferences.stored(defaults: suite).isEmpty)
+        NetworkRoutePreferences.save("30.0.0.0/8", defaults: suite)
+        XCTAssertEqual(NetworkRoutePreferences.stored(defaults: suite).map(\.text), ["30.0.0.0/8"])
+        suite.removePersistentDomain(forName: "airsim.tests.network-prefixes")
     }
 }

@@ -60,6 +60,7 @@ public final class StandaloneAgentService extends Service {
         commandConfiguration = new RelayCommandConfiguration<>(store::registration, this::commandScope, commandRetry);
         getSharedPreferences("standalone_agent", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(commandPreferences);
         ShizukuBridgeManager.get(this).ensureStarted();
+        SIMSlotObserver.start(this, () -> StandaloneAgentGateway.get(this).simSlotsChanged());
         VoWLANGatewayService.start(this);
         worker.execute(this::loop);
         worker.execute(this::commandLoop);
@@ -314,6 +315,7 @@ public final class StandaloneAgentService extends Service {
         StandaloneWebSocket socket = commandSocket;
         if (socket != null) socket.close();
         worker.shutdownNow();
+        SIMSlotObserver.stop(this);
         StandaloneCloudMediaManager.get(this).close();
         BridgeLog.info("standalone_agent_destroyed");
         super.onDestroy();

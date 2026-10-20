@@ -91,16 +91,8 @@ struct AirSIMLiveActivityWidget: Widget {
             pairedAgentCountView(state)
         case .cloudStandby:
             pairedAgentCountView(state)
-        case .active:
-            Text(state.startedAt, style: .timer)
-                .font(.caption.weight(.semibold).monospacedDigit())
-        case .incoming:
-            Image(systemName: "phone.badge.waveform.fill")
-                .foregroundStyle(.green)
-        case .held:
-            Text("保持")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.orange)
+        case .active, .incoming, .held:
+            EmptyView()
         case .offline:
             Text("离线")
                 .font(.caption.weight(.semibold))
@@ -111,8 +103,9 @@ struct AirSIMLiveActivityWidget: Widget {
     private func lockScreenView(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
+        let callPhase = state.phase == .incoming || state.phase == .active || state.phase == .held
+        return VStack(spacing: callPhase ? 10 : 12) {
+            HStack(spacing: 10) {
                 if state.phase == .standby || state.phase == .cloudStandby {
                     statusMark(for: state.phase, size: 44)
                 } else if state.phase == .incoming || state.phase == .active || state.phase == .held {
@@ -124,6 +117,7 @@ struct AirSIMLiveActivityWidget: Widget {
                     Text(idleTitle(state))
                         .font(.headline)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     if state.phase == .standby {
                         HStack(spacing: 5) {
                             Circle().fill(Color.green).frame(width: 7, height: 7)
@@ -152,20 +146,23 @@ struct AirSIMLiveActivityWidget: Widget {
                             .foregroundStyle(tint(for: state.phase))
                     }
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: 6)
                 lockScreenMetric(state)
+                    .layoutPriority(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
-            if hasAgentMetadata(state) {
+            // Call phases already use the height for the action row; repeating the
+            // agent summary here pushed the lock-screen card past its system bounds.
+            if hasAgentMetadata(state), !callPhase {
                 agentSummaryRow(state)
             }
 
-            if state.phase != .standby && state.phase != .cloudStandby && state.phase != .offline {
-                actionButtons(state)
-            }
+
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         // ActivityKit 在锁屏上已经提供系统级 Live Activity 容器。iOS 26 再给
         // 根内容叠加 glassEffect 会生成第二个采样层，真机上可能只显示空玻璃壳。
         // 透明 activityBackgroundTint 负责启用宿主 Liquid Glass，正文保持普通布局。
@@ -175,10 +172,7 @@ struct AirSIMLiveActivityWidget: Widget {
     private func lockScreenMetric(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
-        if state.phase == .active {
-            Text(state.startedAt, style: .timer)
-                .font(.title3.weight(.semibold).monospacedDigit())
-        } else if state.phase == .standby {
+        if state.phase == .standby {
             VStack(alignment: .trailing, spacing: 2) {
                 signalBars(dbm: state.signalDBM)
                 if let signal = state.signalDBM {
@@ -191,10 +185,6 @@ struct AirSIMLiveActivityWidget: Widget {
             Image(systemName: "checkmark.icloud.fill")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.cyan)
-        } else if state.phase == .incoming {
-            Image(systemName: "waveform")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.green)
         } else if state.phase == .offline {
             Text("离线")
                 .font(.headline)
@@ -214,7 +204,7 @@ struct AirSIMLiveActivityWidget: Widget {
         case .offline:
             expandedAgentDetail(state)
         case .incoming, .active, .held:
-            actionButtons(state)
+            EmptyView()
         }
     }
 
@@ -334,128 +324,12 @@ struct AirSIMLiveActivityWidget: Widget {
     }
 
     @ViewBuilder
-    private func actionButtons(
-        _ state: AirSIMCallActivityAttributes.ContentState
-    ) -> some View {
-        if #available(iOSApplicationExtension 17.0, *) {
-            switch state.phase {
-            case .incoming:
-                HStack(spacing: 8) {
-                    Text("来电")
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    HStack(spacing: IslandActionLayout.buttonSpacing) {
-                        if AirSIMLiveActivityActionRouting.opensApp(for: state.transport),
-                           let url = AirSIMLiveActivityActionURL.make(
-                            action: .reject, callID: state.callID) {
-                            Link(destination: url) {
-                                Image(systemName: "phone.down.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(width: IslandActionLayout.buttonSide,
-                                           height: IslandActionLayout.buttonSide)
-                            }
-                            .accessibilityLabel("拒绝来电")
-                            .modifier(LiveActivityGlassButtonStyle(
-                                prominent: false,
-                                tint: Color.white.opacity(0.17)
-                            ))
-                        } else {
-                            Button(intent: RejectAirSIMCallIntent(callID: state.callID)) {
-                                Image(systemName: "phone.down.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(width: IslandActionLayout.buttonSide,
-                                           height: IslandActionLayout.buttonSide)
-                            }
-                            .accessibilityLabel("拒绝来电")
-                            .modifier(LiveActivityGlassButtonStyle(
-                                prominent: false,
-                                tint: Color.white.opacity(0.17)
-                            ))
-                        }
-
-                        if AirSIMLiveActivityActionRouting.opensApp(for: state.transport),
-                           let url = AirSIMLiveActivityActionURL.make(
-                            action: .answer, callID: state.callID) {
-                            Link(destination: url) {
-                                Image(systemName: "phone.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(width: IslandActionLayout.buttonSide,
-                                           height: IslandActionLayout.buttonSide)
-                            }
-                            .accessibilityLabel("接听来电")
-                            .modifier(LiveActivityGlassButtonStyle(prominent: true, tint: .green))
-                        } else {
-                            Button(intent: AnswerAirSIMCallIntent(callID: state.callID)) {
-                                Image(systemName: "phone.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(width: IslandActionLayout.buttonSide,
-                                           height: IslandActionLayout.buttonSide)
-                            }
-                            .accessibilityLabel("接听来电")
-                            .modifier(LiveActivityGlassButtonStyle(prominent: true, tint: .green))
-                        }
-                    }
-                    .frame(width: IslandActionLayout.reservedWidth(for: state.phase),
-                           alignment: .trailing)
-                }
-            case .active, .held:
-                HStack(spacing: 8) {
-                    Image(systemName: state.phase == .held ? "pause.fill" : "waveform")
-                        .foregroundStyle(tint(for: state.phase))
-                    Text(state.phase == .held ? "通话保持" : "通话中")
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    if AirSIMLiveActivityActionRouting.opensApp(for: state.transport),
-                       let url = AirSIMLiveActivityActionURL.make(
-                        action: .hangup, callID: state.callID) {
-                        Link(destination: url) {
-                            Image(systemName: "phone.down.fill")
-                                .font(.subheadline.weight(.semibold))
-                                .frame(width: IslandActionLayout.buttonSide,
-                                       height: IslandActionLayout.buttonSide)
-                        }
-                        .accessibilityLabel("挂断通话")
-                        .modifier(LiveActivityGlassButtonStyle(prominent: true, tint: .red))
-                        .frame(width: IslandActionLayout.reservedWidth(for: state.phase),
-                               alignment: .trailing)
-                    } else {
-                        Button(intent: HangUpAirSIMCallIntent(callID: state.callID)) {
-                            Image(systemName: "phone.down.fill")
-                                .font(.subheadline.weight(.semibold))
-                                .frame(width: IslandActionLayout.buttonSide,
-                                       height: IslandActionLayout.buttonSide)
-                        }
-                        .accessibilityLabel("挂断通话")
-                        .modifier(LiveActivityGlassButtonStyle(prominent: true, tint: .red))
-                        .frame(width: IslandActionLayout.reservedWidth(for: state.phase),
-                               alignment: .trailing)
-                    }
-                }
-            case .standby, .cloudStandby, .offline:
-                EmptyView()
-            }
-        } else if state.phase == .incoming {
-            Text("打开 AirSIM 接听")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.62))
-        }
-    }
-
-    @ViewBuilder
     private func compactTrailingView(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
         switch state.phase {
-        case .active:
-            Text(state.startedAt, style: .timer)
-                .font(.caption2.monospacedDigit())
-                .frame(width: 42)
-        case .incoming:
-            Text("来电")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.green)
+        case .active, .incoming, .held:
+            EmptyView()
         case .standby:
             Image(systemName: "cellularbars")
                 .font(.caption.weight(.semibold))
@@ -464,10 +338,6 @@ struct AirSIMLiveActivityWidget: Widget {
             Image(systemName: "checkmark.icloud.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.cyan)
-        case .held:
-            Image(systemName: "pause.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
         case .offline:
             Image(systemName: "antenna.radiowaves.left.and.right.slash")
                 .font(.caption)

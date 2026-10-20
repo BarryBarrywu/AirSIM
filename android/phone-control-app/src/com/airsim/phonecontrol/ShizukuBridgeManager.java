@@ -28,15 +28,19 @@ final class ShizukuBridgeManager {
 
     private final Context app;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService rootWorker = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean rootStartInFlight = new AtomicBoolean();
     private final PrivilegedBridgeCoordinator coordinator = new PrivilegedBridgeCoordinator();
     private final MuteRequestRetrier muteRetrier;
     private final AtomicBoolean statusRefreshInFlight = new AtomicBoolean();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Object roleLock = new Object();
     private final Shizuku.UserServiceArgs serviceArgs;
-    private volatile String status = "等待 Shizuku";
+    private volatile String status = "等待权限通道";
     private volatile boolean binding;
     private volatile PrivilegedBridgeClient privilegedClient;
+    private volatile RootBridgeTransport rootTransport;
+    private volatile PrivilegeChannelPreference.Channel channel;
     private final java.util.concurrent.atomic.AtomicLong audioWatchdogGeneration = new java.util.concurrent.atomic.AtomicLong();
     private volatile boolean audioWatchdogActive;
     private String audioWatchdogKey = "";
@@ -50,6 +54,7 @@ final class ShizukuBridgeManager {
     private final Shizuku.OnBinderReceivedListener binderReceived = this::onBinderReceived;
     private final Shizuku.OnBinderDeadListener binderDead = this::onBinderDead;
     private final Shizuku.OnRequestPermissionResultListener permissionResult = (requestCode, grantResult) -> {
+        if (channel == PrivilegeChannelPreference.Channel.ROOT || rootTransport != null) return;
         if (requestCode != PERMISSION_REQUEST) return;
         if (grantResult == PackageManager.PERMISSION_GRANTED) {
             BridgeLog.info("shizuku_permission_granted");
@@ -64,6 +69,7 @@ final class ShizukuBridgeManager {
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             binding = false;
+            if (channel == PrivilegeChannelPreference.Channel.ROOT || rootTransport != null) return;
             worker.execute(() -> {
                 try {
                     PrivilegedBridgeClient client = new PrivilegedBridgeClient(binder);
@@ -84,6 +90,7 @@ final class ShizukuBridgeManager {
 
         @Override public void onServiceDisconnected(ComponentName name) {
             binding = false;
+            if (channel == PrivilegeChannelPreference.Channel.ROOT || rootTransport != null) return;
             privilegedClient = null;
             coordinator.disconnect();
             status = "Shizuku 服务已断开";
@@ -100,20 +107,23 @@ final class ShizukuBridgeManager {
                 mainHandler.postDelayed(() -> worker.execute(task), delayMillis);
             }
         }, coordinator::setLocalOutputMuted, (muted, error) -> {
+
             if (error != null) {
                 status = "本机通话音量控制失败";
                 BridgeLog.error("shizuku_local_output_failed target_muted=" + muted, error);
-            } else if (privilegedClient != null) {
-                status = "Shizuku 已连接 · " + coordinator.lastResult();
-                BridgeLog.info("shizuku_local_output target_muted=" + muted
+            } else if (coordinator.connected()) {
+                String channel = rootTransport != null ? "Root" : "Shizuku";
+                status = channel + " 已连接 · " + coordinator.lastResult();
+                BridgeLog.info((rootTransport != null ? "root" : "shizuku")
+                        + "_local_output target_muted=" + muted
                         + " result=" + coordinator.lastResult());
             } else {
-                BridgeLog.info("shizuku_local_output_queued target_muted=" + muted);
+                BridgeLog.info("privileged_local_output_queued target_muted=" + muted);
             }
             // Persist both mute and restore outcomes even when ordinary Debug logging
             // is disabled. A queued intent is not a verified privileged operation.
             BridgeLog.watchdog("audio_watchdog phase=" + (muted ? "mute" : "restore")
-                    + " success=" + (error == null && privilegedClient != null)
+                    + " success=" + (error == null && coordinator.connected())
                     + " result=" + coordinator.lastResult()
                     + " error=" + (error == null ? "none" : error.getClass().getSimpleName())
                     + " acoustic_check=unavailable");
@@ -130,6 +140,9 @@ final class ShizukuBridgeManager {
         Shizuku.addBinderReceivedListenerSticky(binderReceived);
         Shizuku.addBinderDeadListener(binderDead);
         Shizuku.addRequestPermissionResultListener(permissionResult);
+        SMSCommandExecutor.setPrivilegedSender(this::sendSms);
+        channel = PrivilegeChannelPreference.get(app);
+        startRootChannel();
     }
 
     static ShizukuBridgeManager initialize(Context context) {
@@ -145,7 +158,124 @@ final class ShizukuBridgeManager {
         }
     }
 
+    private void startRootChannel() {
+        if (channel == PrivilegeChannelPreference.Channel.SHIZUKU) return;
+        if (!rootStartInFlight.compareAndSet(false, true)) return;
+        rootWorker.execute(() -> {
+            try {
+                RootBridgeTransport root = RootBridgeTransport.start(app);
+                connectRoot(root);
+            } catch (Throwable error) {
+                // Root is optional: a missing su, SELinux denial or class-loading
+                // error must degrade to Shizuku instead of killing the app.
+                BridgeLog.info("root_bridge_unavailable " + error.getClass().getSimpleName());
+                if (channel == PrivilegeChannelPreference.Channel.ROOT) {
+                    status = "Root 未授权或不可用";
+                } else if (channel == PrivilegeChannelPreference.Channel.AUTO) {
+                    status = privilegedClient != null
+                            ? "Shizuku 已连接" : "Root 不可用，等待 Shizuku";
+                }
+            } finally {
+                rootStartInFlight.set(false);
+            }
+        });
+    }
+
+    private void connectRoot(RootBridgeTransport root) {
+        synchronized (this) {
+            if (channel == PrivilegeChannelPreference.Channel.SHIZUKU) {
+                root.close();
+                return;
+            }
+            if (rootTransport != null) {
+                root.close();
+                return;
+            }
+            rootTransport = root;
+            privilegedClient = null;
+            binding = false;
+            try {
+                coordinator.connect(root);
+                status = "Root 已连接 · " + root.status();
+                BridgeLog.info("root_bridge_connected " + status);
+                runPendingRootDialerRoleRequest(root);
+            } catch (Exception error) {
+                rootTransport = null;
+                coordinator.disconnect();
+                root.close();
+                status = "Root PCM 启动失败";
+                BridgeLog.error("root_bridge_connect_failed", error);
+            }
+        }
+    }
+
+    void setPrivilegeChannel(PrivilegeChannelPreference.Channel value) {
+        if (value == null) return;
+        if (value == channel) {
+            if (value == PrivilegeChannelPreference.Channel.ROOT && rootTransport == null) {
+                startRootChannel();
+            }
+            return;
+        }
+        channel = value;
+        PrivilegeChannelPreference.set(app, value);
+        status = "正在切换权限通道…";
+        BridgeLog.info("privilege_channel=" + value.name().toLowerCase());
+        worker.execute(() -> {
+            try {
+                if (value == PrivilegeChannelPreference.Channel.SHIZUKU) {
+                    stopRootChannel();
+                    if (Shizuku.pingBinder()
+                            && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                        bindPrivilegedService();
+                    } else {
+                        status = "等待 Shizuku 授权";
+                    }
+                } else if (value == PrivilegeChannelPreference.Channel.ROOT) {
+                    disconnectShizuku();
+                    startRootChannel();
+                } else {
+                    if (rootTransport == null && !rootStartInFlight.get()) startRootChannel();
+                    if (rootTransport == null && !rootStartInFlight.get()
+                            && Shizuku.pingBinder()
+                            && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                        bindPrivilegedService();
+                    }
+                }
+            } catch (Throwable error) {
+                status = "权限通道切换失败";
+                BridgeLog.error("privilege_channel_switch_failed", error);
+            }
+        });
+    }
+
+    void requestRootPermission() {
+        if (channel != PrivilegeChannelPreference.Channel.AUTO
+                && channel != PrivilegeChannelPreference.Channel.ROOT) {
+            setPrivilegeChannel(PrivilegeChannelPreference.Channel.ROOT);
+            return;
+        }
+        startRootChannel();
+    }
+
+    private void stopRootChannel() {
+        RootBridgeTransport old;
+        synchronized (this) {
+            old = rootTransport;
+            rootTransport = null;
+            if (privilegedClient == null) coordinator.disconnect();
+        }
+        if (old != null) old.close();
+    }
+
+    private void disconnectShizuku() {
+        privilegedClient = null;
+        binding = false;
+        if (rootTransport == null) coordinator.disconnect();
+    }
+
     private void onBinderReceived() {
+        if (channel == PrivilegeChannelPreference.Channel.ROOT || rootTransport != null) return;
         try {
             int uid = Shizuku.getUid();
             int version = Shizuku.getVersion();
@@ -172,6 +302,7 @@ final class ShizukuBridgeManager {
 
     private void onBinderDead() {
         binding = false;
+        if (channel == PrivilegeChannelPreference.Channel.ROOT || rootTransport != null) return;
         privilegedClient = null;
         coordinator.disconnect();
         status = "Shizuku 未运行";
@@ -180,6 +311,14 @@ final class ShizukuBridgeManager {
     }
 
     void requestPermission() {
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) {
+            startRootChannel();
+            return;
+        }
+        if (rootTransport != null) {
+            status = "Root 已连接";
+            return;
+        }
         try {
             if (!Shizuku.pingBinder()) {
                 status = "请先启动 Shizuku";
@@ -200,6 +339,14 @@ final class ShizukuBridgeManager {
     }
 
     void ensureStarted() {
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) {
+            if (rootTransport == null) startRootChannel();
+            return;
+        }
+        if (rootTransport != null) {
+            status = "Root 已连接";
+            return;
+        }
         if (!Shizuku.pingBinder()) {
             status = "Shizuku 未运行";
             return;
@@ -211,7 +358,28 @@ final class ShizukuBridgeManager {
         bindPrivilegedService();
     }
 
+    String sendSms(String destination, String body, int subscriptionId) {
+        RootBridgeTransport root = rootTransport;
+        if (root != null) {
+            try {
+                return root.sendSms(destination, body, subscriptionId);
+            } catch (Exception error) {
+                return "error:root";
+            }
+        }
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) return "unavailable";
+        PrivilegedBridgeClient client = privilegedClient;
+        if (client == null) return "unavailable";
+        try {
+            return client.sendSms(destination, body, subscriptionId);
+        } catch (android.os.RemoteException error) {
+            return "error:remote";
+        }
+    }
+
     boolean dialerRoleAutomationAuthorized() {
+        if (rootTransport != null) return true;
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) return false;
         try {
             return Shizuku.pingBinder()
                     && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
@@ -221,11 +389,17 @@ final class ShizukuBridgeManager {
     }
 
     boolean dialerRoleAutomationAvailable() {
+        if (rootTransport != null) return true;
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) return false;
         try { return Shizuku.pingBinder(); }
         catch (RuntimeException error) { return false; }
     }
 
     StartupSnapshot startupSnapshot() {
+        if (rootTransport != null || rootStartInFlight.get()
+                || channel == PrivilegeChannelPreference.Channel.ROOT) {
+            return new StartupSnapshot(true, true, true);
+        }
         boolean installed = false;
         try {
             app.getPackageManager().getPackageInfo(MANAGER_PACKAGE, 0);
@@ -243,6 +417,15 @@ final class ShizukuBridgeManager {
     void ensureDialerRole(boolean requestPermission, DialerRoleCallback callback) {
         synchronized (roleLock) {
             pendingRoleCallback = callback;
+        }
+        RootBridgeTransport root = rootTransport;
+        if (root != null) {
+            runPendingRootDialerRoleRequest(root);
+            return;
+        }
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) {
+            finishDialerRoleRequest(false, "Root 未授权或不可用");
+            return;
         }
         try {
             if (!Shizuku.pingBinder()) {
@@ -267,6 +450,25 @@ final class ShizukuBridgeManager {
             BridgeLog.error("shizuku_dialer_role_prepare_failed", error);
             finishDialerRoleRequest(false, "Shizuku 请求失败");
         }
+    }
+
+    private void runPendingRootDialerRoleRequest(RootBridgeTransport root) {
+        DialerRoleCallback callback;
+        synchronized (roleLock) {
+            if (pendingRoleCallback == null || roleRequestInFlight) return;
+            roleRequestInFlight = true;
+            callback = pendingRoleCallback;
+        }
+        worker.execute(() -> {
+            try {
+                String result = root.ensureDialerRole();
+                BridgeLog.info("root_dialer_role_applied result=" + result);
+                finishDialerRoleRequest(callback, true, result);
+            } catch (Exception error) {
+                BridgeLog.error("root_dialer_role_failed", error);
+                finishDialerRoleRequest(callback, false, "系统未接受默认电话角色");
+            }
+        });
     }
 
     private void runPendingDialerRoleRequest(PrivilegedBridgeClient client) {
@@ -308,7 +510,12 @@ final class ShizukuBridgeManager {
     }
 
     void setLocalOutputMuted(boolean muted) {
-        muteRetrier.request(muted);
+        setLocalOutputMuted(muted, PrivilegedBridgeProtocol.TRANSPORT_VOWLAN);
+    }
+
+    /** VoBLE and VoWLAN need different stream policies; other callers default to VoWLAN. */
+    void setLocalOutputMuted(boolean muted, String transport) {
+        muteRetrier.requestWithTransport(muted, transport);
     }
 
     // Invalidate queued checks immediately when the remote owner or native call changes.
@@ -331,7 +538,7 @@ final class ShizukuBridgeManager {
                 public void repair(int step) throws Exception {
                     if (!watchdogCurrent(generation)) return;
                     if (step >= 2) AirSIMInCallService.refreshAudioPolicy();
-                    if (step >= 3 && privilegedClient == null) recoverWatchdogTransport(generation);
+                    if (step >= 3 && !coordinator.connected()) recoverWatchdogTransport(generation);
                     if (watchdogCurrent(generation)) coordinator.reassertLocalOutputMuted();
                 }
                 public void reconnect() { recoverWatchdogTransport(generation); }
@@ -355,8 +562,23 @@ final class ShizukuBridgeManager {
 
     private void recoverWatchdogTransport(long generation) {
         if (!watchdogCurrent(generation)) return;
+        if (rootTransport != null) {
+            restartRootChannel();
+            return;
+        }
         // Rebind, never remove the user service or kill a live PCM bridge.
         mainHandler.post(() -> { if (watchdogCurrent(generation)) ensureStarted(); });
+    }
+
+    private void restartRootChannel() {
+        if (channel == PrivilegeChannelPreference.Channel.SHIZUKU) return;
+        RootBridgeTransport old = rootTransport;
+        if (old != null) {
+            rootTransport = null;
+            coordinator.disconnect();
+            old.close();
+        }
+        startRootChannel();
     }
 
     private AudioWatchdogSnapshot boundedAudioProbe() throws Exception {
@@ -374,6 +596,7 @@ final class ShizukuBridgeManager {
     }
 
     private void bindPrivilegedService() {
+        if (channel == PrivilegeChannelPreference.Channel.ROOT || rootTransport != null) return;
         if (binding) return;
         binding = true;
         status = "正在启动 Shizuku PCM 服务";
@@ -395,12 +618,12 @@ final class ShizukuBridgeManager {
     }
 
     void refreshBridgeStatus() {
-        if (privilegedClient == null || !statusRefreshInFlight.compareAndSet(false, true)) return;
+        if (!coordinator.connected() || !statusRefreshInFlight.compareAndSet(false, true)) return;
         worker.execute(() -> {
             try {
-                if (privilegedClient != null) {
+                if (coordinator.connected()) {
                     String report = coordinator.refreshStatus();
-                    status = "Shizuku 已连接 · " + report;
+                    status = (rootTransport != null ? "Root" : "Shizuku") + " 已连接 · " + report;
                     // Idle PCM stays at bridge_listening / initialized=false by design.
                     // Log every probe only during a call (where it is diagnostic); when
                     // idle, log state changes and a 30s heartbeat instead of every second.
@@ -415,8 +638,8 @@ final class ShizukuBridgeManager {
                     }
                 }
             } catch (Exception error) {
-                status = "Shizuku PCM 状态检查失败";
-                BridgeLog.error("shizuku_pcm_status_refresh_failed", error);
+                status = (rootTransport != null ? "Root" : "Shizuku") + " PCM 状态检查失败";
+                BridgeLog.error("pcm_status_refresh_failed", error);
             } finally {
                 statusRefreshInFlight.set(false);
             }

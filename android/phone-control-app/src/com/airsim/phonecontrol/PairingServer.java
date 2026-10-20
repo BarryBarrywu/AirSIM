@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -53,7 +54,7 @@ public final class PairingServer implements Closeable {
         executor.execute(() -> {
             try {
                 PairingSession created = PairingSession.create(System.currentTimeMillis());
-                ServerSocket server = new ServerSocket(0);
+                ServerSocket server = bindPreferred(context);
                 server.setReuseAddress(true);
                 socket = server;
                 session = created;
@@ -110,7 +111,8 @@ public final class PairingServer implements Closeable {
             // Same public, short-lived material as Bonjour TXT. Never reveal code or credentials.
             respond(peer, 200, new JSONObject().put("product", "airsim-pair").put("version", 1)
                     .put("session_id", created.id()).put("server_public_key", PairingCrypto.base64URL(created.publicKey()))
-                    .put("expires_at", created.expiresAtMillis()).toString());
+                    .put("expires_at", created.expiresAtMillis())
+                    .put("server_time", System.currentTimeMillis()).toString());
             return false;
         }
         if (lines.length == 0 || !"POST /pair/v1/claim HTTP/1.1".equals(lines[0])) {
@@ -175,6 +177,27 @@ public final class PairingServer implements Closeable {
         } finally {
             java.util.Arrays.fill(plaintext, (byte) 0);
         }
+    }
+
+    /**
+     * Preferred pairing port is user-configurable; a busy or restricted port
+     * falls back to an ephemeral one because Bonjour/manual text advertises it.
+     */
+    private static ServerSocket bindPreferred(Context context) throws IOException {
+        int preferred = NetworkSettings.pairingPort(context);
+        if (preferred > 0) {
+            try {
+                ServerSocket socket = new ServerSocket();
+                socket.setReuseAddress(true);
+                socket.bind(new InetSocketAddress(preferred));
+                BridgeLog.info("pairing_preferred_port port=" + preferred);
+                return socket;
+            } catch (IOException error) {
+                BridgeLog.info("pairing_preferred_port_busy port=" + preferred
+                        + " reason=" + error.getClass().getSimpleName());
+            }
+        }
+        return new ServerSocket(0);
     }
 
     private void advertise(int port, PairingSession created) {
@@ -291,6 +314,7 @@ public final class PairingServer implements Closeable {
                 if (!(value instanceof Inet4Address)) continue;
                 String host = value.getHostAddress();
                 if (VoWLANNetworkPolicy.isVoWLANInterface(item.getName(), host)) values.add("局域网 " + host + ":" + port);
+                else if (VoWLANNetworkPolicy.isCustomPrivate(host)) values.add("自定义网段 " + host + ":" + port);
                 else if (VoWLANNetworkPolicy.isOverlayInterface(item.getName(), host)) values.add("VPN " + host + ":" + port);
             }
         }

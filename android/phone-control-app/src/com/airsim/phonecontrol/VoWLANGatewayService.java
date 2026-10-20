@@ -32,6 +32,7 @@ public final class VoWLANGatewayService extends Service {
     // AirSIM advertises these independent ports through Bonjour.
     public static final int CONTROL_PORT = 7592;
     public static final int PCM_PORT = 7593;
+    private static final String ACTION_RELOAD_SETTINGS = "com.airsim.phonecontrol.action.RELOAD_NETWORK_SETTINGS";
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final NotificationUpdateGate notificationGate = new NotificationUpdateGate();
     private volatile boolean running;
@@ -74,7 +75,36 @@ public final class VoWLANGatewayService extends Service {
         worker.execute(this::lifecycleLoop);
     }
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_STICKY; }
+    /**
+     * Re-reads user port settings. Gateways are re-established by the lifecycle
+     * loop; a live call is never torn down mid-conversation.
+     */
+    public static void restartAfterSettingsChange(Context context) {
+        try {
+            Intent intent = new Intent(context, VoWLANGatewayService.class)
+                    .setAction(ACTION_RELOAD_SETTINGS);
+            context.startForegroundService(intent);
+        } catch (RuntimeException error) {
+            BridgeLog.error("vowlan_settings_reload_failed", error);
+        }
+    }
+
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_RELOAD_SETTINGS.equals(intent.getAction())) {
+            NetworkSettings.apply(this);
+            if ((control != null && control.ownsCall()) || (pcm != null && pcm.hasActiveSession())) {
+                BridgeLog.info("vowlan_settings_deferred_midcall");
+            } else {
+                BridgeLog.info("vowlan_settings_reloading control_port=" + NetworkSettings.controlPort(this)
+                        + " pcm_port=" + NetworkSettings.pcmPort(this));
+                synchronized (networkSignal) {
+                    networkWakeRequested = true;
+                    networkSignal.notifyAll();
+                }
+            }
+        }
+        return START_STICKY;
+    }
     @Override public IBinder onBind(Intent intent) { return null; }
 
     private void lifecycleLoop() {
@@ -217,9 +247,9 @@ public final class VoWLANGatewayService extends Service {
         stopPrimaryGateway();
         VoWLANControlGateway nextControl = new VoWLANControlGateway(this);
         VoWLANPCMRelay nextPCM = new VoWLANPCMRelay(this);
-        nextControl.start(hotspot, CONTROL_PORT);
+        nextControl.start(hotspot, NetworkSettings.controlPort(this));
         try {
-            nextPCM.start(hotspot, PCM_PORT, new InetSocketAddress(avf, 7580));
+            nextPCM.start(hotspot, NetworkSettings.pcmPort(this), new InetSocketAddress(avf, 7580));
         } catch (Exception error) {
             nextControl.close();
             throw error;
@@ -228,7 +258,8 @@ public final class VoWLANGatewayService extends Service {
         pcm = nextPCM;
         activeHotspot = host;
         DIRECT_ROUTES.put(host, control.localPort(), pcm.localPort());
-        if (control.localPort() != CONTROL_PORT || pcm.localPort() != PCM_PORT) {
+        if (control.localPort() != NetworkSettings.controlPort(this)
+                || pcm.localPort() != NetworkSettings.pcmPort(this)) {
             BridgeLog.info("vowlan_preferred_port_occupied control_port=" + control.localPort()
                     + " pcm_port=" + pcm.localPort());
         }
@@ -317,8 +348,9 @@ public final class VoWLANGatewayService extends Service {
             VoWLANControlGateway nextControl = new VoWLANControlGateway(this);
             VoWLANPCMRelay nextPCM = new VoWLANPCMRelay(this);
             try {
-                nextControl.start(address, CONTROL_PORT);
-                nextPCM.start(address, PCM_PORT, new InetSocketAddress(avf, 7580));
+                nextControl.start(address, NetworkSettings.controlPort(this));
+                nextPCM.start(address, NetworkSettings.pcmPort(this),
+                        new InetSocketAddress(avf, 7580));
             } catch (Exception error) {
                 try { nextControl.close(); } catch (Exception ignored) {}
                 try { nextPCM.close(); } catch (Exception ignored) {}

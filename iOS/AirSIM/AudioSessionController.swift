@@ -89,6 +89,12 @@ enum PCMRoute: Equatable, Sendable {
         return false
     }
 
+    /// VPN wording is reserved for tailnet/CGNAT addresses, not every private LAN.
+    var isOverlayHost: Bool {
+        if case let .vowlan(endpoint, _) = self { return VoWLANNetworkRoutePolicy.isOverlayHost(endpoint.host) }
+        return false
+    }
+
     func handshake() throws -> Data {
         switch self {
         case .moduleLocal: throw APIError.disabledLegacyRoute
@@ -100,10 +106,10 @@ enum PCMRoute: Equatable, Sendable {
 enum VoWLANPCMHandshake {
     static func make(
         credential: VoWLANCredential,
-        timestamp: Int64 = Int64(Date().timeIntervalSince1970),
+        timestamp: Int64? = nil,
         nonce: String = VoWLANRequestSigner.makeNonce()
     ) throws -> Data {
-        let signed = try VoWLANRequestSigner(secret: credential.secret).sign(
+        let signed = try VoWLANRequestSigner(credential: credential).sign(
             method: "PCM", path: "/v1/pcm", body: Data(), timestamp: timestamp, nonce: nonce
         )
         return Data("AIRSIMVWL1 \(signed.timestamp) \(signed.nonce) \(signed.signature)\n".utf8)
@@ -274,6 +280,7 @@ final class AudioSessionController: ObservableObject {
                 handshakeSequence: handshakeSequence,
                 requiresWiFi: route.requiresWiFi,
                 usesSystemRouting: route.usesSystemRouting,
+                isOverlayHost: route.isOverlayHost,
                 onPCM: { [weak self] pcm in
                     Task { @MainActor [weak self] in
                         guard self?.sessionOwner == owner else { return }
@@ -330,7 +337,7 @@ final class AudioSessionController: ObservableObject {
             playbackQueue.reset()
             active = true
             transportReady = false
-            routeDescription = route.usesSystemRouting ? "正在连接 VPN 直连语音…"
+            routeDescription = route.isOverlayHost ? "正在连接 VPN 直连语音…"
                 : (route.requiresWiFi ? "正在连接 VoWLAN 语音…" : "正在连接模块网络语音…")
             diagnosticDescription = "\(DeviceContext.displayName) PCM 尚未握手"
             moduleDiagnosticDescription = ""
@@ -864,6 +871,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
     private let handshakeSequence: PCMHandshakeSequence
     private let requiresWiFi: Bool
     private let usesSystemRouting: Bool
+    private let isOverlayHost: Bool
     private let queue = DispatchQueue(label: "com.jieden.airsim.network-pcm")
     private let onPCM: @Sendable (Data) -> Void
     private let onEvent: @Sendable (Event) -> Void
@@ -891,6 +899,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
         handshakeSequence: PCMHandshakeSequence,
         requiresWiFi: Bool,
         usesSystemRouting: Bool,
+        isOverlayHost: Bool,
         onPCM: @escaping @Sendable (Data) -> Void,
         onEvent: @escaping @Sendable (Event) -> Void
     ) {
@@ -899,6 +908,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
         self.handshakeSequence = handshakeSequence
         self.requiresWiFi = requiresWiFi
         self.usesSystemRouting = usesSystemRouting
+        self.isOverlayHost = isOverlayHost
         self.onPCM = onPCM
         self.onEvent = onEvent
     }
@@ -971,7 +981,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
         let connection = NWConnection(host: host, port: port, using: parameters)
         self.connection = connection
         readyForPCM = false
-        onEvent(.status(usesSystemRouting ? "正在通过 VPN 直连 PCM" : (requiresWiFi ? "正在通过 VoWLAN 连接 PCM" : (useWiredInterface ? "正在通过 USB 网卡连接 PCM" : "正在回退到普通 TCP 连接 PCM"))))
+        onEvent(.status(isOverlayHost ? "正在通过 VPN 直连 PCM" : (requiresWiFi ? "正在通过 VoWLAN 连接 PCM" : (useWiredInterface ? "正在通过 USB 网卡连接 PCM" : "正在回退到普通 TCP 连接 PCM"))))
         connection.pathUpdateHandler = { [weak self, weak connection] path in
             guard let self, connection != nil else { return }
             self.queue.async {

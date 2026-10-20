@@ -19,7 +19,7 @@ public final class CoreTests {
         assertTrue(VoWLANNetworkPolicy.permitsPeer("127.0.0.1", "127.0.0.1"));
         assertTrue(VoWLANNetworkPolicy.permitsPeer("100.64.1.3", "100.100.1.2"));
         assertTrue(VoWLANNetworkPolicy.permitsPeer("192.168.1.3", "192.168.1.2"));
-        assertTrue(!VoWLANNetworkPolicy.permitsPeer("100.64.1.3", "192.168.1.2"));
+        assertTrue(VoWLANNetworkPolicy.permitsPeer("100.64.1.3", "192.168.1.2"));
         assertTrue(!VoWLANNetworkPolicy.permitsPeer("8.8.8.8", "127.0.0.1"));
         assertTrue(!VoWLANNetworkPolicy.permitsPeer("100.64.1.3", "8.8.8.8"));
         assertTrue(!VoWLANNetworkPolicy.permitsPeer("192.168.1..3", "192.168.1.2"));
@@ -532,6 +532,7 @@ public final class CoreTests {
 				"/api/events?after=7&timeout_ms=15000", 15_000);
 		assertEquals(7L, eventWait.after());
 		assertEquals(15_000, eventWait.timeoutMillis());
+		assertEquals(0L, StandaloneLongPoll.parse("/api/events", 15_000).after());
 		assertEquals(25_000, StandaloneLongPoll.parse(
 				"/api/calls/events?after=0", 25_000).timeoutMillis());
 		try {

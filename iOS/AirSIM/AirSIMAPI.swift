@@ -25,7 +25,7 @@ enum LocalAgentRoute: Equatable, Sendable {
     var traceDescription: String {
         switch self {
         case .moduleLocal: return "已停用的旧模块路线"
-        case let .vowlan(endpoint, _): return VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host)
+        case let .vowlan(endpoint, _): return VoWLANNetworkRoutePolicy.isOverlayHost(endpoint.host)
             ? "VoWLAN · VPN 直连" : "VoWLAN · 同一局域网"
         }
     }
@@ -226,8 +226,10 @@ struct AirSIMAPI: Sendable {
     }
     func audioHostConfig() async throws -> MaVoAudioHostConfig { try await get("api/calls/audio/host/config") }
 
-    func sendSMS(to phone: String, message: String) async throws -> SMSSendResult {
-        try await postDecoded("api/sms/send", ["phone": phone, "message": message], timeout: 80)
+    func sendSMS(to phone: String, message: String, simAccount: String? = nil) async throws -> SMSSendResult {
+        var payload = ["phone": phone, "message": message]
+        if let simAccount, !simAccount.isEmpty { payload["sim_account"] = simAccount }
+        return try await postDecoded("api/sms/send", payload, timeout: 80)
     }
     func refreshSMS() async throws { try await post("api/sms/refresh", EmptyBody()) }
     func clearModuleSMS() async throws { try await post("api/sms/clear-module", EmptyBody()) }
@@ -338,7 +340,7 @@ struct AirSIMAPI: Sendable {
         }
         if let credential = route.credential {
             let body = request.httpBody ?? Data()
-            let signed = try VoWLANRequestSigner(secret: credential.secret).sign(
+            let signed = try VoWLANRequestSigner(credential: credential).sign(
                 method: method,
                 path: path,
                 body: body,

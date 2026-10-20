@@ -1,6 +1,7 @@
 package com.airsim.phonecontrol;
 
 import android.content.Context;
+import android.telephony.SmsManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -24,7 +25,14 @@ public final class SimSlotJson {
                         .put("id", account.key())
                         .put("label", account.label())
                         .put("number", account.number())
-                        .put("default", account.key().equals(selected)));
+                        .put("default", account.key().equals(selected))
+                        .put("slot_index", account.slotIndex())
+                        .put("sub_id", account.subscriptionId())
+                        .put("carrier_name", account.carrierName())
+                        .put("is_embedded", account.embedded())
+                        .put("is_default_voice", account.defaultVoice())
+                        .put("is_default_sms", account.defaultSms()
+                                || account.subscriptionId() == SmsManager.getDefaultSmsSubscriptionId()));
             }
         } catch (RuntimeException | org.json.JSONException ignored) {
             // A missing permission or OEM restriction leaves the selector hidden.
