@@ -75,15 +75,12 @@ public final class VoWLANPCMRelay implements Closeable {
             BufferedInputStream peerInput = new BufferedInputStream(peer.getInputStream());
             String line = readLine(peerInput);
             VoWLANPCMProtocol.Preface preface = VoWLANPCMProtocol.parse(line);
-            byte[] secret = VoWLANPairingStore.load(context);
-            try {
-                long now = System.currentTimeMillis() / 1000L;
-                if (!VoWLANAuth.verify(secret, preface.signature(), VoWLANPCMProtocol.canonical(preface),
-                        preface.timestamp(), now) || !replayCache.accept(preface.nonce(), now)) {
-                    throw new SecurityException("authentication failed");
-                }
-            } finally {
-                Arrays.fill(secret, (byte) 0);
+            long now = System.currentTimeMillis() / 1000L;
+            String canonical = VoWLANPCMProtocol.canonical(preface);
+            VoWLANPairingStore.Record matched = VoWLANPairingStore.match(
+                    context, preface.signature(), canonical, preface.timestamp(), now);
+            if (matched == null || !replayCache.accept(preface.nonce(), now)) {
+                throw new SecurityException("authentication failed");
             }
             acquired = gate.tryAcquire(owner);
             if (!acquired) throw new IllegalStateException("PCM session busy");

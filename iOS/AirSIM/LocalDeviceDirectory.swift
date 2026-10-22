@@ -103,6 +103,9 @@ final class LocalDeviceDirectory: ObservableObject {
         let store = credentials
         try await Task.detached { try store.save(credential, agentID: agentID) }.value
         guard verification[agentID] == token else { throw CancellationError() }
+        VoWLANPairingRecordStore.remember(
+            agentID: agentID, credential: credential, endpoint: endpoint,
+            deviceName: identity.deviceName)
         pendingCredentials.removeValue(forKey: agentID)
         if let old = peers[agentID], old.endpoint == endpoint, old.credential == credential {
             old.metadata = identity; old.verified = true

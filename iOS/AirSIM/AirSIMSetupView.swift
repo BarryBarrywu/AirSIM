@@ -128,6 +128,12 @@ private struct PairedAndroidDeviceRows: View {
                         Text(device.deviceName).font(.subheadline.weight(.medium))
                         Text(device.phoneNumber ?? "号码未提供").font(.caption).foregroundStyle(.secondary)
                         Text(connectionText(device)).font(.caption2).foregroundStyle(.secondary)
+                        if let pairing = VoWLANPairingRecordStore.records()
+                            .first(where: { $0.agentID == device.id }) {
+                            Text("本机配对记录 · \(pairing.id.prefix(8)) · \(pairing.endpoints.count) 个地址")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer(minLength: 8)
                     Button(role: .destructive) { onDelete(device) } label: {

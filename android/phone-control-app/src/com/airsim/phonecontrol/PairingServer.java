@@ -157,6 +157,8 @@ public final class PairingServer implements Closeable {
             JSONObject response = new JSONObject(agentResponse)
                     .put("agent_id", AndroidAgentIdentity.agentID(context));
             VoWLANPairingStore.saveEncoded(context, vowlanSecret);
+            BridgeLog.info("vowlan_pairing_client_saved clients="
+                    + VoWLANPairingStore.records(context).size());
             VoWLANGatewayService.start(context);
             if (claim.optBoolean("want_direct_route", false)) {
                 // Return the live gateway on this exact pairing interface, never guessed ports.

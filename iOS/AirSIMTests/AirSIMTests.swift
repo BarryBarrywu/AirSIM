@@ -3082,6 +3082,43 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(state.cloudOnline, true)
     }
 
+    func testPairingRecordsFollowAgentWithoutDuplicatingAfterAddressChange() throws {
+        let suite = "AirSIMTests.pairing-records.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let firstCredential = try VoWLANCredential(secret: Data(repeating: 1, count: 32))
+        let secondCredential = try VoWLANCredential(secret: Data(repeating: 2, count: 32))
+        let firstEndpoint = try VoWLANEndpoint(host: "192.168.1.10", controlPort: 7592, pcmPort: 7593)
+        let secondEndpoint = try VoWLANEndpoint(host: "192.168.1.11", controlPort: 7592, pcmPort: 7593)
+
+        VoWLANPairingRecordStore.remember(
+            agentID: "agent-a", credential: firstCredential, endpoint: firstEndpoint,
+            deviceName: "Android A", defaults: defaults)
+        XCTAssertEqual(VoWLANPairingRecordStore.records(defaults: defaults).count, 1)
+        XCTAssertEqual(VoWLANPairingRecordStore.records(defaults: defaults).first?.id,
+                       VoWLANPairingRecordStore.pairingID(for: firstCredential))
+
+        // Re-pairing the same Agent must replace its active secret, not add a
+        // second stale record, while keeping the old address as history.
+        VoWLANPairingRecordStore.remember(
+            agentID: "agent-a", credential: secondCredential, endpoint: secondEndpoint,
+            deviceName: "Android A", defaults: defaults)
+        let replaced = VoWLANPairingRecordStore.records(defaults: defaults)
+        XCTAssertEqual(replaced.count, 1)
+        XCTAssertEqual(replaced.first?.id, VoWLANPairingRecordStore.pairingID(for: secondCredential))
+        XCTAssertEqual(replaced.first?.endpoints.count, 2)
+
+        let thirdCredential = try VoWLANCredential(secret: Data(repeating: 3, count: 32))
+        VoWLANPairingRecordStore.remember(
+            agentID: "agent-b", credential: thirdCredential, endpoint: firstEndpoint,
+            deviceName: "Android B", defaults: defaults)
+        XCTAssertEqual(VoWLANPairingRecordStore.records(defaults: defaults).count, 2)
+        VoWLANPairingRecordStore.remove(agentID: "agent-a", defaults: defaults)
+        XCTAssertEqual(VoWLANPairingRecordStore.records(defaults: defaults).map(\.agentID), ["agent-b"])
+        VoWLANPairingRecordStore.removeAll(defaults: defaults)
+        XCTAssertTrue(VoWLANPairingRecordStore.records(defaults: defaults).isEmpty)
+    }
+
     func testAndroidAgentCycleVisitsEveryPairedDevice() {
         let agents = ["a", "b", "c", "d", "e"].map { id in
             AndroidAgentPresentation(

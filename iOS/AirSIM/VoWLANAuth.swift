@@ -145,6 +145,7 @@ enum VoWLANCredentialStore {
         var query = queryWithoutValue()
         query[kSecAttrAccount as String] = deviceAccount(agentID)
         SecItemDelete(query as CFDictionary)
+        VoWLANPairingRecordStore.remove(agentID: agentID)
     }
     static func hasAny() -> Bool {
         load() != nil || PairedAndroidDeviceStore.records().contains { load(agentID: $0.id) != nil }
@@ -217,6 +218,102 @@ enum VoWLANHealthProof {
         guard let supplied = Data(base64Encoded: encoded + String(repeating: "=", count: (4 - encoded.count % 4) % 4)) else { return false }
         return HMAC<SHA256>.isValidAuthenticationCode(supplied,
             authenticating: Data("AIRSIM-HEALTH1\n\(nonce)\n\(agentID)".utf8), using: SymmetricKey(data: credential.secret))
+    }
+}
+
+/// Client-side pairing list. The secret itself stays in Keychain; this record
+/// only keeps a fingerprint, endpoint history and last-seen time so a VoWLAN ↔
+/// Tailscale address change can update one pairing instead of creating a
+/// mismatched duplicate.
+struct VoWLANPairingRecord: Codable, Equatable, Identifiable, Sendable {
+    struct Endpoint: Codable, Equatable, Sendable {
+        let host: String
+        let controlPort: UInt16
+        let pcmPort: UInt16
+
+        init(_ endpoint: VoWLANEndpoint) {
+            host = endpoint.host
+            controlPort = endpoint.controlPort
+            pcmPort = endpoint.pcmPort
+        }
+
+        var endpoint: VoWLANEndpoint? {
+            try? VoWLANEndpoint(host: host, controlPort: controlPort, pcmPort: pcmPort)
+        }
+    }
+
+    let id: String
+    let agentID: String
+    var deviceName: String?
+    let createdAt: Date
+    var lastSeenAt: Date
+    var endpoints: [Endpoint]
+}
+
+enum VoWLANPairingRecordStore {
+    private static let key = "airsim.vowlan.pairing-records.v1"
+    private static let maxEndpoints = 4
+
+    static func pairingID(for credential: VoWLANCredential) -> String {
+        SHA256.hash(data: credential.secret).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func records(defaults: UserDefaults = .standard) -> [VoWLANPairingRecord] {
+        guard let data = defaults.data(forKey: key),
+              let values = try? JSONDecoder().decode([VoWLANPairingRecord].self, from: data) else {
+            return []
+        }
+        return values
+            .filter { !$0.id.isEmpty && !$0.agentID.isEmpty }
+            .sorted { $0.lastSeenAt > $1.lastSeenAt }
+    }
+
+    static func remember(
+        agentID: String,
+        credential: VoWLANCredential,
+        endpoint: VoWLANEndpoint?,
+        deviceName: String?,
+        defaults: UserDefaults = .standard,
+        now: Date = Date()
+    ) {
+        guard !agentID.isEmpty else { return }
+        let id = pairingID(for: credential)
+        var values = records(defaults: defaults)
+        // Keep the previous address history/created time when the same Agent is
+        // re-paired with a new secret (secret rotation).
+        let previous = values.first { $0.id == id }
+            ?? values.first { $0.agentID == agentID }
+        // One iPhone uses one active secret per Agent. Re-pairing replaces the
+        // stale record for the same Agent instead of leaving both behind.
+        values.removeAll { $0.agentID == agentID && $0.id != id }
+        var endpoints = previous?.endpoints ?? []
+        if let endpoint {
+            let next = VoWLANPairingRecord.Endpoint(endpoint)
+            endpoints.removeAll { $0 == next }
+            endpoints.append(next)
+            if endpoints.count > maxEndpoints { endpoints.removeFirst(endpoints.count - maxEndpoints) }
+        }
+        let record = VoWLANPairingRecord(
+            id: id,
+            agentID: agentID,
+            deviceName: deviceName ?? previous?.deviceName,
+            createdAt: previous?.createdAt ?? now,
+            lastSeenAt: now,
+            endpoints: endpoints
+        )
+        values.removeAll { $0.id == id }
+        values.append(record)
+        values.sort { $0.lastSeenAt > $1.lastSeenAt }
+        defaults.set(try? JSONEncoder().encode(Array(values.prefix(8))), forKey: key)
+    }
+
+    static func remove(agentID: String, defaults: UserDefaults = .standard) {
+        let values = records(defaults: defaults).filter { $0.agentID != agentID }
+        defaults.set(try? JSONEncoder().encode(values), forKey: key)
+    }
+
+    static func removeAll(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key)
     }
 }
 

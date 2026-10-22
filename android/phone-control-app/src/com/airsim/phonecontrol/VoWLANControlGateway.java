@@ -73,22 +73,24 @@ public final class VoWLANControlGateway implements Closeable {
                 respond(peer, 401, "{\"error\":\"authentication_failed\"}");
                 return;
             }
-            byte[] secret = VoWLANPairingStore.load(context);
+            String canonical = VoWLANAuth.canonicalRequest(
+                    request.method, request.path, request.body, timestamp, nonce);
+            long now = System.currentTimeMillis() / 1000L;
+            VoWLANPairingStore.Record matched = VoWLANPairingStore.match(
+                    context, signature, canonical, timestamp, now);
+            if (matched == null || !replayCache.accept(nonce, now)) {
+                respond(peer, 401, "{\"error\":\"authentication_failed\"}");
+                return;
+            }
             String identityProof = null;
+            byte[] requestSecret = matched.secretCopy();
             try {
-                String canonical = VoWLANAuth.canonicalRequest(
-                        request.method, request.path, request.body, timestamp, nonce);
-                long now = System.currentTimeMillis() / 1000L;
-                if (!VoWLANAuth.verify(secret, signature, canonical, timestamp, now)
-                        || !replayCache.accept(nonce, now)) {
-                    respond(peer, 401, "{\"error\":\"authentication_failed\"}");
-                    return;
-                }
                 if ("/v1/health".equals(request.path)) {
-                    identityProof = DirectGatewayRoutes.healthProof(secret, nonce, AndroidAgentIdentity.agentID(context));
+                    identityProof = DirectGatewayRoutes.healthProof(
+                            requestSecret, nonce, AndroidAgentIdentity.agentID(context));
                 }
             } finally {
-                Arrays.fill(secret, (byte) 0);
+                Arrays.fill(requestSecret, (byte) 0);
             }
             int responseStatus = 200;
             String output;
@@ -156,7 +158,7 @@ public final class VoWLANControlGateway implements Closeable {
                                 if (status.status() == 200 && active != null
                                         && created.equals(active.optString("android_id")) && !active.optString("id").isEmpty()) {
                                     String backendID = active.optString("id");
-                                    byte[] responseSecret = VoWLANPairingStore.load(context);
+                                    byte[] responseSecret = matched.secretCopy();
                                     try {
                                         output = new org.json.JSONObject(output).put("operation_id", operationID)
                                                 .put("android_id", created).put("backend_id", backendID)
