@@ -138,7 +138,7 @@ public final class VoWLANPairingStore {
                 values.add(new Record(id, secret,
                         item.optLong("created_at", 0), item.optLong("last_seen", 0)));
             }
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
             // A corrupt record must not block the legacy secret migration.
         }
         return values;
@@ -154,7 +154,7 @@ public final class VoWLANPairingStore {
                                 Base64.NO_WRAP | Base64.URL_SAFE | Base64.NO_PADDING))
                         .put("created_at", record.createdAtMillis)
                         .put("last_seen", record.lastSeenMillis));
-            } catch (RuntimeException ignored) {
+            } catch (Exception ignored) {
                 // Skip an unencodable record rather than losing all pairings.
             }
         }
