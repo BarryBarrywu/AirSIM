@@ -20,6 +20,8 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.ParcelUuid;
 
+import com.airsim.phonecontrol.AndroidAgentIdentity;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.ArrayDeque;
@@ -68,6 +70,9 @@ public final class VoBLEGattServer implements AutoCloseable {
     private BluetoothGattCharacteristic audioDownlink;
     private BluetoothGattCharacteristic diagnostics;
     private AdvertiseCallback advertiseCallback;
+    private String previousAdapterName;
+    private boolean adapterNameChanged;
+    private boolean includeAdvertisedName = true;
     private long generation;
 
     private record Outbound(BluetoothGattCharacteristic characteristic, byte[] value, boolean confirm) {}
@@ -99,12 +104,14 @@ public final class VoBLEGattServer implements AutoCloseable {
     @SuppressLint("MissingPermission")
     private synchronized void advertise(long token) {
         if (server == null || generation != token || advertiseCallback != null) return;
+        applyAdvertisingName();
         AdvertiseSettings settings = new AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setConnectable(true).setTimeout(0).setTxPowerLevel(
                         AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).build();
         AdvertiseData data = new AdvertiseData.Builder()
-                .setIncludeDeviceName(false).addServiceUuid(new ParcelUuid(SERVICE_UUID)).build();
+                .setIncludeDeviceName(includeAdvertisedName)
+                .addServiceUuid(new ParcelUuid(SERVICE_UUID)).build();
         advertiseCallback = new AdvertiseCallback() {
             @Override public void onStartSuccess(AdvertiseSettings ignored) {
                 if (isCurrent(token)) {
@@ -115,6 +122,17 @@ public final class VoBLEGattServer implements AutoCloseable {
             @Override public void onStartFailure(int code) {
                 synchronized (VoBLEGattServer.this) {
                     if (!isCurrent(token)) return;
+                    // Long model names plus the 128-bit service UUID can exceed
+                    // the legacy 31-byte advertising limit. Keep VoBLE working
+                    // by retrying without the name; the iOS scan then falls back
+                    // to its cached name instead of losing the peripheral.
+                    if (includeAdvertisedName && code == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                        includeAdvertisedName = false;
+                        advertiseCallback = null;
+                        com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_name_too_large");
+                        advertise(token);
+                        return;
+                    }
                     com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_failed code=" + code);
                     close();
                 }
@@ -126,6 +144,40 @@ public final class VoBLEGattServer implements AutoCloseable {
         } catch (RuntimeException error) {
             close();
             com.airsim.phonecontrol.BridgeLog.info("voble_gatt_advertising_exception type=" + error.getClass().getSimpleName());
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private synchronized void applyAdvertisingName() {
+        if (adapter == null || adapterNameChanged) return;
+        String model = AndroidAgentIdentity.deviceName();
+        if (model.isEmpty()) return;
+        try {
+            String current = adapter.getName();
+            if (model.equals(current)) return;
+            previousAdapterName = current;
+            if (adapter.setName(model)) {
+                adapterNameChanged = true;
+                com.airsim.phonecontrol.BridgeLog.info("voble_adapter_name_set name=" + model);
+            }
+        } catch (SecurityException error) {
+            com.airsim.phonecontrol.BridgeLog.info("voble_adapter_name_rejected");
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private synchronized void restoreAdvertisingName() {
+        if (!adapterNameChanged || adapter == null) return;
+        String previous = previousAdapterName;
+        previousAdapterName = null;
+        adapterNameChanged = false;
+        if (previous == null || previous.isEmpty()) return;
+        try {
+            if (adapter.isEnabled() && adapter.setName(previous)) {
+                com.airsim.phonecontrol.BridgeLog.info("voble_adapter_name_restored");
+            }
+        } catch (SecurityException ignored) {
+            com.airsim.phonecontrol.BridgeLog.info("voble_adapter_name_restore_rejected");
         }
     }
 
@@ -439,6 +491,8 @@ public final class VoBLEGattServer implements AutoCloseable {
             adapter.getBluetoothLeAdvertiser().stopAdvertising(advertiseCallback);
         }
         advertiseCallback = null;
+        restoreAdvertisingName();
+        includeAdvertisedName = true;
         if (server != null) server.close();
         server = null;
         devices.clear();
