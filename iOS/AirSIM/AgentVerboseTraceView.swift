@@ -21,6 +21,7 @@ enum AgentVerboseTraceFilter: String, CaseIterable, Identifiable {
     case relay = "Relay"
     case vowlan = "VoWLAN"
     case voble = "VoBLE"
+    case sms = "短信"
 
     var id: String { rawValue }
 }
@@ -40,6 +41,7 @@ private struct AgentVerboseTimelineItem: Identifiable, Equatable {
         switch category.lowercased() {
         case "vowlan": return "wifi"
         case "voble", "bluetooth": return "antenna.radiowaves.left.and.right"
+        case "sms": return "message.fill"
         case "http": return "arrow.left.arrow.right"
         case "voice", "cloud-call", "cloud-call-control": return "waveform"
         case "relay": return "network"
@@ -52,6 +54,7 @@ private struct AgentVerboseTimelineItem: Identifiable, Equatable {
         switch category.lowercased() {
         case "vowlan": return .green
         case "voble", "bluetooth": return .cyan
+        case "sms": return .green
         case "voice", "cloud-call", "cloud-call-control": return .purple
         case "relay": return .indigo
         case "http": return .blue
@@ -371,6 +374,7 @@ struct AgentVerboseTraceView: View {
             case .relay: return item.source == "RELAY" || item.category.lowercased() == "relay"
             case .vowlan: return ["vowlan", "call-audio"].contains(item.category.lowercased())
             case .voble: return ["voble", "bluetooth"].contains(item.category.lowercased())
+            case .sms: return item.category.lowercased() == "sms"
             }
         }
     }

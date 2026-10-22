@@ -1150,6 +1150,33 @@ test("Watch answer sends a background ownership event to iPhone CallKit", async 
   assert.equal(captured[0].payload.owner, "watch");
 });
 
+test("Android local answer sends a background ownership event to iPhone CallKit", async () => {
+  const env = testEnvironment();
+  await worker.fetch(post("/v1/devices/register", registration), env);
+  const captured = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    captured.push({ url, options, payload: JSON.parse(options.body) });
+    return new Response("", { status: 200 });
+  };
+  try {
+    const response = await worker.fetch(post("/v1/events/call-owner", {
+      event: "call_owner", device_id: registration.device_id,
+      device_secret: registration.device_secret, call_id: "android-call",
+      call_uuid: "d9b59660-05bb-4ea8-9aeb-4505b35c93f9",
+      owner: "android", phase: "active", generation: 3,
+    }), env);
+    assert.equal(response.status, 202);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].options.headers["apns-push-type"], "background");
+  assert.equal(captured[0].payload.owner, "android");
+  assert.equal(captured[0].payload.phase, "active");
+  assert.equal(captured[0].payload.generation, 3);
+});
+
 test("legacy Agent call remains available on iPhone while Watch media is skipped", async () => {
   const env = testEnvironment();
   await worker.fetch(post("/v1/devices/register", registration), env);

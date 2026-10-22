@@ -69,7 +69,7 @@ extension CallKitActionHandling {
     func callKitCallDidEnd() {}
 }
 
-/// 挂断后 PushKit、USB 长轮询与系统回调可能乱序到达。短期保留已经结束的
+/// 挂断后 PushKit、本地长轮询与系统回调可能乱序到达。短期保留已经结束的
 /// call_id/UUID，避免同一通电话在 CallKit 关闭后被晚到事件重新拉起。
 struct IncomingCallDeduplicator {
     let retention: TimeInterval
@@ -184,10 +184,13 @@ final class CallKitController: NSObject {
         return currentUUID
     }
 
-    func matchesCurrentCall(callID: String?, uuid: UUID?, agentID: String? = nil) -> Bool {
+    func matchesCurrentCall(callID: String?, uuid: UUID?, agentID: String? = nil,
+                            generation: UInt64? = nil) -> Bool {
         guard currentUUID != nil else { return false }
         guard callID != nil || uuid != nil else { return false }
         if let agentID, agentID != (currentAgentID ?? currentIncomingPush?.agentID) { return false }
+        if let generation, let pushed = currentIncomingPush,
+           generation != pushed.generation { return false }
         let backendMatches = callID == nil || callID == currentBackendID
         let uuidMatches = uuid == nil || uuid == currentUUID
         return backendMatches && uuidMatches
@@ -215,7 +218,7 @@ final class CallKitController: NSObject {
         synchronize(call: call, previous: nil, callerName: nil)
     }
 
-    /// PushKit 冷启动必须立即把同一通真实来电交给系统。后续 USB 状态同步会复用
+    /// PushKit 冷启动必须立即把同一通真实来电交给系统。后续本地状态同步会复用
     /// call_id/UUID，不会再生成第二个系统来电。
     func reportIncomingPush(
         _ call: IncomingVoIPCall,

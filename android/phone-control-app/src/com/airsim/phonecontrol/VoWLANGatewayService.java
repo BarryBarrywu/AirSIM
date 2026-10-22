@@ -154,9 +154,11 @@ public final class VoWLANGatewayService extends Service {
                         hotspot != null || !extraAddresses.isEmpty(), paired, agentReady, pcmReady, dialerRoleHeld)) {
                     // A Wi-Fi gateway and a userspace-VPN loopback gateway coexist.
                     // Never close the active VPN call because Wi-Fi disappeared.
+                    // Start overlay/loopback listeners first so the Bonjour record can
+                    // include the Tailscale endpoint in the same advertisement.
+                    syncAdditionalGateways(extraAddresses, avf);
                     if (hotspot != null) ensureStarted(hotspot, avf);
                     else stopPrimaryGateway();
-                    syncAdditionalGateways(extraAddresses, avf);
                     update(hotspot != null ? "VoWLAN 就绪 · " + hotspot.getHostAddress()
                             : "手动直连网关就绪 · 可通过 Tailscale 连接");
                 } else {
@@ -285,6 +287,23 @@ public final class VoWLANGatewayService extends Service {
         info.setAttribute("host", activeHotspot);
         info.setAttribute("control_port", Integer.toString(control.localPort()));
         info.setAttribute("pcm_port", Integer.toString(pcm.localPort()));
+        String altHost = null;
+        int altControl = -1;
+        int altPcm = -1;
+        synchronized (this) {
+            for (Map.Entry<String, ExtraGateway> entry : extraGateways.entrySet()) {
+                if (!VoWLANNetworkPolicy.isOverlayIPv4(entry.getKey())) continue;
+                altHost = entry.getKey();
+                altControl = entry.getValue().control().localPort();
+                altPcm = entry.getValue().pcm().localPort();
+                break;
+            }
+        }
+        if (altHost != null && altControl > 0 && altPcm > 0) {
+            info.setAttribute("alt_host", altHost);
+            info.setAttribute("alt_control_port", Integer.toString(altControl));
+            info.setAttribute("alt_pcm_port", Integer.toString(altPcm));
+        }
         info.setAttribute("caps", "control,pcm");
         advertisement = new NsdManager.RegistrationListener() {
             @Override public void onServiceRegistered(NsdServiceInfo ignored) {

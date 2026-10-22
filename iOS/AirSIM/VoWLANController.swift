@@ -63,6 +63,22 @@ struct VoWLANDiscoveredAgent: Equatable, Identifiable, Sendable {
     let model: String?
     let phoneNumber: String?
     let agentKind: String?
+    /// Android advertises an additional Tailscale/overlay listener in the same Bonjour
+    /// record. It is used only after the LAN endpoint fails a signed health probe.
+    let alternateEndpoint: VoWLANEndpoint?
+
+    init(id: String, endpoint: VoWLANEndpoint, deviceName: String,
+         manufacturer: String?, model: String?, phoneNumber: String?, agentKind: String?,
+         alternateEndpoint: VoWLANEndpoint? = nil) {
+        self.id = id
+        self.endpoint = endpoint
+        self.deviceName = deviceName
+        self.manufacturer = manufacturer
+        self.model = model
+        self.phoneNumber = phoneNumber
+        self.agentKind = agentKind
+        self.alternateEndpoint = alternateEndpoint
+    }
 
     func refreshed(with identity: VoWLANHealthIdentity) -> Self {
         Self(id: identity.agentID?.isEmpty == false ? identity.agentID! : id,
@@ -70,7 +86,8 @@ struct VoWLANDiscoveredAgent: Equatable, Identifiable, Sendable {
              deviceName: identity.deviceName?.isEmpty == false ? identity.deviceName! : deviceName,
              manufacturer: identity.manufacturer ?? manufacturer, model: identity.model ?? model,
              phoneNumber: identity.phoneNumber?.isEmpty == false ? identity.phoneNumber : nil,
-             agentKind: identity.agentKind ?? agentKind)
+             agentKind: identity.agentKind ?? agentKind,
+             alternateEndpoint: alternateEndpoint)
     }
 }
 
@@ -100,6 +117,17 @@ struct VoWLANHealthIdentity: Decodable {
 }
 
 enum VoWLANRouteCandidates {
+    /// A saved route for the same phone at a different address (typically Tailscale)
+    /// is the fallback when the current LAN route stops responding.
+    static func alternateManualRoute(
+        _ routes: [VoWLANManualRoute], agentID: String?, failed: VoWLANEndpoint
+    ) -> VoWLANManualRoute? {
+        guard let agentID else { return nil }
+        return routes.first {
+            $0.agentID == agentID && $0.endpoint != nil && $0.endpoint != failed
+        }
+    }
+
     static func merge(discovered: [VoWLANDiscoveredAgent], manual: [VoWLANManualRoute],
                       live: [VoWLANDiscoveredAgent], preferred: VoWLANEndpoint?) -> [VoWLANDiscoveredAgent] {
         var agents = Dictionary(discovered.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -157,7 +185,7 @@ enum ConnectionStatusHeadline {
         switch summary {
         case .localOnline: return L10n.t("在线")
         case .localOnlineNoService: return "在线 · 蜂窝无服务"
-        case .cloudOnly: return "云端在线 · USB 重连中"
+        case .cloudOnly: return "云端在线 · 网络重连中"
         case .offline: return L10n.t("离线")
         }
     }
@@ -195,27 +223,27 @@ struct ModuleConnectionPresentation: Equatable {
         switch summary {
         case .localOnline:
             return Self(
-                title: "模块在线", routeTitle: "USB ECM 直连",
-                description: message ?? "USB ECM 已连接，状态会自动刷新",
+                title: "模块在线", routeTitle: "局域网直连",
+                description: message ?? "本地网络已连接，状态会自动刷新",
                 level: .online, systemImage: "checkmark.circle.fill"
             )
         case .localOnlineNoService:
             return Self(
-                title: "模块在线 · 无服务", routeTitle: "USB ECM 已连接",
-                description: message ?? "USB ECM 已连接，蜂窝网络正在自动恢复",
+                title: "模块在线 · 无服务", routeTitle: "本地网络已连接",
+                description: message ?? "本地网络已连接，蜂窝网络正在自动恢复",
                 level: .warning, systemImage: "antenna.radiowaves.left.and.right.slash"
             )
         case .cloudOnly:
             return Self(
                 title: "云端在线", routeTitle: "公网 Relay",
-                description: message ?? "USB ECM 本地连接中断，模块仍可通过公网接收来电和短信",
+                description: message ?? "本地网络中断，模块仍可通过公网接收来电和短信",
                 level: .cloud, systemImage: "icloud.fill"
             )
         case .offline:
             return Self(
                 title: reconnecting ? "正在重新连接" : "模块离线",
                 routeTitle: reconnecting ? "正在恢复连接" : "连接不可用",
-                description: message ?? "请检查模块供电、蜂窝网络与 USB ECM 连接",
+                description: message ?? "请检查 Android 供电、蜂窝网络与局域网连接",
                 level: reconnecting ? .warning : .offline,
                 systemImage: reconnecting ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill"
             )
@@ -379,6 +407,7 @@ final class VoWLANController: ObservableObject {
     private var networkRecoveryTask: Task<Void, Never>?
     private var networkRecoveryPlan = VoWLANNetworkRecoveryPlan()
     private var hasObservedNetworkPath = false
+    private var lastNetworkAvailability: Bool?
 
     func forget(_ agentID: String) {
         identityEpoch &+= 1
@@ -567,7 +596,9 @@ final class VoWLANController: ObservableObject {
     private func mergingManualRoutes(with discovered: [VoWLANDiscoveredAgent]) -> [VoWLANDiscoveredAgent] {
         VoWLANRouteCandidates.merge(discovered: discovered,
             manual: VoWLANManualRouteStore.routes().filter { PairedAndroidDeviceStore.permits($0.agentID) },
-            live: discoveredAgents, preferred: availability.isOnlineForDisplay ? discoveredEndpoint : nil)
+            // Keep the currently selected endpoint stable while probing; a LAN address
+            // that just failed must not overwrite a Tailscale fallback before probeNow runs.
+            live: discoveredAgents, preferred: discoveredEndpoint)
     }
 
     private func restoreManualRoutes() {
@@ -613,9 +644,15 @@ final class VoWLANController: ObservableObject {
         let token = networkRecoveryPlan.changed(wifiAvailable: wifiAvailable)
         let initialSnapshot = !hasObservedNetworkPath
         hasObservedNetworkPath = true
-        // Starting the monitor emits an initial snapshot, not a path transition. Discovery
-        // already started normally; do not invalidate an in-flight pairing/VPN probe here.
-        guard !initialSnapshot else { return }
+        let previousAvailability = lastNetworkAvailability
+        lastNetworkAvailability = wifiAvailable
+        // NWPathMonitor can emit periodic "satisfied" snapshots on the same Wi-Fi
+        // (VPN/route refresh). Rebuilding Bonjour on every refresh produced hundreds
+        // of BROWSER_RESTARTED events; only a real availability transition triggers it.
+        if initialSnapshot || previousAvailability == wifiAvailable {
+            if wifiAvailable, discoveredEndpoint != nil { Task { await probeNow() } }
+            return
+        }
         networkRecoveryTask?.cancel()
         // Reject probes begun on the previous network, including an old successful response.
         identityEpoch &+= 1
@@ -687,7 +724,7 @@ final class VoWLANController: ObservableObject {
                 Self.apply(signed, to: &request)
                 // NWConnection-based transport: ATS does not apply to the
                 // 100.64/10 tailnet address, and the system route is used.
-                let response = try await WiredHTTPTransport(policy: .vowlan).send(request)
+                let response = try await WiredHTTPTransport().send(request)
                 return (response.body, response.statusCode, signed.nonce)
             }
             guard status == 200,
@@ -723,6 +760,42 @@ final class VoWLANController: ObservableObject {
         } catch {
             guard epoch == identityEpoch, discoveredEndpoint == endpoint, probeGeneration.accepts(probe) else { return }
             availability = .unavailable(VoWLANProbeRecovery.userFacingMessage(for: error))
+            // LAN Bonjour discovery does not cross networks; when it stops responding,
+            // use another saved direct address for the SAME phone (Tailscale/VPN).
+            let failedAgent = discoveredAgents.first(where: { $0.endpoint == endpoint })
+            let agentID = failedAgent?.id ?? AndroidAgentBindingPreference.selected()
+            if let advertised = failedAgent?.alternateEndpoint, advertised != endpoint {
+                // Persist the advertised Tailscale listener so the choice survives the
+                // next Bonjour result and a cold start without the LAN advertisement.
+                if let agentID, PairedAndroidDeviceStore.permits(agentID) {
+                    try? VoWLANManualRouteStore.save(VoWLANManualRoute(
+                        agentID: agentID, host: advertised.host,
+                        controlPort: advertised.controlPort, pcmPort: advertised.pcmPort))
+                }
+                discoveredEndpoint = advertised
+                availability = .discovered(advertised, at: Date())
+                await AgentVerboseTraceRecorder.shared.recordEvent(
+                    source: "ios", category: "vowlan", phase: "fallback",
+                    title: "VoWLAN 切换到 Android 通告的 Tailscale 地址",
+                    fields: ["host": advertised.host, "control_port": String(advertised.controlPort)]
+                )
+                await probeNow()
+                return
+            }
+            if let alternate = VoWLANRouteCandidates.alternateManualRoute(
+                VoWLANManualRouteStore.routes().filter { PairedAndroidDeviceStore.permits($0.agentID) },
+                agentID: agentID, failed: endpoint
+            )?.endpoint {
+                discoveredEndpoint = alternate
+                availability = .discovered(alternate, at: Date())
+                await AgentVerboseTraceRecorder.shared.recordEvent(
+                    source: "ios", category: "vowlan", phase: "fallback",
+                    title: "VoWLAN 切换到已保存直连地址",
+                    fields: ["host": alternate.host, "control_port": String(alternate.controlPort)]
+                )
+                await probeNow()
+                return
+            }
             if let saved = manualRoute(for: endpoint),
                let alternate = latestBonjourAgents.first(where: { $0.id == saved.agentID && $0.endpoint != endpoint }) {
                 discoveredAgents = mergingManualRoutes(with: latestBonjourAgents)
@@ -756,6 +829,12 @@ final class VoWLANController: ObservableObject {
         }
         let fallbackID = "vowlan-\(host)-\(control)"
         let deviceName = record["device_name"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var alternate: VoWLANEndpoint?
+        if let altHost = record["alt_host"], altHost != host,
+           let altControl = record["alt_control_port"].flatMap(UInt16.init),
+           let altPCM = record["alt_pcm_port"].flatMap(UInt16.init) {
+            alternate = try? VoWLANEndpoint(host: altHost, controlPort: altControl, pcmPort: altPCM)
+        }
         return VoWLANDiscoveredAgent(
             id: record["agent_id"]?.isEmpty == false ? record["agent_id"]! : fallbackID,
             endpoint: endpoint,
@@ -763,7 +842,8 @@ final class VoWLANController: ObservableObject {
             manufacturer: record["manufacturer"],
             model: record["model"],
             phoneNumber: nil,
-            agentKind: record["agent_kind"]
+            agentKind: record["agent_kind"],
+            alternateEndpoint: alternate
         )
     }
 }

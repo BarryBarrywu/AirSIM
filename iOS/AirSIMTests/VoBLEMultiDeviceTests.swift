@@ -292,7 +292,7 @@ final class VoBLEMultiDeviceTests: XCTestCase {
         XCTAssertTrue(ids.allSatisfy { hub.sessions[$0]?.central.authenticatedIdentity == nil })
     }
 
-    func testDeferredBluetoothModeExitStopsRadioWhenOwnedCallEnds() async throws {
+    func testBluetoothLaneStaysAvailableAfterModeExitAndTerminal() async throws {
         let previous = ConnectionModePreference.selected()
         ConnectionModePreference.set(.bluetooth)
         defer { ConnectionModePreference.set(previous) }
@@ -305,11 +305,11 @@ final class VoBLEMultiDeviceTests: XCTestCase {
         model.setConnectionMode(.vowlan)
         XCTAssertTrue(radio.scanning, "keep active Bluetooth lane until terminal")
         await model.hangup()
-        XCTAssertFalse(radio.scanning, "release deferred Bluetooth resources after terminal")
+        XCTAssertTrue(radio.scanning, "BLE standby link remains after terminal")
         model.stop()
     }
 
-    func testModeExitKeepsAuthenticatedCentralUntilHangupCommandCompletes() async throws {
+    func testModeExitKeepsAuthenticatedCentralThroughHangup() async throws {
         let previous = ConnectionModePreference.selected()
         ConnectionModePreference.set(.bluetooth)
         defer { ConnectionModePreference.set(previous) }
@@ -333,8 +333,8 @@ final class VoBLEMultiDeviceTests: XCTestCase {
             XCTAssertEqual(session.central.state, .ready, "keep the lane until the command reply")
         }
         await model.hangup()
-        XCTAssertEqual(session.central.state, .stopped)
-        XCTAssertFalse(hub.radio.scanning)
+        XCTAssertEqual(session.central.state, .ready, "keep authenticated BLE standby after hangup")
+        XCTAssertTrue(hub.radio.scanning, "BLE scanner stays available for reconnect")
         model.stop()
     }
 

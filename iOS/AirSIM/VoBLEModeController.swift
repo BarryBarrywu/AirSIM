@@ -33,8 +33,11 @@ final class VoBLEModeController {
     func activate(_ mode: AirSIMConnectionMode, preservingActiveBluetooth: Bool = false) -> VoBLEModeActions {
         selectedMode = mode
         let policy = ConnectionModeRuntimePolicy(mode: mode)
-        if policy.startsBluetooth { bluetooth.start() }
-        else if !preservingActiveBluetooth { bluetooth.stop() }
+        // Keep the BLE link alive when the user switches between VoWLAN, cloud
+        // and Bluetooth modes. Stopping the hub here forced a full rediscovery
+        // and lost the authenticated standby link on every mode change.
+        _ = preservingActiveBluetooth
+        bluetooth.start()
         return VoBLEModeActions(
             startVoWLAN: policy.startsVoWLAN,
             startCloud: policy.startsCloud

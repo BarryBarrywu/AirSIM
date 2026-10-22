@@ -35,7 +35,7 @@ struct IncomingVoIPCall: Equatable, Sendable {
     let isVirtual: Bool
     let isOutgoing: Bool
     let ttsText: String?
-    /// 公网 PCM 仅作为本地 ECM 控制链路不可用时的回退。完整带签名地址只保存在内存中。
+    /// 公网 PCM 仅作为 VoWLAN 控制链路不可用时的回退。完整带签名地址只保存在内存中。
     let authenticatedMediaURL: URL?
     let requestedMediaTransport: CloudMediaTransport
 
@@ -185,7 +185,6 @@ struct IncomingVoIPCall: Equatable, Sendable {
 enum CallTransport: Equatable, Sendable {
     case vowlan
     case bluetooth
-    case moduleLocal
     case cloud
 }
 
@@ -404,7 +403,6 @@ struct CloudSelfTestReport: Equatable, Sendable {
 }
 
 struct CloudModeCapabilities: Equatable, Sendable {
-    let usbCallingAndSMS = true
     let pushKitAndCallKit = true
     let apnsSMSNotifications = true
     let notificationRelay = true
@@ -471,12 +469,10 @@ enum PushDeviceIdentity {
 enum CallTransportPolicy {
     static func preferred(
         vowlanReady: Bool,
-        moduleLocalReachable: Bool,
         cloudMediaAvailable: Bool,
         cloudMediaEnabled: Bool = true
     ) -> CallTransport? {
         if vowlanReady { return .vowlan }
-        if moduleLocalReachable { return .moduleLocal }
         if cloudMediaEnabled && cloudMediaAvailable { return .cloud }
         return nil
     }
@@ -797,7 +793,7 @@ struct IncomingRemoteSMS: Equatable, Sendable {
     }
 }
 
-/// PushKit 是被系统挂起或终止后恢复 CallKit 的入口；模块 USB 长轮询仍作为前台兜底。
+/// PushKit 是被系统挂起或终止后恢复 CallKit 的入口；本地长轮询仍作为前台兜底。
 @MainActor
 final class VoIPPushController: NSObject {
     static let shared = VoIPPushController()
@@ -824,7 +820,7 @@ final class VoIPPushController: NSObject {
     private var nextRegistrationAttempt = Date.distantPast
     private var nextRelayRegistrationAttempt = Date.distantPast
     private var registrationRetryTask: Task<Void, Never>?
-    private var latestRegistrationAPI = AirSIMAPI()
+    private var latestRegistrationAPI: AirSIMAPI?
     private var activityKitRegistrationStarted = false
     private var activityKitRegistrationTasks: [Task<Void, Never>] = []
     private var observedActivityIDs = Set<String>()
@@ -1019,9 +1015,9 @@ final class VoIPPushController: NSObject {
 
     func syncRegistration(with requestedAPI: AirSIMAPI? = nil) async {
         guard CloudModePreference.isEnabled() else { return }
-        let api = requestedAPI ?? latestRegistrationAPI
+        guard let api = requestedAPI ?? latestRegistrationAPI else { return }
         if PushRegistrationAttemptPolicy.shouldResetBackoff(
-            previousRoute: latestRegistrationAPI.route,
+            previousRoute: latestRegistrationAPI?.route,
             currentRoute: api.route
         ) {
             nextRegistrationAttempt = .distantPast
@@ -1129,7 +1125,7 @@ final class VoIPPushController: NSObject {
         )
         let routeWasSuperseded = PushRegistrationAttemptPolicy.shouldResetBackoff(
             previousRoute: attemptedRoute,
-            currentRoute: latestRegistrationAPI.route
+            currentRoute: latestRegistrationAPI?.route
         )
         let retryDelay = agentRegistered
             ? max(30, nextRelayRegistrationAttempt.timeIntervalSinceNow) : 30
@@ -1142,12 +1138,6 @@ final class VoIPPushController: NSObject {
             registrationRetryTask?.cancel()
             registrationRetryTask = nil
         }
-    }
-
-    /// 忽略本次进程内的注册指纹缓存，供用户主动执行云端修复。
-    func forceRegistrationSync(with api: AirSIMAPI = AirSIMAPI()) async {
-        resetRegistrationBackoff()
-        await syncRegistration(with: api)
     }
 
     func registrationReadiness() -> PushRegistrationReadiness {
@@ -1250,21 +1240,7 @@ final class VoIPPushController: NSObject {
         }
     }
 
-    func setCloudModeEnabled(_ enabled: Bool, with api: AirSIMAPI = AirSIMAPI()) async {
-        guard CloudModePreference.isEnabled() else { return }
-        resetRegistrationBackoff()
-        WatchCallCoordinator.shared.refreshMediaPolicy()
-        // PushKit、CallKit 与 APNs 是本地 USB 模式的通知控制面，不能跟随
-        // 公网 PCM 开关一起关闭。Agent 始终保持通知中继注册；偏好值只控制
-        // 云端状态查询与网络 PCM 媒体通道。
-        try? await api.setPushCloudEnabled(true)
-        if !enabled {
-            await IPhoneCloudCallSession.shared.end()
-        }
-        await syncRegistration(with: api)
-    }
-
-    /// 本地 USB/ECM 不可达时，通过 Relay 最近心跳判断 Agent 是否仍在公网在线。
+    /// 本地 VoWLAN 不可达时，通过 Relay 最近心跳判断 Agent 是否仍在公网在线。
     /// 请求体中的设备密钥仅在内存中编码，并使用不落盘的临时 URLSession。
     func fetchCloudAgentStatus() async throws -> CloudAgentStatus {
         guard CloudModePreference.isEnabled() else {

@@ -322,6 +322,63 @@ final class OtherDeviceCallReminderTests: XCTestCase {
             XCTAssertEqual(ConnectionModeRuntimePolicy(mode: mode).startsCloud, mode == .cloud || mode == .automatic)
         }
     }
+    func testAndroidAnswerPolicyRequiresExactIdentityAndUnansweredState() {
+        let event = DeviceCallEvent(agentID: "A", callID: "call-1", state: .active,
+            transport: .bluetooth, transportEpoch: 1, backendGeneration: 2)
+        XCTAssertEqual(AndroidAnsweredCloudCallPolicy.action(
+            event: event, cloudCallID: "call-1", cloudAgentID: "A", cloudGeneration: 2,
+            cloudState: .ringing, answered: false, systemAnswered: false), .answeredElsewhere)
+        XCTAssertEqual(AndroidAnsweredCloudCallPolicy.action(
+            event: DeviceCallEvent(agentID: "A", callID: "call-1", state: .ended,
+                transport: .bluetooth, transportEpoch: 1, backendGeneration: 2),
+            cloudCallID: "call-1", cloudAgentID: "A", cloudGeneration: 2,
+            cloudState: .ringing, answered: false, systemAnswered: false), .ended)
+        XCTAssertNil(AndroidAnsweredCloudCallPolicy.action(
+            event: event, cloudCallID: "call-1", cloudAgentID: "B", cloudGeneration: 2,
+            cloudState: .ringing, answered: false, systemAnswered: false))
+        XCTAssertNil(AndroidAnsweredCloudCallPolicy.action(
+            event: event, cloudCallID: "other-call", cloudAgentID: "A", cloudGeneration: 2,
+            cloudState: .ringing, answered: false, systemAnswered: false))
+        XCTAssertNil(AndroidAnsweredCloudCallPolicy.action(
+            event: event, cloudCallID: "call-1", cloudAgentID: "A", cloudGeneration: 3,
+            cloudState: .ringing, answered: false, systemAnswered: false))
+        XCTAssertNil(AndroidAnsweredCloudCallPolicy.action(
+            event: event, cloudCallID: "call-1", cloudAgentID: "A", cloudGeneration: 2,
+            cloudState: .ringing, answered: true, systemAnswered: false))
+        XCTAssertNil(AndroidAnsweredCloudCallPolicy.action(
+            event: event, cloudCallID: "call-1", cloudAgentID: "A", cloudGeneration: 2,
+            cloudState: .active, answered: false, systemAnswered: false))
+    }
+
+    func testAndroidAnswerRetiresCloudRingingPageWithoutHangup() throws {
+        let previous = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.automatic)
+        defer {
+            ConnectionModePreference.set(previous)
+            IPhoneCloudCallSession.shared.stop()
+        }
+        let backend = ReminderBackend()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            deviceBackend: { _, _ in backend })
+        defer { model.stop() }
+        let cloud = try IncomingVoIPCall(userInfo: [
+            "event": "incoming_call", "call_id": "cloud-answer-1",
+            "call_uuid": UUID().uuidString, "generation": 2,
+            "number": "10086", "agent_id": "A",
+        ])
+        model.callKitDidReceiveIncoming(cloud)
+        XCTAssertEqual(model.callLifecycleSnapshot.callID, "cloud-answer-1")
+        XCTAssertEqual(model.callLifecycleSnapshot.state, .ringing)
+
+        _ = model.receiveOwnedCallEvent(DeviceCallEvent(
+            agentID: "A", callID: "cloud-answer-1", state: .active,
+            transport: .bluetooth, transportEpoch: 1, backendGeneration: 2,
+            number: "10086", direction: "incoming"))
+        XCTAssertTrue(model.callLifecycleSnapshot.state.isTerminal)
+        XCTAssertNil(model.remoteCall)
+        XCTAssertTrue(backend.ended.isEmpty, "Android answer must not send a hangup")
+        XCTAssertNil(model.callKit.currentSystemCallUUID)
+    }
 }
 
 @MainActor

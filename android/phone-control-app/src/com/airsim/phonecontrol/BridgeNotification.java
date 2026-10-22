@@ -10,7 +10,8 @@ import android.net.Uri;
 
 public final class BridgeNotification {
     public static final String CHANNEL = "airsim_bridge_status";
-    private static final String CALL_CHANNEL = "airsim_incoming_calls_v1";
+    public static final String GROUP = "airsim_services";
+    private static final String CALL_CHANNEL = "airsim_incoming_calls_v2";
     public static final int WATCHDOG_ID = 5071;
     public static final int RECOVERY_ID = 5074;
     private static final int CALL_ID = 5072;
@@ -26,7 +27,7 @@ public final class BridgeNotification {
 
     private static void createCallChannel(Context context) {
         NotificationChannel channel = new NotificationChannel(
-                CALL_CHANNEL, "AirSIM 来电", NotificationManager.IMPORTANCE_HIGH);
+                CALL_CHANNEL, "AirSIM 来电（全屏）", NotificationManager.IMPORTANCE_MAX);
         // The iPhone is the primary ringer in remote_silent mode. Android still
         // needs a visible, actionable call surface when the phone is locked.
         channel.setSound(null, null);
@@ -42,10 +43,20 @@ public final class BridgeNotification {
                 .setSmallIcon(android.R.drawable.stat_sys_phone_call)
                 .setContentTitle("AirSIM 通话桥")
                 .setContentText(detail)
+                .setSubText("默认卡：" + DefaultCallAccount.selectedLabel(context))
                 .setContentIntent(open)
+                .setGroup(GROUP)
+                .addAction(android.R.drawable.ic_menu_manage, "切换默认卡",
+                        CallNotificationActionReceiver.switchSimIntent(context))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build();
+    }
+
+    public static void notifyStatus(Context context, String detail) {
+        createChannel(context);
+        context.getSystemService(NotificationManager.class)
+                .notify(WATCHDOG_ID, status(context, detail));
     }
 
     public static Notification terminalRecovery(Context context, Intent terminal) {
@@ -72,12 +83,14 @@ public final class BridgeNotification {
                 .setContentTitle("AirSIM VoWLAN")
                 .setContentText(detail)
                 .setContentIntent(open)
+                .setGroup(GROUP)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build();
     }
 
-    public static void showCall(Context context, String callId, String direction, String mode, String state) {
+    public static void showCall(Context context, String callId, String direction,
+                                String mode, String state, String number) {
         if (callId == null || callId.isEmpty() || "ended".equals(state) || "unknown".equals(state)) return;
         boolean incoming = "incoming".equals(direction) && "incoming".equals(state);
         if (incoming) createCallChannel(context);
@@ -89,16 +102,23 @@ public final class BridgeNotification {
                 .putExtra(CallScreenActivity.EXTRA_CALL_ID, callId);
         PendingIntent screen = PendingIntent.getActivity(context, 1, screenIntent,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        String displayNumber = number == null ? "" : number.trim();
         String text = incoming
-                ? (AppConfig.MODE_REMOTE_SILENT.equals(mode)
-                    ? "已转送 iPhone；也可在此处理" : "可在此接听或拒接")
+                ? (displayNumber.isEmpty()
+                    ? "未知号码 · 可直接接听或拒接"
+                    : "可直接在 Android 接听或拒接")
                 : "通话进行中 · 点按查看";
         Notification.Builder builder = new Notification.Builder(context, incoming ? CALL_CHANNEL : CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_phone_call)
-                .setContentTitle(incoming ? "AirSIM 来电" : "AirSIM 通话")
+                .setContentTitle(incoming
+                        ? (displayNumber.isEmpty() ? "AirSIM 来电" : displayNumber)
+                        : "AirSIM 通话")
                 .setContentText(text)
                 .setContentIntent(screen)
                 .setCategory(Notification.CATEGORY_CALL)
+                .setSubText(incoming
+                        ? "AirSIM · " + (AppConfig.MODE_REMOTE_SILENT.equals(mode) ? "远端静默" : "本机显示") + " · 来电"
+                        : "AirSIM · 通话")
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true);

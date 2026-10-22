@@ -48,8 +48,8 @@ enum LiveActivityStateBuilder {
         downloadBytesPerSecond: Double? = nil,
         uploadBytesPerSecond: Double? = nil
     ) -> AirSIMCallActivityAttributes.ContentState {
-        // USB 本地控制、Relay 心跳、VoWLAN、VoBLE 任一路可达即视为 Agent 在线。
-        // 双通道下 USB ECM 断开但 BLE 仍连着时，不能把整个 Agent 误报成离线。
+        // VoWLAN 本地控制、Relay 心跳、VoBLE 任一路可达即视为 Agent 在线。
+        // 双通道下 Wi-Fi 断开但 BLE 仍连着时，不能把整个 Agent 误报成离线。
         let localAgentOnline = agent?.vowlanOnline == true || agent?.bluetoothOnline == true
         guard moduleOnline || cloudOnline || localAgentOnline else {
             return .init(

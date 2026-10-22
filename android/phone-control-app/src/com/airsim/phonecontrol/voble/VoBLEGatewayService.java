@@ -23,6 +23,7 @@ import com.airsim.phonecontrol.AppConfig;
 import com.airsim.phonecontrol.BridgeLog;
 import com.airsim.phonecontrol.CallRepository;
 import com.airsim.phonecontrol.RuntimeMode;
+import com.airsim.phonecontrol.SMSCommandExecutor;
 import com.airsim.phonecontrol.SimSlotJson;
 import com.airsim.phonecontrol.RemoteAudioSessionRegistry;
 
@@ -161,6 +162,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
                 .setContentTitle("AirSIM 蓝牙通话")
                 .setContentText("等待已认证的 iPhone")
+                .setGroup(com.airsim.phonecontrol.BridgeNotification.GROUP)
+                .setOnlyAlertOnce(true)
                 .setOngoing(true).build();
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIFICATION_ID, notification,
@@ -229,6 +232,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         try {
             JSONObject request = new JSONObject(new String(value, StandardCharsets.UTF_8));
             String operation = request.optString("op", "");
+            BridgeLog.info("voble_pairing op=" + operation);
             JSONObject response = new JSONObject().put("version", 1).put("op", operation);
             String identity = AndroidAgentIdentity.agentID(this);
             if ("begin".equals(operation)) {
@@ -280,6 +284,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             }
             gatt.indicatePairing(deviceId, response.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception error) {
+            BridgeLog.info("voble_pairing_failed type=" + error.getClass().getSimpleName());
             sendPairingError(deviceId, error.getMessage());
         }
     }
@@ -304,8 +309,12 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             if (!valid) throw new SecurityException("control authentication failed");
             String requestId = body.getString("request_id");
             String action = normalizeAction(envelope.command());
-            // Reading fresh metadata must not replace an active call's ID/generation.
-            if (!"device_info".equals(action) || session == null) {
+            BridgeLog.info("voble_control_received command=" + action
+                    + " generation=" + envelope.generation()
+                    + " request_id=" + com.airsim.phonecontrol.DebugRedactor.safeIdentifier(requestId));
+            // Reading fresh metadata or sending SMS must not replace an active
+            // call's ID/generation.
+            if ((!"device_info".equals(action) && !"sms_send".equals(action)) || session == null) {
                 session = new SessionContext(deviceId, envelope.sessionId(),
                         envelope.callId(), envelope.generation());
             }
@@ -314,7 +323,15 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                     envelope.generation(), body.optString("sim_account", ""));
             VoBLECallController.Result result;
             boolean revokeAfterResponse = false;
-            if ("ping".equals(action)) {
+            if ("sms_send".equals(action)) {
+                String sent = SMSCommandExecutor.sendFromVoBLE(
+                        this, requestId, body.optString("number", ""),
+                        body.optString("message", ""), body.optString("sim_account", ""));
+                result = sent.startsWith("ok:")
+                        ? VoBLECallController.Result.success(sent.substring(3))
+                        : VoBLECallController.Result.failure("sms_failed",
+                                sent.startsWith("error:") ? sent.substring(6) : sent);
+            } else if ("ping".equals(action)) {
                 result = calls.executeOnce(request, true,
                         ignored -> VoBLECallController.Result.success("ready"));
             } else if ("device_info".equals(action)) {
@@ -344,12 +361,25 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             }
             BridgeLog.info("voble_control_result command=" + action + " generation=" + envelope.generation()
                     + " success=" + result.success() + " code=" + result.code());
-            sendControl(deviceId, envelope.sessionId(), envelope.callId(), envelope.generation(),
-                    "response", new JSONObject().put("request_id", requestId)
-                            .put("ok", result.success()).put("code", result.code())
-                            .put("detail", result.detail()));
+            try {
+                sendControl(deviceId, envelope.sessionId(), envelope.callId(), envelope.generation(),
+                        "response", new JSONObject().put("request_id", requestId)
+                                .put("ok", result.success()).put("code", result.code())
+                                .put("detail", result.detail()));
+            } catch (Exception error) {
+                BridgeLog.info("voble_control_response_failed type="
+                        + error.getClass().getSimpleName()
+                        + " detail=" + com.airsim.phonecontrol.DebugRedactor.sanitize(
+                                error.getMessage() == null ? "none" : error.getMessage()));
+                throw error;
+            }
             if (revokeAfterResponse && result.success()) revokeAuthenticatedPeer(deviceId, identity);
         } catch (Exception error) {
+            BridgeLog.info("voble_control_rejected reason="
+                    + (error instanceof SecurityException ? "authentication_failed" : "invalid_request")
+                    + " type=" + error.getClass().getSimpleName()
+                    + " detail=" + com.airsim.phonecontrol.DebugRedactor.sanitize(
+                            error.getMessage() == null ? "none" : error.getMessage()));
             sendPlainControlError(deviceId, error instanceof SecurityException
                     ? "authentication_failed" : "invalid_request");
         }
@@ -368,6 +398,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
 
     @Override public void onDisconnected(String deviceId) {
         controlQueue.execute(() -> {
+            BridgeLog.info("voble_peer_disconnected");
             peerIdentities.remove(deviceId);
             SessionContext value = session;
             if (value != null && value.deviceId.equals(deviceId)) {
@@ -486,6 +517,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                         RuntimeMode.agentLabel(this), true, true, "G.711-mu/8000/mono",
                         0, 0, 0, "");
                 publishDiagnostics();
+                BridgeLog.info("voble_media_started call_generation=" + envelope.generation());
                 return VoBLECallController.Result.success("media_ready");
             } finally {
                 Arrays.fill(mediaKey, (byte) 0);
@@ -507,6 +539,7 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
             mediaIdentity = null;
             RemoteAudioSessionRegistry.setVoBLE(false);
             if (active != null) {
+                BridgeLog.info("voble_media_stopped");
                 VoBLEMediaSession.Stats stats = active.stats();
                 diagnostics = new VoBLEDiagnostics.Snapshot(
                         RuntimeMode.agentLabel(this), session != null, false,
@@ -575,7 +608,10 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         VoBLEProtocol.ControlEnvelope signed = new VoBLEProtocol.ControlEnvelope(
                 command, callId == null ? "" : callId, generation,
                 sessionId, nonce, payload, tag);
-        gatt.indicateControl(deviceId, VoBLEProtocol.encodeControl(signed));
+        byte[] signedBytes = VoBLEProtocol.encodeControl(signed);
+        BridgeLog.info("voble_control_response_bytes bytes=" + signedBytes.length);
+        boolean sent = gatt.indicateControl(deviceId, signedBytes);
+        BridgeLog.info("voble_control_response_enqueued sent=" + sent);
     }
 
     private void sendPairingError(String deviceId, String detail) {
@@ -590,7 +626,9 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         try {
             JSONObject response = new JSONObject().put("ok", false).put("code", code);
             gatt.indicateControl(deviceId, response.toString().getBytes(StandardCharsets.UTF_8));
-        } catch (Exception ignored) {}
+        } catch (Exception error) {
+            BridgeLog.info("voble_control_error_send_failed type=" + error.getClass().getSimpleName());
+        }
     }
 
     private static String normalizeAction(String command) {
@@ -620,6 +658,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
                 .setContentTitle("AirSIM 蓝牙配对")
                 .setContentText("安全码 " + sas + " · 请与 iPhone 核对")
+                .setGroup(com.airsim.phonecontrol.BridgeNotification.GROUP)
+                .setOnlyAlertOnce(true)
                 .setOngoing(true).build());
     }
 
@@ -631,6 +671,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                 .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
                 .setContentTitle("AirSIM 蓝牙通话")
                 .setContentText("已连接经过认证的 iPhone")
+                .setGroup(com.airsim.phonecontrol.BridgeNotification.GROUP)
+                .setOnlyAlertOnce(true)
                 .setOngoing(true).build());
     }
 

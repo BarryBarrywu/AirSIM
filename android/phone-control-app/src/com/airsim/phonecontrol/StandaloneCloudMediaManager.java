@@ -101,6 +101,20 @@ final class StandaloneCloudMediaManager implements Closeable {
                         .put("source", "agent").put("timestamp", Instant.now().toString())
                         .put("trace_id", "standalone-" + descriptor.callUUID + "-" + phase);
                 relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
+                if ("active".equals(phase) || "ended".equals(phase)) {
+                    JSONObject owner = identity(registration).put("event", "call_owner")
+                            .put("call_id", descriptor.callID).put("call_uuid", descriptor.callUUID)
+                            .put("generation", descriptor.generation).put("owner", "android")
+                            .put("phase", phase);
+                    // Best effort: an older Relay may not know owner=android yet, and
+                    // this notification must never block the authoritative call path.
+                    try {
+                        relay.postJSON(registration, "/v1/events/call-owner", owner, 12_000);
+                    } catch (Exception error) {
+                        BridgeLog.info("standalone_call_owner_push_failed type="
+                                + error.getClass().getSimpleName());
+                    }
+                }
             }
             if ("ended".equals(state)) closeActive(descriptor);
         }

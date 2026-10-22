@@ -46,7 +46,6 @@ struct DialPadTransportPresentation: Equatable {
     static func make(
         mode: AirSIMConnectionMode = .automatic,
         vowlanOnline: Bool,
-        moduleLocalReachable: Bool,
         cloudOnline: Bool,
         bluetoothReady: Bool = false
     ) -> DialPadTransportPresentation? {

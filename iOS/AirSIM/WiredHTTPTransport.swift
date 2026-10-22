@@ -2,6 +2,47 @@ import Foundation
 import Network
 import Darwin
 
+/// Detects whether an address belongs to the iPhone's own Wi-Fi subnet.
+enum LocalWiFiSubnet {
+    static func contains(_ host: String) -> Bool {
+        guard let target = NetworkRoutePreferences.parseIPv4(host) else { return false }
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return false }
+        defer { freeifaddrs(ifaddr) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            defer { cursor = entry.pointee.ifa_next }
+            let flags = Int32(entry.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            let name = String(cString: entry.pointee.ifa_name)
+            guard name.hasPrefix("en") else { continue }
+            guard let address = entry.pointee.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET),
+                  let netmask = entry.pointee.ifa_netmask else { continue }
+            let ip = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+            }
+            let mask = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+            }
+            if matches(target: target, local: ip, netmask: mask) { return true }
+        }
+        return false
+    }
+
+    static func matches(target: UInt32, local: UInt32, netmask: UInt32) -> Bool {
+        guard netmask != 0 else { return false }
+        return target & netmask == local & netmask
+    }
+
+    static func matches(host: String, local: String, netmask: String) -> Bool {
+        guard let target = NetworkRoutePreferences.parseIPv4(host),
+              let ip = NetworkRoutePreferences.parseIPv4(local),
+              let mask = NetworkRoutePreferences.parseIPv4(netmask) else { return false }
+        return matches(target: target, local: ip, netmask: mask)
+    }
+}
+
 /// Shared by the app and its extension; no AppModel/controller dependency.
 enum VoWLANNetworkRoutePolicy {
     static func permitsDirectIPv4(_ host: String,
@@ -10,11 +51,14 @@ enum VoWLANNetworkRoutePolicy {
         NetworkRoutePreferences.permitsPrivateIPv4(host, custom: custom)
     }
     static func usesSystemRouting(host: String) -> Bool {
-        // All supported VoWLAN hosts may be reached through the system route:
-        // a LAN address can be behind a Tailscale subnet router, while a
-        // 100.64/10 address is a direct tailnet peer. Requests still carry
-        // VoWLAN HMAC authentication; public hosts remain rejected above.
-        permitsDirectIPv4(host)
+        // A LAN address on THIS Wi-Fi subnet must bypass a VPN/Tailscale route that
+        // also advertises the same prefix; otherwise local VoWLAN requests time out.
+        // Remote LANs, 100.64/10 peers and all off-Wi-Fi cases still use the system route.
+        usesSystemRouting(host: host, isLocalSubnet: LocalWiFiSubnet.contains(host))
+    }
+
+    static func usesSystemRouting(host: String, isLocalSubnet: Bool) -> Bool {
+        permitsDirectIPv4(host) && !isLocalSubnet
     }
 
     /// True only for tailnet/CGNAT addresses. A plain 192.168/10 LAN must not be
@@ -31,21 +75,12 @@ struct WiredHTTPResponse: Sendable {
     let body: Data
 }
 
-/// 使用 Network.framework 将模块控制请求固定到 USB ECM，避免 Wi-Fi 或 VPN 抢走私网路由。
+/// 使用 Network.framework 固定 VoWLAN 请求的网络路径：本地 Wi-Fi 子网强制 Wi-Fi，
+/// 远程局域网与 100.64/10 走系统路由（Tailscale/VPN）。
 final class WiredHTTPTransport: @unchecked Sendable {
-    enum Policy: Sendable {
-        case moduleLocal
-        case vowlan
-    }
-
     private let queue = DispatchQueue(label: "com.jieden.airsim.wired-http", qos: .userInitiated)
-    private let policy: Policy
-    private let interfaceLock = NSLock()
-    private var preferredInterfaceType: NWInterface.InterfaceType = .wiredEthernet
 
-    init(policy: Policy = .moduleLocal) {
-        self.policy = policy
-    }
+    init() {}
 
     static func allowsInterfaceFallback(httpMethod: String?) -> Bool {
         switch httpMethod?.uppercased() ?? "GET" {
@@ -55,7 +90,7 @@ final class WiredHTTPTransport: @unchecked Sendable {
     }
 
     static func pathSetupTimeout(systemRouting: Bool, requestTimeout: TimeInterval) -> TimeInterval? {
-        // VPN establishment uses the request deadline, not the short USB interface probe deadline.
+        // VPN establishment uses the request deadline, not the short Wi-Fi path probe deadline.
         systemRouting ? nil : min(1.5, max(1, requestTimeout))
     }
 
@@ -80,53 +115,21 @@ final class WiredHTTPTransport: @unchecked Sendable {
             body = .none
         }
 
-        if case .vowlan = policy {
+        if VoWLANNetworkRoutePolicy.usesSystemRouting(host: host) {
             return try await sendOnce(
-                request,
-                host: NWEndpoint.Host(host),
-                port: port,
-                body: body,
-                route: VoWLANNetworkRoutePolicy.usesSystemRouting(host: host) ? .system : .type(.wifi)
-            )
+                request, host: NWEndpoint.Host(host), port: port, body: body, route: .system)
         }
 
-        if let moduleInterface = ModuleUSBInterfaceResolver.resolve() {
-            do {
-                return try await sendOnce(
-                    request,
-                    host: NWEndpoint.Host(host),
-                    port: port,
-                    body: body,
-                    route: .exact(moduleInterface)
-                )
-            } catch {
-                guard Self.allowsInterfaceFallback(httpMethod: request.httpMethod),
-                      (error as? WiredHTTPError)?.isInterfaceFailure == true else { throw error }
-            }
-        }
-
-        let preferred = lockedPreferredInterface()
         do {
             return try await sendOnce(
-                request,
-                host: NWEndpoint.Host(host),
-                port: port,
-                body: body,
-                route: .type(preferred)
-            )
+                request, host: NWEndpoint.Host(host), port: port, body: body, route: .type(.wifi))
         } catch {
             guard Self.allowsInterfaceFallback(httpMethod: request.httpMethod),
                   (error as? WiredHTTPError)?.isInterfaceFailure == true else { throw error }
-            let fallback: NWInterface.InterfaceType = preferred == .wiredEthernet ? .other : .wiredEthernet
-            let response = try await sendOnce(
-                request,
-                host: NWEndpoint.Host(host),
-                port: port,
-                body: body,
-                route: .type(fallback)
-            )
-            setPreferredInterface(fallback)
-            return response
+            // A local address can also be reached through a VPN when the phone is not on
+            // the Wi-Fi subnet; allow the system route as a read-only fallback.
+            return try await sendOnce(
+                request, host: NWEndpoint.Host(host), port: port, body: body, route: .system)
         }
     }
 
@@ -150,92 +153,10 @@ final class WiredHTTPTransport: @unchecked Sendable {
             operation.start()
         }
     }
-
-    private func lockedPreferredInterface() -> NWInterface.InterfaceType {
-        interfaceLock.lock()
-        defer { interfaceLock.unlock() }
-        return preferredInterfaceType
-    }
-
-    private func setPreferredInterface(_ interfaceType: NWInterface.InterfaceType) {
-        interfaceLock.lock()
-        preferredInterfaceType = interfaceType
-        interfaceLock.unlock()
-    }
-}
-
-struct NetworkInterfaceAddress: Equatable, Sendable {
-    let name: String
-    let address: String
-}
-
-/// 从本机 192.168.225.x 地址反查模块 USB ECM 接口。通过接口名精确绑定后，
-/// 即使 VPN 改写默认路由，发往模块的请求也不会误入 utun 或 Wi-Fi。
-enum ModuleUSBInterfaceResolver {
-    private static let monitorQueue = DispatchQueue(label: "com.jieden.airsim.usb-interface")
-
-    static func moduleInterfaceNames(from addresses: [NetworkInterfaceAddress]) -> Set<String> {
-        Set(addresses.compactMap { item in
-            let octets = item.address.split(separator: ".", omittingEmptySubsequences: false)
-            guard octets.count == 4,
-                  octets[0] == "192", octets[1] == "168", octets[2] == "225",
-                  let host = Int(octets[3]), (2...254).contains(host),
-                  String(host) == octets[3] else { return nil }
-            return item.name
-        })
-    }
-
-    static func resolve(timeout: TimeInterval = 0.35) -> NWInterface? {
-        let names = moduleInterfaceNames(from: systemInterfaceAddresses())
-        guard !names.isEmpty else { return nil }
-
-        let monitor = NWPathMonitor()
-        let semaphore = DispatchSemaphore(value: 0)
-        let lock = NSLock()
-        var resolved: NWInterface?
-        monitor.pathUpdateHandler = { path in
-            lock.lock()
-            resolved = path.availableInterfaces.first { names.contains($0.name) }
-            lock.unlock()
-            semaphore.signal()
-        }
-        monitor.start(queue: monitorQueue)
-        _ = semaphore.wait(timeout: .now() + timeout)
-        monitor.cancel()
-        lock.lock()
-        defer { lock.unlock() }
-        return resolved
-    }
-
-    private static func systemInterfaceAddresses() -> [NetworkInterfaceAddress] {
-        var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let first = head else { return [] }
-        defer { freeifaddrs(head) }
-
-        var result: [NetworkInterfaceAddress] = []
-        var cursor: UnsafeMutablePointer<ifaddrs>? = first
-        while let item = cursor {
-            defer { cursor = item.pointee.ifa_next }
-            guard let address = item.pointee.ifa_addr,
-                  address.pointee.sa_family == UInt8(AF_INET) else { continue }
-            let ipv4 = UnsafeRawPointer(address).assumingMemoryBound(to: sockaddr_in.self)
-            var numericAddress = ipv4.pointee.sin_addr
-            var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-            guard inet_ntop(AF_INET, &numericAddress, &buffer, socklen_t(buffer.count)) != nil else { continue }
-            result.append(
-                NetworkInterfaceAddress(
-                    name: String(cString: item.pointee.ifa_name),
-                    address: String(cString: buffer)
-                )
-            )
-        }
-        return result
-    }
 }
 
 private enum WiredInterfaceRoute {
     case system
-    case exact(NWInterface)
     case type(NWInterface.InterfaceType)
 
     var usesSystemRouting: Bool {
@@ -246,7 +167,6 @@ private enum WiredInterfaceRoute {
     var description: String {
         switch self {
         case .system: return "system-route"
-        case let .exact(interface): return "\(interface.name):\(interface.type)"
         case let .type(type): return String(describing: type)
         }
     }
@@ -255,8 +175,6 @@ private enum WiredInterfaceRoute {
         guard let path else { return false }
         switch self {
         case .system: return path.status == .satisfied
-        case let .exact(interface):
-            return path.availableInterfaces.contains { $0.name == interface.name }
         case let .type(type):
             return path.usesInterfaceType(type)
         }
@@ -318,10 +236,8 @@ private final class WiredHTTPRequestOperation: @unchecked Sendable {
         tcp.enableKeepalive = true
         tcp.keepaliveIdle = 5
         let parameters = NWParameters(tls: nil, tcp: tcp)
-        // 优先绑定实际 USB ECM 接口；找不到接口名时才按接口类型约束。
         switch route {
         case .system: break // Let iOS select the active VPN route, including cellular underlay.
-        case let .exact(interface): parameters.requiredInterface = interface
         case let .type(type): parameters.requiredInterfaceType = type
         }
         connection = NWConnection(host: host, port: port, using: parameters)
@@ -627,17 +543,17 @@ private enum WiredHTTPError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidRequest: return "模块请求格式无效"
-        case .wiredPathUnavailable: return "未找到模块 USB 以太网路径"
-        case let .connectionFailed(message): return "模块有线连接失败：\(message)"
-        case .connectionClosed: return "模块有线连接已关闭"
-        case let .sendFailed(message): return "模块请求发送失败：\(message)"
-        case let .receiveFailed(message): return "模块响应接收失败：\(message)"
-        case .timedOut: return "模块有线请求超时"
-        case .responseTooLarge: return "模块响应超过安全大小限制"
-        case .invalidResponse: return "模块代理返回了无效 HTTP 响应"
-        case .incompleteResponse: return "模块代理返回的 HTTP 响应不完整"
-        case .unreadableUpload: return "无法读取模块更新包"
+        case .invalidRequest: return "VoWLAN 请求格式无效"
+        case .wiredPathUnavailable: return "未找到可用的 VoWLAN 网络路径"
+        case let .connectionFailed(message): return "VoWLAN 连接失败：\(message)"
+        case .connectionClosed: return "VoWLAN 连接已关闭"
+        case let .sendFailed(message): return "VoWLAN 请求发送失败：\(message)"
+        case let .receiveFailed(message): return "VoWLAN 响应接收失败：\(message)"
+        case .timedOut: return "VoWLAN 请求超时"
+        case .responseTooLarge: return "VoWLAN 响应超过安全大小限制"
+        case .invalidResponse: return "Agent 代理返回了无效 HTTP 响应"
+        case .incompleteResponse: return "Agent 代理返回的 HTTP 响应不完整"
+        case .unreadableUpload: return "无法读取更新包"
         }
     }
 }

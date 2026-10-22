@@ -58,7 +58,7 @@ struct CallStatus: Codable, Sendable {
     }
 }
 
-/// Agent 的统一事件快照；通话和短信共用一个长轮询，避免后台保持两套 USB 请求。
+/// Agent 的统一事件快照；通话和短信共用一个长轮询，避免后台保持两套本地请求。
 struct AgentEventStatus: Codable, Sendable {
     let revision: UInt64
     let smsRevision: UInt64
@@ -127,7 +127,6 @@ struct CloudAgentStatus: Decodable, Equatable, Sendable {
     let cellularState: String?
     let cellularRegistration: String?
     let cellularRecovery: String?
-    let ecmCarrier: String?
     let signalDBM: Int?
     let activeAgentID: String?
     let agents: [CloudAndroidAgent]
@@ -139,7 +138,6 @@ struct CloudAgentStatus: Decodable, Equatable, Sendable {
         case cellularState = "cellular_state"
         case cellularRegistration = "cellular_registration"
         case cellularRecovery = "cellular_recovery"
-        case ecmCarrier = "ecm_carrier"
         case signalDBM = "signal_dbm"
         case activeAgentID = "active_agent_id"
         case agents
@@ -155,7 +153,6 @@ struct CloudAgentStatus: Decodable, Equatable, Sendable {
         cellularState = try values.decodeIfPresent(String.self, forKey: .cellularState)
         cellularRegistration = try values.decodeIfPresent(String.self, forKey: .cellularRegistration)
         cellularRecovery = try values.decodeIfPresent(String.self, forKey: .cellularRecovery)
-        ecmCarrier = try values.decodeIfPresent(String.self, forKey: .ecmCarrier)
         signalDBM = try values.decodeIfPresent(Int.self, forKey: .signalDBM)
         activeAgentID = try values.decodeIfPresent(String.self, forKey: .activeAgentID)
         agents = try values.decodeIfPresent([CloudAndroidAgent].self, forKey: .agents) ?? []
@@ -697,20 +694,6 @@ struct RouterClientsResponse: Codable, Sendable {
     let clients: [RouterClient]
 }
 
-struct USBProfileStatus: Codable, Sendable {
-    let mode: String
-    let uacEnabled: Bool
-    let configuration: String
-    let needsReconnect: Bool
-    let message: String?
-
-    enum CodingKeys: String, CodingKey {
-        case mode, configuration, message
-        case uacEnabled = "uac_enabled"
-        case needsReconnect = "needs_reconnect"
-    }
-}
-
 struct NetworkCheckResult: Codable, Sendable {
     let ok: Bool
     let summary: String?
@@ -875,7 +858,6 @@ struct ModuleDebugSnapshot: Codable, Sendable {
     let debug: ModuleDebugBufferStatus
     let agent: ModuleDebugAgentStatus
     let at: ModuleDebugATStatus
-    let usb: [String: String]
     let traffic: ModuleDebugTrafficStatus
     let modem: ModemStatus
     let calls: ModuleDebugCallStatus
@@ -974,60 +956,6 @@ struct ModuleDebugEvent: Codable, Sendable, Identifiable {
     let fields: [String: String]?
 
     var id: UInt64 { sequence }
-}
-
-struct NetworkDiagnostic: Codable, Sendable {
-    let usbnetMode: String?
-    let usbcfg: String?
-    let pdpContexts: [PDPContext]?
-    let activeContexts: [Int]?
-    let pdpAddresses: [String]?
-    let interfaces: [NetworkInterface]?
-    let defaultRoute: NetworkDefaultRoute?
-    let usbNetworkPresent: Bool
-    let usbDevice: USBDeviceStatus?
-    let errors: [String: String]?
-
-    enum CodingKeys: String, CodingKey {
-        case usbcfg, errors
-        case usbnetMode = "usbnet_mode"
-        case pdpContexts = "pdp_contexts"
-        case activeContexts = "active_contexts"
-        case pdpAddresses = "pdp_addresses"
-        // 后端为兼容 Mac 版保留了旧字段名。
-        case interfaces = "mac_interfaces"
-        case defaultRoute = "default_route"
-        case usbNetworkPresent = "usb_network_present"
-        case usbDevice = "usb_device"
-    }
-}
-
-struct PDPContext: Codable, Sendable { let id: Int?; let pdn: String?; let apn: String? }
-struct NetworkInterface: Codable, Sendable {
-    let name: String?; let status: String?; let ipv4: String?; let mac: String?; let kind: String?
-}
-struct NetworkDefaultRoute: Codable, Sendable { let interface: String?; let gateway: String? }
-struct USBDeviceStatus: Codable, Sendable {
-    let vendor: String?; let product: String?; let vendorID: String?; let productID: String?; let mode: String?
-    enum CodingKeys: String, CodingKey {
-        case vendor, product, mode
-        case vendorID = "vendor_id"
-        case productID = "product_id"
-    }
-}
-
-struct ModuleSetupStatus: Codable, Sendable {
-    let state: String
-    let summary: String
-    let detail: String?
-    let canInitialize: Bool
-    let requiresConfirmation: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case state, summary, detail
-        case canInitialize = "can_initialize"
-        case requiresConfirmation = "requires_confirmation"
-    }
 }
 
 struct VoiceRuntimeStatus: Codable, Sendable {

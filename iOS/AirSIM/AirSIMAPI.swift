@@ -9,14 +9,10 @@ struct LocalCallControlBody: Encodable {
 }
 
 enum LocalAgentRoute: Equatable, Sendable {
-    case moduleLocal
     case vowlan(endpoint: VoWLANEndpoint, credential: VoWLANCredential)
 
     var baseURL: URL {
         switch self {
-        case .moduleLocal:
-            // Legacy case retained only for decoding compatibility. AirSIM never contacts QDC507.
-            return URL(string: "http://127.0.0.1:9/")!
         case let .vowlan(endpoint, _):
             return endpoint.controlBaseURL
         }
@@ -24,7 +20,6 @@ enum LocalAgentRoute: Equatable, Sendable {
 
     var traceDescription: String {
         switch self {
-        case .moduleLocal: return "已停用的旧模块路线"
         case let .vowlan(endpoint, _): return VoWLANNetworkRoutePolicy.isOverlayHost(endpoint.host)
             ? "VoWLAN · VPN 直连" : "VoWLAN · 同一局域网"
         }
@@ -36,7 +31,6 @@ enum LocalAgentRoute: Equatable, Sendable {
     }
 }
 
-/// AirSIM 不允许把旧模块 USB ECM 地址当作三星控制通道。
 enum AirSIMRoutePolicy {
     static func permits(_ route: LocalAgentRoute) -> Bool {
         if case .vowlan = route { return true }
@@ -80,17 +74,12 @@ struct AirSIMAPI: Sendable {
 
     private static let decoder = makeDecoder()
 
-    init(route: LocalAgentRoute = .moduleLocal, transport: (any AirSIMHTTPTransport)? = nil) {
+    init(route: LocalAgentRoute, transport: (any AirSIMHTTPTransport)? = nil) {
         self.route = route
         let baseURL = route.baseURL
-        precondition(Self.isAllowedLocalURL(baseURL), "模块代理地址必须是本地 HTTP 地址")
+        precondition(Self.isAllowedLocalURL(baseURL), "Agent 地址必须是本地 HTTP 地址")
         self.baseURL = baseURL
-        self.transport = transport ?? WiredHTTPTransport(policy: route == .moduleLocal ? .moduleLocal : .vowlan)
-    }
-
-    init(baseURL: URL) {
-        precondition(baseURL == LocalAgentRoute.moduleLocal.baseURL, "请通过 LocalAgentRoute 配置动态本地地址")
-        self.init(route: .moduleLocal)
+        self.transport = transport ?? WiredHTTPTransport()
     }
 
     /// 限制高权限控制接口只能指向环回或私有网络，避免误发到公网主机。
@@ -307,9 +296,6 @@ struct AirSIMAPI: Sendable {
         recordVerboseTrace: Bool = true,
         authenticationNonce: String? = nil
     ) async throws -> WiredHTTPResponse {
-        guard AirSIMRoutePolicy.permits(route) else {
-            throw APIError.disabledLegacyRoute
-        }
         var request = originalRequest
         let method = request.httpMethod?.uppercased() ?? "GET"
         let path: String = {
@@ -388,14 +374,12 @@ enum APIError: LocalizedError {
     case invalidResponse
     case http(Int, String?)
     case unreadablePayload(String)
-    case disabledLegacyRoute
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "模块代理返回了无效响应"
         case let .http(status, message): return message?.isEmpty == false ? message : "请求失败（HTTP \(status)）"
         case let .unreadablePayload(message): return message
-        case .disabledLegacyRoute: return "AirSIM 不支持旧模块控制路线"
         }
     }
 }

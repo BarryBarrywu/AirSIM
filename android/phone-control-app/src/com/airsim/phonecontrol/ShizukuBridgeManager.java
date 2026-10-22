@@ -358,6 +358,19 @@ final class ShizukuBridgeManager {
         bindPrivilegedService();
     }
 
+    /** Read recent inbox rows as shell (Shizuku); null when unavailable. */
+    String recentSms(long afterId, long cutoffMillis, int limit) {
+        if (rootTransport != null) return null; // Root inbox bridge is not implemented.
+        if (channel == PrivilegeChannelPreference.Channel.ROOT) return null;
+        PrivilegedBridgeClient client = privilegedClient;
+        if (client == null) return null;
+        try {
+            return client.recentSms(afterId, cutoffMillis, limit);
+        } catch (android.os.RemoteException error) {
+            return null;
+        }
+    }
+
     String sendSms(String destination, String body, int subscriptionId) {
         RootBridgeTransport root = rootTransport;
         if (root != null) {

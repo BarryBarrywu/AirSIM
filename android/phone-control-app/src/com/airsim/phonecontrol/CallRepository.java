@@ -74,6 +74,13 @@ public final class CallRepository {
         return call == null ? -1 : call.getState();
     }
 
+    public static String number(String callId) {
+        Call call = CALLS.get(callId);
+        if (call == null || call.getDetails() == null || call.getDetails().getHandle() == null) return "";
+        String value = call.getDetails().getHandle().getSchemeSpecificPart();
+        return value == null ? "" : value;
+    }
+
     public static String idForAction(String action) {
         int preferred = ("answer".equals(action) || "reject".equals(action))
                 ? Call.STATE_RINGING : Call.STATE_ACTIVE;

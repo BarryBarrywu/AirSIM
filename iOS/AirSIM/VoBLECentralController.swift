@@ -189,12 +189,13 @@ final class VoBLECommandMailbox {
     }
     private var pending: [String: Pending] = [:]
     func perform(requestID: String, generation: UInt64,
+                 timeout: Duration = .seconds(8),
                  write: () throws -> Void) async throws -> VoBLEControlResponse {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 let timeout = Task { [weak self] in
-                    do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                    do { try await Task.sleep(for: timeout) } catch { return }
                     self?.fail(requestID, with: VoBLECentralError.commandTimedOut)
                 }
                 pending[requestID] = Pending(generation: generation, continuation: continuation, timeout: timeout)
@@ -492,21 +493,39 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
 
     func send(command: String, callID: String, generation: UInt64,
               number: String, simAccount: String?) async throws -> VoBLEControlResponse {
+        var fields: [String: Any] = ["number": number]
+        if let simAccount, !simAccount.isEmpty { fields["sim_account"] = simAccount }
+        return try await send(command: command, callID: callID,
+                              generation: generation, fields: fields)
+    }
+
+    /// SMS over the authenticated BLE control channel. Used by local-only
+    /// modes where no VoWLAN HTTP endpoint exists but VoBLE is ready.
+    func sendSMS(to number: String, message: String, simAccount: String?) async throws -> VoBLEControlResponse {
+        var fields: [String: Any] = ["number": number, "message": message]
+        if let simAccount, !simAccount.isEmpty { fields["sim_account"] = simAccount }
+        return try await send(command: "sms_send", callID: "",
+                              generation: 0, fields: fields,
+                              timeout: .seconds(60))
+    }
+
+    private func send(command: String, callID: String, generation: UInt64,
+                      fields: [String: Any],
+                      timeout: Duration = .seconds(8)) async throws -> VoBLEControlResponse {
         guard state == .ready, let peer = activePeer, !sessionID.isEmpty,
               let controlRX else { throw VoBLECentralError.notReady }
         let requestID = UUID().uuidString
         let timestamp = Int64(Date().timeIntervalSince1970 * 1_000)
         let nonce = try randomData(count: 12)
-        var fields: [String: Any] = [
-            "request_id": requestID, "timestamp_ms": timestamp, "number": number,
-        ]
-        if let simAccount, !simAccount.isEmpty { fields["sim_account"] = simAccount }
-        let body = try JSONSerialization.data(withJSONObject: fields)
+        var body = fields
+        body["request_id"] = requestID
+        body["timestamp_ms"] = timestamp
+        let payload = try JSONSerialization.data(withJSONObject: body)
         let keys = try VoBLESessionAuthenticator.deriveSessionKeys(
             pairingKey: peer.pairingKey, sessionID: sessionID, callID: callID, generation: generation)
         let unsigned = VoBLEControlEnvelope(
             command: command, callID: callID, generation: generation,
-            sessionID: sessionID, nonce: nonce, ciphertext: body,
+            sessionID: sessionID, nonce: nonce, ciphertext: payload,
             authenticationTag: Data(repeating: 0, count: 16))
         let prefix = try unsigned.encoded().dropLast(16)
         let tag = try VoBLESessionAuthenticator.tag(
@@ -514,9 +533,11 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
             key: keys.control)
         let encoded = try VoBLEControlEnvelope(
             command: command, callID: callID, generation: generation,
-            sessionID: sessionID, nonce: nonce, ciphertext: body, authenticationTag: tag).encoded()
+            sessionID: sessionID, nonce: nonce, ciphertext: payload, authenticationTag: tag).encoded()
 
-        return try await commandMailbox.perform(requestID: requestID, generation: generation) {
+        return try await commandMailbox.perform(
+            requestID: requestID, generation: generation, timeout: timeout
+        ) {
             try enqueueMessage(encoded, type: .control, characteristic: controlRX)
         }
     }

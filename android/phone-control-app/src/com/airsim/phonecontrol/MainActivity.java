@@ -2,8 +2,8 @@ package com.airsim.phonecontrol;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.role.RoleManager;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -490,6 +490,7 @@ public final class MainActivity extends Activity {
     private View debugPage() {
         LinearLayout root = pageRoot();
         root.addView(pageTitle("Debug 诊断", null));
+        root.addView(smsAssistCard(), matchWithTop(14));
 		if (CrashReportStore.hasReport(getFilesDir())) {
 			LinearLayout crashCard = card(Color.rgb(57, 31, 36), 22);
 			crashCard.setOrientation(LinearLayout.VERTICAL);
@@ -1075,11 +1076,60 @@ public final class MainActivity extends Activity {
         return scroll(root);
     }
 
+    private View smsAssistCard() {
+        boolean enabled = SmsConfirmationAccessibilityService.isEnabled(this);
+        LinearLayout card = card(SURFACE, 20);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout copy = column(0);
+        copy.addView(overline("短信辅助操控"));
+        copy.addView(label(enabled ? "已开启 · 小米发送确认弹窗可自动点击" : "未开启 · 仅影响小米发送确认弹窗",
+                13, enabled ? PRIMARY : MUTED, Gravity.START), matchWithTop(3));
+        header.addView(copy, weighted());
+        card.addView(header);
+        card.addView(description("仅在 AirSIM 发起系统短信、且小米弹出“是否发送短信”时点击“发送/允许”。不会读取或保存短信内容。"), matchWithTop(6));
+        LinearLayout actions = row();
+        TextView open = secondaryButton(enabled ? "查看辅助操控设置" : "打开辅助操控权限");
+        open.setTextColor(PRIMARY);
+        open.setOnClickListener(ignored -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            } catch (RuntimeException error) {
+                toast("无法打开辅助操控设置，请在系统设置中手动搜索“辅助功能”");
+            }
+        });
+        TextView logs = secondaryButton("短信日志");
+        logs.setOnClickListener(ignored -> {
+            activeDebugFilter = "SMS";
+            showPage(Page.DEBUG);
+        });
+        actions.addView(open, weightedWithEnd(6));
+        actions.addView(logs, weightedWithStart(4));
+        card.addView(actions, matchWithTop(8));
+        boolean notificationAccess = SmsNotificationListenerService.isEnabled(this);
+        TextView notification = secondaryButton(notificationAccess
+                ? "回信通知读取 · 已授权"
+                : "开启回信通知读取（小米推荐）");
+        notification.setTextColor(notificationAccess ? MUTED : PRIMARY);
+        notification.setOnClickListener(ignored -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+            } catch (RuntimeException error) {
+                toast("无法打开通知读取设置，请在系统设置中搜索“通知使用权”");
+            }
+        });
+        card.addView(notification, matchWithTop(6));
+        card.addView(description("小米限制非默认短信 App 读取 inbox。开启通知读取后，只转发 com.android.mms 的新短信通知到 iPhone；发送确认仍由上面的辅助操控处理。"), matchWithTop(4));
+        return card;
+    }
+
     private LinearLayout debugFilters() {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout filterRow = row();
-        String[] filters = {"全部", "Agent", "VoWLAN", "PCM", "Telecom"};
+        String[] filters = {"全部", "Agent", "SMS", "VoBLE", "VoWLAN", "PCM", "Telecom"};
         for (String filter : filters) {
             boolean selected = filter.equals(activeDebugFilter);
             TextView chip = label(filter, 13, selected ? BG : TEXT, Gravity.CENTER);
@@ -1121,6 +1171,9 @@ public final class MainActivity extends Activity {
                 20, selected ? PRIMARY : Color.TRANSPARENT, 1));
         item.setOnClickListener(ignored -> {
             selectedMode = mode;
+            // Persist immediately: previously this only changed a local field and
+            // only took effect if the user later found the separate Save button.
+            AppConfig.setMode(this, mode);
             if (currentPage == Page.STATUS || currentPage == Page.SETTINGS) showPage(currentPage);
         });
         return item;

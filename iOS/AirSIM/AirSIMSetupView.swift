@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AirSIM 只引导三星配对；不检查旧模块 USB ECM、AT 或 QDC507 固件。
+/// AirSIM 只引导 Android 配对；不检查旧模块固件或网络。
 struct AirSIMFirstConnectionView: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage("airsim.first-connection-complete") private var completed = false

@@ -1382,6 +1382,45 @@ final class AirSIMTests: XCTestCase {
         let noBroadcast = VoWLANRouteCandidates.merge(discovered: [], manual: [saved], live: [], preferred: nil)
         XCTAssertEqual(noBroadcast.first?.endpoint, saved.endpoint)
     }
+    func testLocalWiFiSubnetUsesWiFiInsteadOfVPNRoute() {
+        XCTAssertTrue(LocalWiFiSubnet.matches(
+            host: "192.168.31.203", local: "192.168.31.53", netmask: "255.255.255.0"))
+        XCTAssertFalse(LocalWiFiSubnet.matches(
+            host: "192.168.50.49", local: "192.168.31.53", netmask: "255.255.255.0"))
+        XCTAssertFalse(LocalWiFiSubnet.matches(
+            host: "192.168.31.203", local: "192.168.31.53", netmask: "0.0.0.0"))
+
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.usesSystemRouting(
+            host: "192.168.31.203", isLocalSubnet: true))
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(
+            host: "192.168.50.49", isLocalSubnet: false))
+        XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(
+            host: "100.98.148.164", isLocalSubnet: false))
+        XCTAssertFalse(VoWLANNetworkRoutePolicy.usesSystemRouting(
+            host: "8.8.8.8", isLocalSubnet: false))
+    }
+
+    func testUnreachableLanFallsBackToSavedTailscaleAddressForSamePhone() throws {
+        let failed = try VoWLANEndpoint(host: "192.168.50.49", controlPort: 7592, pcmPort: 7593)
+        let tailscale = try VoWLANEndpoint(host: "100.98.148.164", controlPort: 7592, pcmPort: 7593)
+        let lanRoute = VoWLANManualRoute(agentID: "agent-a", host: failed.host,
+            controlPort: failed.controlPort, pcmPort: failed.pcmPort)
+        let tailscaleRoute = VoWLANManualRoute(agentID: "agent-a", host: tailscale.host,
+            controlPort: tailscale.controlPort, pcmPort: tailscale.pcmPort)
+        let otherAgent = VoWLANManualRoute(agentID: "agent-b", host: "100.64.9.9",
+            controlPort: 7592, pcmPort: 7593)
+
+        let alternate = VoWLANRouteCandidates.alternateManualRoute(
+            [lanRoute, tailscaleRoute, otherAgent], agentID: "agent-a", failed: failed)
+        XCTAssertEqual(alternate?.endpoint, tailscale)
+        XCTAssertNil(VoWLANRouteCandidates.alternateManualRoute(
+            [lanRoute, tailscaleRoute], agentID: "agent-c", failed: failed))
+        XCTAssertNil(VoWLANRouteCandidates.alternateManualRoute(
+            [lanRoute], agentID: "agent-a", failed: failed))
+        XCTAssertEqual(VoWLANRouteCandidates.alternateManualRoute(
+            [tailscaleRoute], agentID: "agent-a", failed: failed)?.endpoint, tailscale)
+    }
+
     func testManualPairingValidatesAddressesAndNeverAcceptsPublicOrMalformedTargets() throws {
         let secret = Data(0..<32)
         let proof = "hQLACWxrSaTjg3tib03xCffgi2LQfdBAV_HLMPmj3hI"
@@ -2098,33 +2137,12 @@ final class AirSIMTests: XCTestCase {
         let endpoint = try VoWLANEndpoint(host: "192.168.43.1", controlPort: 7575, pcmPort: 7576)
         XCTAssertEqual(endpoint.controlBaseURL.absoluteString, "http://192.168.43.1:7575/")
         XCTAssertThrowsError(try VoWLANEndpoint(host: "8.8.8.8", controlPort: 7575, pcmPort: 7576))
-        XCTAssertFalse(AirSIMRoutePolicy.permits(.moduleLocal))
-    }
-
-    func testLegacyModuleRequestIsRejectedBeforeNetworkAccess() async {
-        do {
-            _ = try await AirSIMAPI().health()
-            XCTFail("旧模块路线不应发出请求")
-        } catch APIError.disabledLegacyRoute {
-            // Expected: the old module route is blocked at the transport boundary.
-        } catch {
-            XCTFail("预期得到旧路线已停用错误，实际为 \(error)")
-        }
-    }
-
-    func testLegacyModulePCMHandshakeIsRejected() {
-        XCTAssertThrowsError(try PCMRoute.moduleLocal.handshake()) { error in
-            guard case APIError.disabledLegacyRoute = error else {
-                return XCTFail("预期旧模块 PCM 被拦截，实际为 \(error)")
-            }
-        }
     }
 
     func testDialTransportPrefersVoWLANOverCloud() {
         let route = DialPadTransportPresentation.make(
             mode: .automatic,
             vowlanOnline: true,
-            moduleLocalReachable: false,
             cloudOnline: true,
             bluetoothReady: true
         )
@@ -2626,7 +2644,7 @@ final class AirSIMTests: XCTestCase {
     func testDialPadCanPresentBluetoothAsIndependentTransport() {
         let route = DialPadTransportPresentation.make(
             mode: .bluetooth,
-            vowlanOnline: false, moduleLocalReachable: false,
+            vowlanOnline: false,
             cloudOnline: false, bluetoothReady: true)
         XCTAssertEqual(route?.transport, .bluetooth)
         XCTAssertEqual(route?.title, "蓝牙")
@@ -2795,6 +2813,43 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(actions.startVoWLAN)
         XCTAssertFalse(actions.startCloud)
         XCTAssertFalse(controller.shouldFallbackAfterBluetoothFailure)
+    }
+
+    @MainActor
+    func testVoBLEStaysLinkedAcrossConnectionModeSwitches() {
+        final class FakeBluetooth: VoBLECentralControlling {
+            var starts = 0
+            var stops = 0
+            func start() { starts += 1 }
+            func stop() { stops += 1 }
+        }
+        let bluetooth = FakeBluetooth()
+        let controller = VoBLEModeController(bluetooth: bluetooth)
+        _ = controller.activate(.vowlan)
+        _ = controller.activate(.cloud)
+        _ = controller.activate(.automatic)
+        XCTAssertEqual(bluetooth.starts, 3)
+        XCTAssertEqual(bluetooth.stops, 0)
+    }
+
+    func testVoBLEAutoReconnectBackoffAndTargeting() {
+        XCTAssertEqual(VoBLEAutoReconnectPolicy.delay(forAttempt: 1), 1)
+        XCTAssertEqual(VoBLEAutoReconnectPolicy.delay(forAttempt: 2), 2)
+        XCTAssertEqual(VoBLEAutoReconnectPolicy.delay(forAttempt: 3), 4)
+        XCTAssertEqual(VoBLEAutoReconnectPolicy.delay(forAttempt: 5), 16)
+        XCTAssertEqual(VoBLEAutoReconnectPolicy.delay(forAttempt: 99), 30)
+        XCTAssertTrue(VoBLEAutoReconnectPolicy.shouldReconnect(
+            enabled: true, known: true, selected: true, state: .stopped))
+        XCTAssertTrue(VoBLEAutoReconnectPolicy.shouldReconnect(
+            enabled: true, known: true, selected: true, state: .failed("x")))
+        XCTAssertFalse(VoBLEAutoReconnectPolicy.shouldReconnect(
+            enabled: false, known: true, selected: true, state: .stopped))
+        XCTAssertFalse(VoBLEAutoReconnectPolicy.shouldReconnect(
+            enabled: true, known: false, selected: true, state: .stopped))
+        XCTAssertFalse(VoBLEAutoReconnectPolicy.shouldReconnect(
+            enabled: true, known: true, selected: false, state: .stopped))
+        XCTAssertFalse(VoBLEAutoReconnectPolicy.shouldReconnect(
+            enabled: true, known: true, selected: true, state: .ready))
     }
 
     @MainActor
@@ -3057,6 +3112,23 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(recovery.shouldAttempt(for: unavailable, at: start.addingTimeInterval(3)))
         XCTAssertTrue(recovery.shouldAttempt(for: unavailable, at: start.addingTimeInterval(10)))
         XCTAssertFalse(recovery.shouldAttempt(for: .unpaired, at: start.addingTimeInterval(20)))
+    }
+
+    func testForegroundRecoveryDoesNotRestartVoWLANDuringCall() {
+        XCTAssertTrue(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .automatic, callActive: false))
+        XCTAssertTrue(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .localDual, callActive: false))
+        XCTAssertTrue(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .vowlan, callActive: false))
+        XCTAssertFalse(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .automatic, callActive: true))
+        XCTAssertFalse(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .vowlan, callActive: true))
+        XCTAssertFalse(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .bluetooth, callActive: false))
+        XCTAssertFalse(AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
+            mode: .cloud, callActive: false))
     }
 
     func testIslandCallActionsReserveOnlyRightSideButtonWidth() {

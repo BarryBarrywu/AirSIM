@@ -1,7 +1,11 @@
 package com.airsim.phonecontrol;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.media.AudioManager;
+import android.net.Uri;
+import android.provider.BaseColumns;
+import android.provider.Telephony;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
@@ -20,6 +24,9 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public final class ShizukuBridgeUserService extends Binder {
     private static final String TAG = "AirSIMShizuku";
@@ -77,6 +84,8 @@ public final class ShizukuBridgeUserService extends Binder {
                 case PrivilegedBridgeProtocol.TRANSACTION_AUDIO_SNAPSHOT -> audioSnapshot();
                 case PrivilegedBridgeProtocol.TRANSACTION_SEND_SMS ->
                         sendSms(data.readString(), data.readString(), data.readInt());
+                case PrivilegedBridgeProtocol.TRANSACTION_RECENT_SMS ->
+                        recentSms(data.readLong(), data.readLong(), data.readInt());
                 default -> null;
             };
             if (result == null) return super.onTransact(code, data, reply, flags);
@@ -96,11 +105,23 @@ public final class ShizukuBridgeUserService extends Binder {
                 || body == null || body.trim().isEmpty()) return "error:invalid";
         try {
             SmsManager base = serviceContext.getSystemService(SmsManager.class);
+            if (base == null) base = SmsManager.getDefault();
             if (base == null) return "error:no_service";
-            SmsManager manager;
-            if (subscriptionId < 0) manager = base;
-            else if (Build.VERSION.SDK_INT >= 31) manager = base.createForSubscriptionId(subscriptionId);
-            else manager = SmsManager.getSmsManagerForSubscriptionId(subscriptionId);
+            SmsManager manager = base;
+            try {
+                if (subscriptionId >= 0) {
+                    manager = Build.VERSION.SDK_INT >= 31
+                            ? base.createForSubscriptionId(subscriptionId)
+                            : SmsManager.getSmsManagerForSubscriptionId(subscriptionId);
+                }
+            } catch (RuntimeException error) {
+                // Shell UID may not expose subscription-specific SmsManager on
+                // HyperOS; the default manager still uses the default SMS SIM and
+                // inherits SEND_SMS_NO_CONFIRMATION.
+                Log.w(TAG, "shizuku_sms_subscription_fallback type="
+                        + error.getClass().getSimpleName());
+                manager = base;
+            }
             ArrayList<String> parts = manager.divideMessage(body);
             if (parts == null || parts.isEmpty()) return "error:divide";
             if (parts.size() == 1) {
@@ -114,8 +135,47 @@ public final class ShizukuBridgeUserService extends Binder {
             Log.w(TAG, "shizuku_sms_permission_denied");
             return "error:permission";
         } catch (RuntimeException error) {
-            Log.w(TAG, "shizuku_sms_runtime_failed");
-            return "error:runtime";
+            Log.w(TAG, "shizuku_sms_runtime_failed type="
+                    + error.getClass().getSimpleName()
+                    + " detail=" + (error.getMessage() == null ? "none" : error.getMessage()));
+            return "error:runtime:" + error.getClass().getSimpleName();
+        }
+    }
+
+    private String recentSms(long afterId, long cutoffMillis, int limit) {
+        if (serviceContext == null) return "error:no_context";
+        int boundedLimit = Math.max(1, Math.min(200, limit));
+        try {
+            String[] projection = {BaseColumns._ID, Telephony.Sms.ADDRESS,
+                    Telephony.Sms.BODY, Telephony.Sms.DATE, Telephony.Sms.DATE_SENT};
+            String selection;
+            String[] args;
+            if (afterId >= 0) {
+                selection = BaseColumns._ID + " > ?";
+                args = new String[]{Long.toString(afterId)};
+            } else {
+                selection = Telephony.Sms.DATE + " >= ?";
+                args = new String[]{Long.toString(cutoffMillis)};
+            }
+            Uri uri = Telephony.Sms.Inbox.CONTENT_URI.buildUpon()
+                    .appendQueryParameter("limit", Integer.toString(boundedLimit)).build();
+            JSONArray rows = new JSONArray();
+            try (Cursor cursor = serviceContext.getContentResolver().query(
+                    uri, projection, selection, args, BaseColumns._ID + " ASC")) {
+                if (cursor == null) return "error:provider";
+                while (cursor.moveToNext() && rows.length() < boundedLimit) {
+                    rows.put(new JSONObject()
+                            .put("id", cursor.getLong(0))
+                            .put("address", cursor.getString(1) == null ? "" : cursor.getString(1))
+                            .put("body", cursor.getString(2) == null ? "" : cursor.getString(2))
+                            .put("date", cursor.getLong(3))
+                            .put("date_sent", cursor.getLong(4)));
+                }
+            }
+            return rows.toString();
+        } catch (Exception error) {
+            Log.w(TAG, "shizuku_sms_inbox_failed type=" + error.getClass().getSimpleName());
+            return "error:" + error.getClass().getSimpleName();
         }
     }
 

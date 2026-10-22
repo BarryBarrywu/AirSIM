@@ -93,8 +93,15 @@ public final class CallScreenActivity extends Activity {
             return;
         }
         boolean ringing = "incoming".equals(TelecomStateMapper.toWireState(state));
-        title.setText(ringing ? "AirSIM 来电" : "AirSIM 通话中");
-        detail.setText(ringing ? "来电已转送 iPhone；也可在此处理" : "通话音频优先由 iPhone 接管");
+        String number = CallRepository.number(callId);
+        title.setText(ringing
+                ? (number.isEmpty() ? "AirSIM 来电" : number)
+                : "AirSIM 通话中");
+        String modeLabel = AppConfig.MODE_REMOTE_SILENT.equals(AppConfig.mode(this))
+                ? "远端静默" : "本机显示";
+        detail.setText(ringing
+                ? modeLabel + " · 可直接在 Android 接听或拒接；iPhone 也在响时可在任一端处理"
+                : modeLabel + " · 点按下方按钮挂断");
         answer.setVisibility(ringing ? View.VISIBLE : View.GONE);
         reject.setVisibility(ringing ? View.VISIBLE : View.GONE);
         end.setVisibility(ringing ? View.GONE : View.VISIBLE);

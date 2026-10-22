@@ -28,6 +28,8 @@ const TOKEN_PATTERN = /^[0-9a-f]{16,512}$/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const encoder = new TextEncoder();
 const MEDIA_CLIENT_ROLES = new Set(["watch", "iphone"]);
+/** Owners allowed to end/displace an iPhone ringing page. Android must not act as a media client. */
+const CALL_OWNERS = new Set(["watch", "iphone", "android"]);
 const COMMAND_TYPES = new Set(["dial", "send_sms", "dtmf"]);
 const MEDIA_TRANSPORTS = new Set(["legacy_pcm", "webrtc"]);
 
@@ -1499,7 +1501,7 @@ async function receiveCallOwner(request, env) {
     return jsonResponse(409, { error: "alert token unavailable" });
   }
   if (event.event !== "call_owner" || !nonEmpty(event.call_id) ||
-      !UUID_PATTERN.test(event.call_uuid || "") || !MEDIA_CLIENT_ROLES.has(event.owner) ||
+      !UUID_PATTERN.test(event.call_uuid || "") || !CALL_OWNERS.has(event.owner) ||
       (event.phase !== "active" && event.phase !== "ended")) {
     return jsonResponse(400, { error: "invalid call ownership event" });
   }
@@ -1513,6 +1515,8 @@ async function receiveCallOwner(request, env) {
     call_uuid: event.call_uuid,
     owner: event.owner,
     phase: event.phase,
+    generation: Number.isInteger(event.generation) && event.generation > 0
+      ? event.generation : 1,
   };
   try {
     await sendAPNs(env, authenticated.device, authenticated.device.alert_token, {
@@ -1526,7 +1530,8 @@ async function receiveCallOwner(request, env) {
     await writeRelayState(env, dedupeKey, "1", 180);
     await recordDashboardEvent(env, {
       type: "call_owner", device_id: authenticated.device.device_id, status: "delivered",
-      channel: event.owner === "watch" ? "watch" : "iphone",
+      channel: event.owner === "watch" ? "watch"
+        : (event.owner === "android" ? "android" : "iphone"),
       environment: authenticated.device.environment,
     });
     const currentActivity = await readRelayRecord(

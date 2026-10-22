@@ -18,6 +18,24 @@ final class VoBLEDeviceSession {
     }
 }
 
+enum VoBLEAutoReconnectPolicy {
+    static func delay(forAttempt attempt: Int) -> TimeInterval {
+        let exponent = min(5, max(0, attempt - 1))
+        return min(30, pow(2, Double(exponent)))
+    }
+
+    static func shouldReconnect(
+        enabled: Bool, known: Bool, selected: Bool,
+        state: VoBLEConnectionState
+    ) -> Bool {
+        guard enabled, known, selected else { return false }
+        switch state {
+        case .stopped, .failed: return true
+        default: return false
+        }
+    }
+}
+
 @MainActor
 final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     let radio: VoBLERadioController
@@ -33,6 +51,8 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     @Published private var enabled = false
     private var handshake: UUID?
     private var pending: [VoBLEDiscoveredPeer] = []
+    private var reconnectTasks: [UUID: Task<Void, Never>] = [:]
+    private var reconnectAttempts: [UUID: Int] = [:]
 
     init(radio: VoBLERadioController? = nil, pairingStore: any VoBLEPairingStoring = VoBLEPairingStore(),
          knownPeripheral: ((UUID) -> Bool)? = nil) {
@@ -60,8 +80,14 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     }
     func start() {
         if !enabled { enabled = true }
+        // A user/mode/foreground transition starts a fresh reconnect budget.
+        // Without this, five failed attempts would permanently disable recovery.
+        reconnectTasks.values.forEach { $0.cancel() }
+        reconnectTasks.removeAll()
+        reconnectAttempts.removeAll()
         for value in sessions.values { value.central.start() }
         radio.start()
+        if let selectedPeripheralID { attemptReconnect(selectedPeripheralID) }
         syncMediaScanPolicy()
     }
 
@@ -88,6 +114,9 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     func stop(except agentID: String?) {
         if enabled { enabled = false }
         pending.removeAll(); handshake = nil
+        reconnectTasks.values.forEach { $0.cancel() }
+        reconnectTasks.removeAll()
+        reconnectAttempts.removeAll()
         for (id, value) in sessions where value.central.authenticatedIdentity != agentID || agentID == nil {
             value.central.stop()
             radio.cancel(peripheralID: id)
@@ -97,6 +126,27 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     func select(peripheralID: UUID) {
         guard sessions[peripheralID] != nil else { return }
         selectedPeripheralID = peripheralID
+    }
+
+    /// Called when the user switches Android Agent. Selecting a session is not
+    /// enough: a stopped/never-connected session must be started and reconnected.
+    func ensureConnected(agentID: String) {
+        guard let peripheralID = PairedAndroidDeviceStore.peripheralID(for: agentID) else { return }
+        selectedPeripheralID = peripheralID
+        start()
+        let value = prepare(peripheralID: peripheralID)
+        value.central.start()
+        if let peer = radio.discoveredPeers.first(where: { $0.id == peripheralID }) {
+            value.central.connect(peer)
+        } else if let peripheral = radio.peripheral(peripheralID) {
+            value.central.connect(VoBLEDiscoveredPeer(
+                id: peripheralID,
+                name: peripheral.name ?? "AirSIM Android",
+                signal: 0
+            ))
+        } else {
+            radio.start()
+        }
     }
     func session(for agentID: String) -> VoBLECentralController? { bundle(for: agentID)?.central }
     func bundle(for agentID: String) -> VoBLEDeviceSession? {
@@ -126,6 +176,8 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
         sessions.removeValue(forKey: id)
         observations.removeValue(forKey: id)
         pending.removeAll { $0.id == id }
+        reconnectTasks.removeValue(forKey: id)?.cancel()
+        reconnectAttempts.removeValue(forKey: id)
         if selectedPeripheralID == id { selectedPeripheralID = nil }
         if handshake == id { handshake = nil; nextHandshake() }
         syncMediaScanPolicy()
@@ -143,11 +195,23 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
         value.central.$state.dropFirst().receive(on: DispatchQueue.main).sink { [weak self, weak value] state in
             guard let self, let value, value.central.state == state else { return }
             self.objectWillChange.send()
+            if state == .ready {
+                self.reconnectAttempts[peripheralID] = 0
+                self.reconnectTasks.removeValue(forKey: peripheralID)?.cancel()
+            }
             if state == .ready, self.selectedPeripheralID == nil { self.selectedPeripheralID = peripheralID }
             if self.handshake == peripheralID, state == .ready || state == .stopped || {
                 if case .failed = state { return true }; return false
             }() {
                 self.handshake = nil; self.nextHandshake()
+            }
+            if VoBLEAutoReconnectPolicy.shouldReconnect(
+                enabled: self.enabled,
+                known: self.isKnown(peripheralID),
+                selected: self.isReconnectTarget(peripheralID),
+                state: state
+            ) {
+                self.scheduleReconnect(peripheralID)
             }
         }.store(in: &subscriptions)
         value.central.$deviceInformation.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() }
@@ -168,6 +232,51 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
 
     private func isKnown(_ id: UUID) -> Bool {
         knownPeripheral(id)
+    }
+
+    private func isReconnectTarget(_ id: UUID) -> Bool {
+        if selectedPeripheralID == id { return true }
+        return selectedPeripheralID == nil && sessions.count == 1
+    }
+
+    private func scheduleReconnect(_ id: UUID) {
+        guard enabled, isKnown(id), isReconnectTarget(id) else { return }
+        let attempt = (reconnectAttempts[id] ?? 0) + 1
+        guard attempt <= 5 else { return }
+        reconnectAttempts[id] = attempt
+        reconnectTasks[id]?.cancel()
+        let delay = VoBLEAutoReconnectPolicy.delay(forAttempt: attempt)
+        reconnectTasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.attemptReconnect(id)
+        }
+    }
+
+    private func attemptReconnect(_ id: UUID) {
+        guard enabled, isKnown(id), isReconnectTarget(id) else { return }
+        let value = prepare(peripheralID: id)
+        value.central.start()
+        radio.start()
+        if let peer = radio.discoveredPeers.first(where: { $0.id == id }) {
+            value.central.connect(peer)
+        } else if let peripheral = radio.peripheral(id) {
+            value.central.connect(VoBLEDiscoveredPeer(
+                id: id,
+                name: peripheral.name ?? "AirSIM Android",
+                signal: 0
+            ))
+        }
+        // A powered-off radio or an RPA change may leave us scanning. Retry with
+        // capped backoff; a ready state cancels this task from the state sink.
+        reconnectTasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, let self,
+                  self.enabled, self.isKnown(id), self.isReconnectTarget(id) else { return }
+            if self.sessions[id]?.central.state != .ready {
+                self.scheduleReconnect(id)
+            }
+        }
     }
     private func discover(_ peer: VoBLEDiscoveredPeer) {
         guard enabled, isKnown(peer.id), !pending.contains(where: { $0.id == peer.id }),

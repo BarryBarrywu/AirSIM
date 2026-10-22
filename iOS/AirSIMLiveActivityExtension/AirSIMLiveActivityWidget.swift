@@ -88,9 +88,9 @@ struct AirSIMLiveActivityWidget: Widget {
     ) -> some View {
         switch state.phase {
         case .standby:
-            pairedAgentCountView(state)
+            agentSwitchControl(state)
         case .cloudStandby:
-            pairedAgentCountView(state)
+            agentSwitchControl(state)
         case .active, .incoming, .held:
             EmptyView()
         case .offline:
@@ -239,6 +239,26 @@ struct AirSIMLiveActivityWidget: Widget {
         .modifier(ProgressiveIslandGlassSurface())
     }
 
+    @ViewBuilder
+    private func agentSwitchControl(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> some View {
+        if #available(iOS 17.0, *), (state.pairedAgentCount ?? 0) > 1 {
+            Button(intent: SwitchAirSIMAgentIntent()) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tint(for: state.phase))
+                    .frame(width: 30, height: 30)
+                    .background(Color.white.opacity(0.10), in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("切换 Android Agent，共 \(state.pairedAgentCount ?? 0) 台")
+        } else {
+            pairedAgentCountView(state)
+        }
+    }
+
     private func pairedAgentCountView(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
@@ -256,22 +276,42 @@ struct AirSIMLiveActivityWidget: Widget {
     private func agentSummaryRow(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
-        HStack(spacing: 9) {
+        HStack(alignment: .center, spacing: 10) {
             Image(systemName: "smartphone")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.green)
-                .frame(width: 24, height: 24)
+                .frame(width: 26, height: 26)
                 .background(Color.green.opacity(0.16), in: Circle())
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
                     Text(nonEmpty(state.agentDeviceName) ?? "Android Agent")
-                        .font(.caption.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .layoutPriority(1)
                     if let count = state.pairedAgentCount, count > 1 {
                         Text("共 \(count) 台")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.white.opacity(0.52))
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    Spacer(minLength: 6)
+                    if #available(iOS 17.0, *), (state.pairedAgentCount ?? 0) > 1 {
+                        Button(intent: SwitchAirSIMAgentIntent()) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                Text("切换")
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.10), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("切换 Android Agent，共 \(state.pairedAgentCount ?? 0) 台")
                     }
                 }
                 Text(agentDetailLine(state))
@@ -280,9 +320,6 @@ struct AirSIMLiveActivityWidget: Widget {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
-
-            Spacer(minLength: 4)
-            connectionBadges(state)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -291,36 +328,6 @@ struct AirSIMLiveActivityWidget: Widget {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
         }
-    }
-
-    private func connectionBadges(
-        _ state: AirSIMCallActivityAttributes.ContentState
-    ) -> some View {
-        HStack(spacing: 5) {
-            if vowlanIsOnline(state) {
-                connectionBadge("VoWLAN", systemImage: "wifi", color: .green)
-            }
-            if bluetoothIsOnline(state) {
-                connectionBadge("VoBLE", systemImage: "wave.3.right", color: .blue)
-            }
-            if cloudIsOnline(state) {
-                connectionBadge("云端", systemImage: "icloud.fill", color: .cyan)
-            }
-        }
-    }
-
-    private func connectionBadge(
-        _ title: String,
-        systemImage: String,
-        color: Color
-    ) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.15), in: Capsule())
-            .labelStyle(.titleAndIcon)
     }
 
     @ViewBuilder

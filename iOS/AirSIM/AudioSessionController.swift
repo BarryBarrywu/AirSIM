@@ -62,19 +62,16 @@ final class SystemCallToneOutput: CallToneOutput {
 }
 
 enum PCMRoute: Equatable, Sendable {
-    case moduleLocal
     case vowlan(endpoint: VoWLANEndpoint, credential: VoWLANCredential)
 
     var host: String {
         switch self {
-        case .moduleLocal: return "192.168.225.1"
         case let .vowlan(endpoint, _): return endpoint.host
         }
     }
 
     var port: UInt16 {
         switch self {
-        case .moduleLocal: return 7_580
         case let .vowlan(endpoint, _): return endpoint.pcmPort
         }
     }
@@ -97,7 +94,6 @@ enum PCMRoute: Equatable, Sendable {
 
     func handshake() throws -> Data {
         switch self {
-        case .moduleLocal: throw APIError.disabledLegacyRoute
         case let .vowlan(_, credential): return try VoWLANPCMHandshake.make(credential: credential)
         }
     }
@@ -155,7 +151,7 @@ enum SpeakerRoutePolicy {
     }
 }
 
-/// 管理 iPhone/iPad 内置麦克风、扬声器与模块 ECM 网络 PCM 之间的双向通话音频。
+/// 管理 iPhone/iPad 内置麦克风、扬声器与 VoWLAN 网络 PCM 之间的双向通话音频。
 @MainActor
 final class AudioSessionController: ObservableObject {
     @Published private(set) var active = false
@@ -230,7 +226,7 @@ final class AudioSessionController: ObservableObject {
 
     @discardableResult
     func activateForCall(
-        route: PCMRoute = .moduleLocal,
+        route: PCMRoute,
         sessionAlreadyActive: Bool = false,
         owner: UUID = UUID(),
         isCurrent: () -> Bool = { true }
@@ -266,14 +262,7 @@ final class AudioSessionController: ObservableObject {
             let encoder = VoicePCMEncoder()
             // 用户可能在权限弹窗或音频启动期间切换静音，新编码器必须继承期望状态。
             encoder.setMuted(muted)
-            let handshakeSequence: PCMHandshakeSequence
-            switch route {
-            case .moduleLocal:
-                _ = try route.handshake()
-                throw APIError.disabledLegacyRoute
-            case .vowlan:
-                handshakeSequence = PCMHandshakeSequence { try route.handshake() }
-            }
+            let handshakeSequence = PCMHandshakeSequence { try route.handshake() }
             let transport = NetworkPCMTransport(
                 host: NWEndpoint.Host(route.host),
                 port: NWEndpoint.Port(rawValue: route.port)!,
@@ -966,22 +955,18 @@ private final class NetworkPCMTransport: @unchecked Sendable {
         guard !stopped else { return }
         generation += 1
         let attempt = generation
-        let useWiredInterface = !usesSystemRouting && !requiresWiFi && !fallbackAttempted
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         tcp.enableKeepalive = true
         tcp.keepaliveIdle = 2
         let parameters = NWParameters(tls: nil, tcp: tcp)
-        // 首选 USB ECM；部分 iOS 版本把 USB 网卡报告为 other，失败后再放宽接口筛选。
         if requiresWiFi {
             parameters.requiredInterfaceType = .wifi
-        } else if useWiredInterface {
-            parameters.requiredInterfaceType = .wiredEthernet
         }
         let connection = NWConnection(host: host, port: port, using: parameters)
         self.connection = connection
         readyForPCM = false
-        onEvent(.status(isOverlayHost ? "正在通过 VPN 直连 PCM" : (requiresWiFi ? "正在通过 VoWLAN 连接 PCM" : (useWiredInterface ? "正在通过 USB 网卡连接 PCM" : "正在回退到普通 TCP 连接 PCM"))))
+        onEvent(.status(isOverlayHost ? "正在通过 VPN 直连 PCM" : (requiresWiFi ? "正在通过 VoWLAN 连接 PCM" : "正在回退到普通 TCP 连接 PCM")))
         connection.pathUpdateHandler = { [weak self, weak connection] path in
             guard let self, connection != nil else { return }
             self.queue.async {
@@ -1003,7 +988,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
                     // 这是可恢复状态，不能把底层错误原样暴露成通话失败。
                     self.onEvent(.status(self.transientStatus(for: error)))
                 case let .failed(error):
-                    self.retryOrFail(error.localizedDescription, attempt: attempt, allowFallback: useWiredInterface)
+                    self.retryOrFail(error.localizedDescription, attempt: attempt, allowFallback: !self.usesSystemRouting)
                 case .cancelled:
                     break
                 default:
@@ -1015,7 +1000,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 8) { [weak self] in
             guard let self, !self.stopped, self.generation == attempt,
                   !self.readyForPCM else { return }
-            self.retryOrFail("连接模块网络 PCM 超时", attempt: attempt, allowFallback: useWiredInterface)
+            self.retryOrFail("连接 VoWLAN PCM 超时", attempt: attempt, allowFallback: !self.usesSystemRouting)
         }
     }
 
@@ -1136,10 +1121,10 @@ private final class NetworkPCMTransport: @unchecked Sendable {
         connection?.cancel()
         connection = nil
         if allowFallback && !fallbackAttempted {
-            // USB ECM 在不同 iOS 版本上的接口类型标识不一致；只切换 Network.framework
-            // 的接口筛选，不改变目标地址，避免把控制链路误切到公网。
+            // 本地 Wi-Fi 路径失败时放宽接口筛选，但不改变目标地址；
+            // 远程/overlay 地址已经走系统路由，不需要这一步。
             fallbackAttempted = true
-            onEvent(.status("USB 网卡连接失败，正在重试 PCM"))
+            onEvent(.status("Wi-Fi 路径连接失败，正在重试 PCM"))
             queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.startAttempt() }
             return
         }
@@ -1150,7 +1135,7 @@ private final class NetworkPCMTransport: @unchecked Sendable {
                 self?.startAttempt()
             }
         } else if !stopped {
-            onEvent(.failed("等待模块语音桥就绪超时，请保持模块接入后重试通话"))
+            onEvent(.failed("等待 Android 语音桥就绪超时，请保持 Android 在线后重试通话"))
         }
     }
 

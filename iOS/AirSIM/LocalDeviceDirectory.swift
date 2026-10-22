@@ -50,7 +50,7 @@ final class LocalDeviceDirectory: ObservableObject {
          bluetoothReady: @escaping (String) -> Bool = { _ in false },
          apiFactory: @escaping @Sendable (LocalAgentRoute) -> AirSIMAPI = { AirSIMAPI(route: $0) },
          healthTransport: @escaping HealthTransport = { request in
-             try await WiredHTTPTransport(policy: .vowlan).send(request)
+             try await WiredHTTPTransport().send(request)
          }) {
         self.credentials = credentials; self.legacyBinding = legacyBinding
         self.bluetoothReady = bluetoothReady; self.healthTransport = healthTransport

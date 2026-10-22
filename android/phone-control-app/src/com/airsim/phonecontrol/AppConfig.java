@@ -57,6 +57,13 @@ public final class AppConfig {
         preferences(context).edit().putBoolean("debug_enabled", enabled).apply();
     }
 
+    public static void setMode(Context context, String mode) {
+        String normalized = MODE_LOCAL_AND_PUSH.equals(mode) ? MODE_LOCAL_AND_PUSH : MODE_REMOTE_SILENT;
+        preferences(context).edit().putString("mode", normalized).apply();
+        if (RuntimeMode.isStandalone(context)) StandaloneAgentService.start(context);
+        BridgeLog.info("call_mode_changed mode=" + normalized);
+    }
+
     public static void save(Context context, String endpoint, String token, String mode) {
         if (RuntimeMode.isStandalone(context)) {
             String normalizedMode = MODE_LOCAL_AND_PUSH.equals(mode) ? MODE_LOCAL_AND_PUSH : MODE_REMOTE_SILENT;

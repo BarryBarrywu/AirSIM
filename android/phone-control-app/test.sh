@@ -272,6 +272,8 @@ ANDROID_JAR="${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}/p
 SMS_OUT="$OUT/sms-compat"
 mkdir -p "$SMS_OUT"
 "$JAVAC" --release 17 -cp "$ANDROID_JAR:$DIAGNOSTICS_OUT:$OUT" -d "$SMS_OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/SMSResultCode.java \
+  "$ROOT"/src/com/airsim/phonecontrol/SmsSendConfirmationGate.java \
   "$ROOT"/src/com/airsim/phonecontrol/SMSCommandExecutor.java
 "$JAVAC" --release 17 -cp "$SMS_OUT:$OUT:$ANDROID_JAR" -d "$SMS_OUT" \
   "$ROOT"/test/compat/android/telephony/SmsManager.java \

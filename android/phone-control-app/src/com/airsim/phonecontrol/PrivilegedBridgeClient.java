@@ -53,6 +53,27 @@ final class PrivilegedBridgeClient implements PrivilegedBridgeCoordinator.Transp
         return transact(PrivilegedBridgeProtocol.TRANSACTION_ENSURE_DIALER_ROLE, false, false);
     }
 
+    String recentSms(long afterId, long cutoffMillis, int limit) throws RemoteException {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(PrivilegedBridgeProtocol.DESCRIPTOR);
+            data.writeLong(afterId);
+            data.writeLong(cutoffMillis);
+            data.writeInt(limit);
+            if (!binder.transact(PrivilegedBridgeProtocol.TRANSACTION_RECENT_SMS,
+                    data, reply, 0)) {
+                throw new RemoteException("privileged SMS inbox transaction rejected");
+            }
+            reply.readException();
+            String result = reply.readString();
+            return result == null ? "" : result;
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
+    }
+
     String sendSms(String destination, String body, int subscriptionId) throws RemoteException {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();

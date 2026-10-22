@@ -103,6 +103,12 @@ enum IncomingSMSPresentationRequest {
 @MainActor
 final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
     private let coldLaunchCallHandler = ColdLaunchCallKitHandler()
+
+    /// AppModel has taken over CallKit actions; release the cold-launch browser so
+    /// two VoWLAN controllers do not run concurrent Bonjour/network recovery loops.
+    func releaseColdLaunchHandler() {
+        coldLaunchCallHandler.stop()
+    }
     private let historyStore = LocalHistoryStore()
 
     func application(
@@ -172,13 +178,28 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
             return
         }
         if userInfo["event"] as? String == "call_owner",
-           userInfo["owner"] as? String == "watch" {
+           let owner = userInfo["owner"] as? String,
+           owner == "watch" || owner == "android" {
             let callID = userInfo["call_id"] as? String
             let uuid = (userInfo["call_uuid"] as? String).flatMap(UUID.init(uuidString:))
-            if CallKitController.shared.matchesCurrentCall(callID: callID, uuid: uuid) {
-                let reason: CXCallEndedReason = userInfo["phase"] as? String == "active"
-                    ? .answeredElsewhere : .declinedElsewhere
+            let generation = (userInfo["generation"] as? NSNumber)?.uint64Value
+            let phase = userInfo["phase"] as? String
+            if CallKitController.shared.matchesCurrentCall(
+                callID: callID, uuid: uuid, generation: generation
+            ) {
+                let answered = CallKitController.shared.currentCallIsAnswered
+                if owner == "android", phase == "active", answered {
+                    completionHandler(.noData)
+                    return
+                }
+                let reason: CXCallEndedReason
+                if owner == "android" {
+                    reason = phase == "active" ? .answeredElsewhere : .remoteEnded
+                } else {
+                    reason = phase == "active" ? .answeredElsewhere : .declinedElsewhere
+                }
                 CallKitController.shared.reportCurrentCallEnded(reason: reason)
+                IPhoneCloudCallSession.shared.stop()
                 completionHandler(.newData)
             } else {
                 completionHandler(.noData)
@@ -329,6 +350,7 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
     private let vowlan = VoWLANController()
 
     init() { vowlan.startBrowsing() }
+    func stop() { vowlan.stopBrowsing() }
 
     func availableSamsungAPI() async -> AirSIMAPI? {
         await vowlan.probeNow()

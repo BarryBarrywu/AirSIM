@@ -39,6 +39,9 @@ public final class AirSIMInCallService extends InCallService {
         call.registerCallback(callback);
         AgentWatchdogService.start(this);
         emit(call, call.getState());
+        if ("incoming".equals(direction(call)) && call.getState() == Call.STATE_RINGING) {
+            showFullScreenIncoming(callId);
+        }
     }
 
     @Override
@@ -63,7 +66,8 @@ public final class AirSIMInCallService extends InCallService {
         String callId = CallRepository.id(call);
         String callDirection = direction(call);
         String callNumber = number(call);
-        BridgeNotification.showCall(this, callId, callDirection, AppConfig.mode(this), wireState);
+        BridgeNotification.showCall(this, callId, callDirection,
+                AppConfig.mode(this), wireState, callNumber);
         BridgeLog.debug("telecom_state_changed call_id=" + DebugRedactor.safeIdentifier(callId)
                 + " direction=" + callDirection + " state=" + wireState);
         if (!"unknown".equals(wireState) && deduplicator.shouldSend(callId, callDirection, wireState, callNumber)) {
@@ -92,12 +96,32 @@ public final class AirSIMInCallService extends InCallService {
         // the unique, authenticated call with a ready PCM owner may silence output.
         // This also restores local audio immediately on media loss, even if Telecom
         // has not removed the carrier call yet. Microphone and PCM gain are untouched.
+        // Audio ownership is independent of the presentation mode: when the
+        // authenticated iPhone owns the media, Android must mute its local output
+        // in both remote_silent and local_and_push. The mode controls presentation
+        // and is persisted/forwarded separately.
         boolean shouldSilence = relayingAudio && ownsRemoteCall;
+        BridgeLog.info("local_audio_policy mode=" + AppConfig.mode(this)
+                + " silence=" + shouldSilence);
         localAudio.update(shouldSilence, RemoteAudioSessionRegistry.streamPolicy());
         // Multiple native calls cannot safely share a global mute-repair decision.
         localAudio.updateWatchdog(shouldSilence,
                 liveCalls.toString() + transports, transports);
 	}
+
+    private void showFullScreenIncoming(String callId) {
+        try {
+            Intent intent = new Intent(this, CallScreenActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra(CallScreenActivity.EXTRA_CALL_ID, callId);
+            startActivity(intent);
+            BridgeLog.info("incoming_full_screen_requested");
+        } catch (RuntimeException error) {
+            BridgeLog.error("incoming_full_screen_failed", error);
+        }
+    }
 
     public static void refreshAudioPolicy() {
         AirSIMInCallService active = instance;
