@@ -272,6 +272,22 @@ struct AndroidAgentPresentation: Equatable, Identifiable, Sendable {
     }
 }
 
+enum AndroidAgentCycle {
+    /// Stable round-robin over every paired Agent, independent of the
+    /// current-first presentation order. Returns nil when there is nothing to
+    /// switch to.
+    static func nextID(
+        in agents: [AndroidAgentPresentation],
+        currentID: String?
+    ) -> String? {
+        guard agents.count > 1 else { return nil }
+        let ordered = agents.sorted { $0.id < $1.id }
+        let currentIndex = ordered.firstIndex { $0.id == currentID }
+        let nextIndex = currentIndex.map { ($0 + 1) % ordered.count } ?? 0
+        return ordered[nextIndex].id
+    }
+}
+
 enum ModuleConnectionSummary: Equatable, Sendable {
     case localOnline
     case localOnlineNoService

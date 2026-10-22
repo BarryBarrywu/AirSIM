@@ -13,7 +13,7 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             var title: String {
                 switch self {
                 case .vowlan: return "VoWLAN"
-                case .bluetooth: return "蓝牙"
+                case .bluetooth: return "VoBLE"
                 case .cloud: return "云端"
                 }
             }
@@ -49,6 +49,26 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
         let vowlanOnline: Bool?
         let bluetoothOnline: Bool?
         let cloudOnline: Bool?
+        /// 待机列表最多保留三台；可选以兼容 0.9.8.9 之前推送的 ContentState。
+        let agents: [AgentSummary]?
+
+        struct AgentSummary: Codable, Hashable, Identifiable {
+            let id: String
+            let name: String
+            let phoneNumber: String?
+            let agentKind: String?
+            let vowlanOnline: Bool
+            let bluetoothOnline: Bool
+            let cloudOnline: Bool
+            let isCurrent: Bool
+
+            var transport: Transport? {
+                if vowlanOnline { return .vowlan }
+                if bluetoothOnline { return .bluetooth }
+                if cloudOnline { return .cloud }
+                return nil
+            }
+        }
 
         init(
             callID: String,
@@ -69,7 +89,8 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             pairedAgentCount: Int? = nil,
             vowlanOnline: Bool? = nil,
             bluetoothOnline: Bool? = nil,
-            cloudOnline: Bool? = nil
+            cloudOnline: Bool? = nil,
+            agents: [AgentSummary]? = nil
         ) {
             self.callID = callID
             self.number = number
@@ -90,6 +111,7 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             self.vowlanOnline = vowlanOnline
             self.bluetoothOnline = bluetoothOnline
             self.cloudOnline = cloudOnline
+            self.agents = agents
         }
 
         enum Phase: String, Codable, Hashable {
@@ -136,7 +158,8 @@ extension AirSIMCallActivityAttributes.ContentState {
             pairedAgentCount: pairedAgentCount,
             vowlanOnline: vowlanOnline,
             bluetoothOnline: bluetoothOnline,
-            cloudOnline: cloudOnline
+            cloudOnline: cloudOnline,
+            agents: agents
         )
     }
 }
@@ -223,11 +246,21 @@ enum AirSIMLiveActivityActionURL {
 @MainActor
 enum LiveActivityActionBridge {
     static var handler: ((AirSIMLiveActivityAction, String) async -> Bool)?
+    static var agentSelectionHandler: ((String) async -> Bool)?
 
     static func perform(_ action: AirSIMLiveActivityAction, callID: String) async -> Bool {
         // A cold launch may still be initializing AppModel; give it a short window.
         for _ in 0..<20 {
             if let handler { return await handler(action, callID) }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+
+    static func selectAgent(_ agentID: String) async -> Bool {
+        guard !agentID.isEmpty else { return false }
+        for _ in 0..<20 {
+            if let agentSelectionHandler { return await agentSelectionHandler(agentID) }
             try? await Task.sleep(for: .milliseconds(100))
         }
         return false
@@ -283,6 +316,24 @@ struct SwitchAirSIMAgentIntent: LiveActivityIntent {
 
     func perform() async throws -> some IntentResult {
         guard await LiveActivityActionBridge.perform(.switchAgent, callID: "") else {
+            throw LiveActivityActionError.appUnavailable
+        }
+        return .result()
+    }
+}
+
+@available(iOS 17.0, *)
+struct SelectAirSIMAgentIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "切换到这台 Android Agent"
+    static var openAppWhenRun = false
+
+    @Parameter(title: "Agent ID") var agentID: String
+
+    init() { agentID = "" }
+    init(agentID: String) { self.agentID = agentID }
+
+    func perform() async throws -> some IntentResult {
+        guard await LiveActivityActionBridge.selectAgent(agentID) else {
             throw LiveActivityActionError.appUnavailable
         }
         return .result()

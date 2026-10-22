@@ -1405,6 +1405,10 @@ final class AppModel: ObservableObject {
             guard let self else { return false }
             return await self.performLiveActivityAction(action, callID: callID)
         }
+        LiveActivityActionBridge.agentSelectionHandler = { [weak self] agentID in
+            guard let self else { return false }
+            return await self.selectAndroidAgent(agentID)
+        }
         vowlan.onAvailabilityChange = { [weak self] availability in
             guard let self else { return }
             self.objectWillChange.send()
@@ -2431,10 +2435,14 @@ final class AppModel: ObservableObject {
     private var liveActivityAgentSnapshot: LiveActivityAgentSnapshot? {
         let agents = pairedAndroidAgents
         guard !agents.isEmpty else { return nil }
+        let current = deviceCalls.active.flatMap { owner in
+            agents.first { $0.id == owner.agentID }
+        } ?? agents.first(where: \.isCurrent)
         return LiveActivityAgentSnapshot(
-            agent: deviceCalls.active.flatMap { owner in agents.first { $0.id == owner.agentID } }
-                ?? agents.first(where: \.isCurrent),
-            pairedAgentCount: agents.count
+            agent: current,
+            pairedAgentCount: agents.count,
+            agents: agents,
+            currentID: current?.id
         )
     }
 
@@ -2672,16 +2680,25 @@ final class AppModel: ObservableObject {
     private func switchToNextAndroidAgent() {
         let agents = pairedAndroidAgents
         guard agents.count > 1 else { return }
+        // Cycle in a stable order. The displayed list puts the current Agent
+        // first, so filtering "first online candidate" would alternate between
+        // the first two devices and never reach a third one.
         let currentID = agents.first(where: \.isCurrent)?.id ?? boundAgentID
-        let candidates = agents.filter { $0.id != currentID }
-        guard !candidates.isEmpty else { return }
-        let next = candidates.first(where: {
-            $0.phoneNumber?.isEmpty == false
-                && ($0.vowlanOnline || $0.bluetoothOnline || $0.cloudOnline)
-        }) ?? candidates.first(where: {
-            $0.vowlanOnline || $0.bluetoothOnline || $0.cloudOnline
-        }) ?? candidates[0]
-        bindAndroidAgent(next.id)
+        guard let nextID = AndroidAgentCycle.nextID(in: agents, currentID: currentID) else { return }
+        bindAndroidAgent(nextID)
+    }
+
+    /// Selects one specific row from the lock-screen/expanded list. The Live
+    /// Activity intent only opens the app process; binding still goes through the
+    /// same paired-Agent path as the in-app switcher.
+    @MainActor
+    private func selectAndroidAgent(_ agentID: String) async -> Bool {
+        guard !callLifecycleSnapshot.state.representsCall,
+              !IPhoneCloudCallSession.shared.hasActiveCall else { return true }
+        guard pairedAndroidAgents.contains(where: { $0.id == agentID }) else { return false }
+        bindAndroidAgent(agentID)
+        await refreshLiveActivityIdle()
+        return true
     }
 
     /// Returns the island to standby without ending the persistent activity.

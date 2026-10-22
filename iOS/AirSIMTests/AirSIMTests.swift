@@ -3082,6 +3082,58 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(state.cloudOnline, true)
     }
 
+    func testAndroidAgentCycleVisitsEveryPairedDevice() {
+        let agents = ["a", "b", "c", "d", "e"].map { id in
+            AndroidAgentPresentation(
+                id: id, deviceName: id, phoneNumber: nil, agentKind: "standalone",
+                cloudOnline: true, vowlanOnline: false, bluetoothOnline: false,
+                isCurrent: false
+            )
+        }
+
+        XCTAssertEqual(AndroidAgentCycle.nextID(in: agents, currentID: "a"), "b")
+        XCTAssertEqual(AndroidAgentCycle.nextID(in: agents, currentID: "b"), "c")
+        XCTAssertEqual(AndroidAgentCycle.nextID(in: agents, currentID: "c"), "d")
+        XCTAssertEqual(AndroidAgentCycle.nextID(in: agents, currentID: "d"), "e")
+        XCTAssertEqual(AndroidAgentCycle.nextID(in: agents, currentID: "e"), "a")
+        XCTAssertNil(AndroidAgentCycle.nextID(in: Array(agents.prefix(1)), currentID: "a"))
+    }
+
+    func testLiveActivityCarriesAllAgentRowsAndMarksSelectedOne() {
+        let agents = [
+            AndroidAgentPresentation(
+                id: "samsung", deviceName: "Samsung Flip7", phoneNumber: "13800000000",
+                agentKind: "standalone", cloudOnline: false, vowlanOnline: true,
+                bluetoothOnline: false, isCurrent: false
+            ),
+            AndroidAgentPresentation(
+                id: "oneplus", deviceName: "一加 12", phoneNumber: "13800000001",
+                agentKind: "standalone", cloudOnline: false, vowlanOnline: false,
+                bluetoothOnline: true, isCurrent: true
+            ),
+            AndroidAgentPresentation(
+                id: "xiaomi", deviceName: "小米 15 Pro", phoneNumber: nil,
+                agentKind: "standalone", cloudOnline: true, vowlanOnline: false,
+                bluetoothOnline: false, isCurrent: false
+            )
+        ]
+        let state = LiveActivityStateBuilder.make(
+            call: nil, callerName: nil, moduleOnline: true, radio: nil,
+            agent: LiveActivityAgentSnapshot(
+                agent: nil, pairedAgentCount: agents.count,
+                agents: agents, currentID: "oneplus"
+            ),
+            idleStartedAt: Date(timeIntervalSince1970: 1)
+        )
+
+        XCTAssertEqual(state.agents?.count, 3)
+        XCTAssertEqual(state.agents?.filter(\.isCurrent).map(\.id), ["oneplus"])
+        XCTAssertEqual(state.agentDeviceName, "一加 12")
+        XCTAssertEqual(state.agents?.first(where: { $0.id == "samsung" })?.transport, .vowlan)
+        XCTAssertEqual(state.agents?.first(where: { $0.id == "oneplus" })?.transport, .bluetooth)
+        XCTAssertEqual(state.agents?.first(where: { $0.id == "xiaomi" })?.transport, .cloud)
+    }
+
     func testHiddenLiveActivityDoesNotRegisterPushToStartToken() {
         let suiteName = "AirSIMTests.live-activity.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

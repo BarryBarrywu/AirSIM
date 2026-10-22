@@ -23,25 +23,41 @@ struct AirSIMLiveActivityWidget: Widget {
             let state = context.state.liveActivityDisplayState(isStale: context.isStale)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    islandIdentity(for: state)
+                    if usesAgentList(state) {
+                        agentListBrandMark
+                    } else {
+                        islandIdentity(for: state)
+                    }
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(idleTitle(state))
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text(activityStatusLine(state))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(tint(for: state.phase))
-                            .lineLimit(1)
+                    if usesAgentList(state) {
+                        agentListCenter(state)
+                    } else {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(idleTitle(state))
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(activityStatusLine(state))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(tint(for: state.phase))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    expandedTrailingView(state)
+                    if usesAgentList(state) {
+                        agentListCount(state)
+                    } else {
+                        expandedTrailingView(state)
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    expandedBottomView(state)
+                    if usesAgentList(state) {
+                        expandedAgentList(state)
+                    } else {
+                        expandedBottomView(state)
+                    }
                 }
             } compactLeading: {
                 compactLeadingView(state)
@@ -100,7 +116,18 @@ struct AirSIMLiveActivityWidget: Widget {
         }
     }
 
+    @ViewBuilder
     private func lockScreenView(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> some View {
+        if usesAgentList(state) {
+            agentListLockScreen(state)
+        } else {
+            callLockScreenView(state)
+        }
+    }
+
+    private func callLockScreenView(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
         let callPhase = state.phase == .incoming || state.phase == .active || state.phase == .held
@@ -166,6 +193,298 @@ struct AirSIMLiveActivityWidget: Widget {
         // ActivityKit 在锁屏上已经提供系统级 Live Activity 容器。iOS 26 再给
         // 根内容叠加 glassEffect 会生成第二个采样层，真机上可能只显示空玻璃壳。
         // 透明 activityBackgroundTint 负责启用宿主 Liquid Glass，正文保持普通布局。
+    }
+
+    private func usesAgentList(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> Bool {
+        switch state.phase {
+        case .standby, .cloudStandby, .offline: return true
+        case .incoming, .active, .held: return false
+        }
+    }
+
+    private var agentListBrandMark: some View {
+        Text("AirSIM")
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(.white)
+    }
+
+    private func agentListCount(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> some View {
+        let count = agentCount(state)
+        return HStack(spacing: 4) {
+            if #available(iOS 17.0, *), count > 1 {
+                Button(intent: SwitchAirSIMAgentIntent()) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.70))
+                        .frame(width: 18, height: 18)
+                        .background(Color.white.opacity(0.10), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("切换到下一台 Android Agent")
+            }
+            Text("共 \(count) 台")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.52))
+                .lineLimit(1)
+        }
+    }
+
+    private func agentListFooter(_ count: Int) -> String {
+        if count > 3 {
+            return "共 \(count) 台 · 点右上角切换下一台"
+        }
+        return count > 1 ? "轻点设备，切换下一通拨号" : "Android Agent 列表"
+    }
+
+    private func agentListCenter(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> some View {
+        let current = displayAgents(state).first(where: \.isCurrent) ?? displayAgents(state).first
+        return Text(current?.name ?? "Android Agent")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+    }
+
+    private func agentCount(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> Int {
+        max(displayAgents(state).count,
+            state.pairedAgentCount ?? 0,
+            state.agents?.count ?? 0)
+    }
+
+    private func displayAgents(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> [AirSIMCallActivityAttributes.ContentState.AgentSummary] {
+        if let values = state.agents, !values.isEmpty {
+            return Array(values
+                .sorted { $0.isCurrent && !$1.isCurrent }
+                .prefix(3))
+        }
+        guard let name = nonEmpty(state.agentDeviceName) else {
+            return [.init(
+                id: "current",
+                name: "Android Agent",
+                phoneNumber: nil,
+                agentKind: state.agentKind,
+                vowlanOnline: state.vowlanOnline == true,
+                bluetoothOnline: state.bluetoothOnline == true,
+                cloudOnline: state.cloudOnline == true,
+                isCurrent: true
+            )]
+        }
+        return [.init(
+            id: "current",
+            name: name,
+            phoneNumber: state.agentPhoneNumber,
+            agentKind: state.agentKind,
+            vowlanOnline: state.vowlanOnline == true,
+            bluetoothOnline: state.bluetoothOnline == true,
+            cloudOnline: state.cloudOnline == true,
+            isCurrent: true
+        )]
+    }
+
+    private func agentListLockScreen(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> some View {
+        let agents = displayAgents(state)
+        let count = agentCount(state)
+        return VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                agentListBrandMark
+                Spacer(minLength: 4)
+                agentListCount(state)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(agents.enumerated()), id: \.offset) { index, agent in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.07))
+                            .frame(height: 0.5)
+                            .padding(.leading, 42)
+                    }
+                    agentRow(agent, compact: false)
+                }
+            }
+            Text(agentListFooter(count))
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.black.opacity(0.18))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.20), .white.opacity(0.04)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.7
+                )
+        }
+    }
+
+    private func expandedAgentList(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> some View {
+        let agents = displayAgents(state)
+        let count = agentCount(state)
+        return VStack(spacing: 1) {
+            ForEach(Array(agents.enumerated()), id: \.offset) { index, agent in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.07))
+                        .frame(height: 0.5)
+                        .padding(.leading, 34)
+                }
+                agentRow(agent, compact: true)
+            }
+            Text(agentListFooter(count))
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    @ViewBuilder
+    private func agentRow(
+        _ agent: AirSIMCallActivityAttributes.ContentState.AgentSummary,
+        compact: Bool
+    ) -> some View {
+        if #available(iOS 17.0, *) {
+            Button(intent: SelectAirSIMAgentIntent(agentID: agent.id)) {
+                agentRowContent(agent, compact: compact)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(agent.name)，\(agent.isCurrent ? "当前设备" : "切换到此设备")")
+        } else {
+            agentRowContent(agent, compact: compact)
+        }
+    }
+
+    private func agentRowContent(
+        _ agent: AirSIMCallActivityAttributes.ContentState.AgentSummary,
+        compact: Bool
+    ) -> some View {
+        let color = agent.isCurrent ? Color.green : transportColor(agent.transport)
+        return HStack(spacing: compact ? 6 : 8) {
+            Image(systemName: "iphone")
+                .font(.system(size: compact ? 11 : 13, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: compact ? 24 : 30, height: compact ? 24 : 30)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 5) {
+                    Text(agent.name)
+                        .font(.system(size: compact ? 11 : 12.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .layoutPriority(1)
+                    if agent.isCurrent {
+                        Text("当前")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.green.opacity(0.16), in: Capsule())
+                            .fixedSize()
+                    }
+                }
+                Text("SIM · \(maskedAgentNumber(agent.phoneNumber))")
+                    .font(.system(size: compact ? 8.5 : 9.5, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.48))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            agentTransportPill(agent, compact: compact)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background {
+            if agent.isCurrent {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.green.opacity(0.12))
+            }
+        }
+        .overlay {
+            if agent.isCurrent {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.green.opacity(0.22), lineWidth: 0.7)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func agentTransportPill(
+        _ agent: AirSIMCallActivityAttributes.ContentState.AgentSummary,
+        compact: Bool
+    ) -> some View {
+        let transport = agent.transport
+        let color = transportColor(transport)
+        let title = transport?.title ?? "离线"
+        let symbol = transport?.systemImage ?? "wifi.slash"
+        return HStack(spacing: compact ? 3 : 4) {
+            Image(systemName: symbol)
+                .font(.system(size: compact ? 8 : 9, weight: .semibold))
+            Text(title)
+                .font(.system(size: compact ? 8.5 : 10, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, compact ? 6 : 8)
+        .padding(.vertical, compact ? 2 : 4)
+        .background(color.opacity(transferBackgroundOpacity(transport)), in: Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(0.22), lineWidth: 0.5))
+    }
+
+    private func transferBackgroundOpacity(
+        _ transport: AirSIMCallActivityAttributes.ContentState.Transport?
+    ) -> Double {
+        transport == .cloud || transport == nil ? 0.10 : 0.15
+    }
+
+    private func transportColor(
+        _ transport: AirSIMCallActivityAttributes.ContentState.Transport?
+    ) -> Color {
+        switch transport {
+        case .vowlan: return .green
+        case .bluetooth: return Color(red: 0.30, green: 0.66, blue: 1.0)
+        case .cloud: return .white.opacity(0.70)
+        case nil: return .white.opacity(0.45)
+        }
+    }
+
+    private func maskedAgentNumber(_ raw: String?) -> String {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let digits = trimmed.filter(\.isNumber)
+        guard digits.count >= 7 else {
+            return trimmed.isEmpty ? "未配置" : trimmed
+        }
+        var visible = digits
+        if visible.count > 11 { visible = String(visible.suffix(11)) }
+        return "\(visible.prefix(3))-XXXX-\(visible.suffix(4))"
     }
 
     @ViewBuilder

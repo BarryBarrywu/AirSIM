@@ -23,15 +23,37 @@ struct LiveActivityAgentSnapshot: Equatable {
     let vowlanOnline: Bool
     let bluetoothOnline: Bool
     let cloudOnline: Bool
+    let agents: [AirSIMCallActivityAttributes.ContentState.AgentSummary]
 
-    init(agent: AndroidAgentPresentation?, pairedAgentCount: Int) {
-        deviceName = agent?.deviceName
-        phoneNumber = agent?.phoneNumber
-        agentKind = agent?.agentKind
+    init(
+        agent: AndroidAgentPresentation?,
+        pairedAgentCount: Int,
+        agents: [AndroidAgentPresentation] = [],
+        currentID: String? = nil
+    ) {
+        let current = agent
+            ?? agents.first(where: { $0.id == currentID })
+            ?? agents.first(where: \.isCurrent)
+            ?? agents.first
+        deviceName = current?.deviceName
+        phoneNumber = current?.phoneNumber
+        agentKind = current?.agentKind
         self.pairedAgentCount = pairedAgentCount
-        vowlanOnline = agent?.vowlanOnline == true
-        bluetoothOnline = agent?.bluetoothOnline == true
-        cloudOnline = agent?.cloudOnline == true
+        vowlanOnline = current?.vowlanOnline == true
+        bluetoothOnline = current?.bluetoothOnline == true
+        cloudOnline = current?.cloudOnline == true
+        self.agents = agents.map { value in
+            AirSIMCallActivityAttributes.ContentState.AgentSummary(
+                id: value.id,
+                name: value.deviceName,
+                phoneNumber: value.phoneNumber,
+                agentKind: value.agentKind,
+                vowlanOnline: value.vowlanOnline,
+                bluetoothOnline: value.bluetoothOnline,
+                cloudOnline: value.cloudOnline,
+                isCurrent: value.id == current?.id
+            )
+        }
     }
 }
 
@@ -64,7 +86,8 @@ enum LiveActivityStateBuilder {
                 pairedAgentCount: agent?.pairedAgentCount,
                 vowlanOnline: agent?.vowlanOnline,
                 bluetoothOnline: agent?.bluetoothOnline,
-                cloudOnline: agent?.cloudOnline
+                cloudOnline: agent?.cloudOnline,
+                agents: agent?.agents
             )
         }
         // Calls are managed exclusively by CallKit; the Live Activity is an Agent-status
@@ -89,7 +112,8 @@ enum LiveActivityStateBuilder {
             pairedAgentCount: agent?.pairedAgentCount,
             vowlanOnline: agent?.vowlanOnline,
             bluetoothOnline: agent?.bluetoothOnline,
-            cloudOnline: agent?.cloudOnline
+            cloudOnline: agent?.cloudOnline,
+            agents: agent?.agents
         )
     }
 }
