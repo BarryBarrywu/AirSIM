@@ -150,7 +150,7 @@ public final class VoBLEGattServer implements AutoCloseable {
     @SuppressLint("MissingPermission")
     private synchronized void applyAdvertisingName() {
         if (adapter == null || adapterNameChanged) return;
-        String model = AndroidAgentIdentity.deviceName();
+        String model = advertisingName();
         if (model.isEmpty()) return;
         try {
             String current = adapter.getName();
@@ -163,6 +163,20 @@ public final class VoBLEGattServer implements AutoCloseable {
         } catch (SecurityException error) {
             com.airsim.phonecontrol.BridgeLog.info("voble_adapter_name_rejected");
         }
+    }
+
+    /**
+     * A 128-bit service UUID (18 bytes) and flags leave only eight bytes for the
+     * GAP name in a legacy advertising packet. Prefer Build.MODEL and compact it
+     * rather than falling back to a nameless advertisement and the iPhone's
+     * cached "AirSIM Android" label.
+     */
+    private static String advertisingName() {
+        String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+        if (model.isEmpty()) model = AndroidAgentIdentity.deviceName();
+        model = model.replaceAll("[\\s\\u00A0]+", " ").trim();
+        if (model.length() > 8) model = model.substring(0, 8).trim();
+        return model;
     }
 
     @SuppressLint("MissingPermission")
