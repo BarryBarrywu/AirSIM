@@ -71,6 +71,26 @@ final class LocalDeviceDirectory: ObservableObject {
         forgotten.remove(agentID)
         pendingCredentials[agentID] = credential
     }
+
+    /// Persists a pairing whose encrypted route proof already verified. A
+    /// transient Tailscale health timeout must not discard the pairing before a
+    /// later probe can authenticate it.
+    func persistPairing(
+        agentID: String,
+        credential: VoWLANCredential,
+        endpoint: VoWLANEndpoint,
+        deviceName: String?
+    ) async throws {
+        guard !agentID.isEmpty, PairedAndroidDeviceStore.permits(agentID) else {
+            throw VoWLANControllerError.notPaired
+        }
+        let store = credentials
+        try await Task.detached { try store.save(credential, agentID: agentID) }.value
+        VoWLANPairingRecordStore.remember(
+            agentID: agentID, credential: credential, endpoint: endpoint,
+            deviceName: deviceName)
+        pendingCredentials.removeValue(forKey: agentID)
+    }
     func verify(agentID: String, endpoint: VoWLANEndpoint) async throws {
         guard !forgotten.contains(agentID) else { throw VoWLANControllerError.notPaired }
         let store = credentials
@@ -141,7 +161,9 @@ final class LocalDeviceDirectory: ObservableObject {
                                      credential: VoWLANCredential) async throws -> VoWLANHealthIdentity {
         let signature = try VoWLANRequestSigner(credential: credential).sign(method: "GET", path: "/v1/health", body: Data())
         var request = URLRequest(url: endpoint.controlBaseURL.appendingPathComponent("v1/health"))
-        request.timeoutInterval = 4
+        // Tailscale/VPN round trips can exceed the old 4s budget even when the
+        // gateway is healthy; the encrypted route proof already bound this peer.
+        request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
         VoWLANController.apply(signature, to: &request)
         let response = try await healthTransport(request)

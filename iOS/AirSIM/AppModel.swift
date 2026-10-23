@@ -1157,7 +1157,14 @@ final class AppModel: ObservableObject {
         let credential = try VoWLANCredential(encodedSecret: encoded, clockOffset: clockOffset)
         localDevices.stagePairing(agentID: agentID, credential: credential)
         if let endpoint {
-            try await localDevices.verifyPairing(agentID: agentID, endpoint: endpoint, credential: credential)
+            // The claim's route proof already authenticated this endpoint and
+            // secret. Save it before the optional health probe so a slow
+            // Tailscale/VPN round trip does not throw away a valid pairing.
+            try? await localDevices.persistPairing(
+                agentID: agentID, credential: credential, endpoint: endpoint,
+                deviceName: nil)
+            try? await localDevices.verifyPairing(
+                agentID: agentID, endpoint: endpoint, credential: credential)
         }
         await vowlan.refreshAfterPairing()
         await refreshLocalDeviceDirectory()
