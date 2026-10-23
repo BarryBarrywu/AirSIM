@@ -117,7 +117,8 @@ public final class VoBLECallController {
     public synchronized long currentGeneration() { return currentGeneration; }
 
     public synchronized boolean ownsCall(String callId, long generation) {
-        return callId != null && callId.equals(currentCallId) && generation == currentGeneration;
+        return callId != null && !callId.isBlank() && generation > 0
+                && callId.equals(currentCallId) && generation == currentGeneration;
     }
 
     private Result remember(String requestId, Result result) {

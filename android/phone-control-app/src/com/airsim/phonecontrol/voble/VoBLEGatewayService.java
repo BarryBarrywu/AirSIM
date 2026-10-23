@@ -411,6 +411,10 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
     }
 
     private void publishCallState(String callId, String direction, String state, String number) {
+        // An empty Telecom ID is not an authoritative call identity. Publishing
+        // generation 0 makes iOS reducers ignore the event and previously let an
+        // empty session look like a pending outgoing owner.
+        if (callId == null || callId.isBlank()) return;
         Long generation = callGenerations.get(callId);
         if (generation == null && !"ended".equals(state)) {
             SessionContext activeSession = session;

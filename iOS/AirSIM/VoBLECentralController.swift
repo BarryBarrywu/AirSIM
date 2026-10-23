@@ -297,6 +297,9 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     private var deviceInformationRevision: UInt64 = 0
     private var applicationIsBackground = UIApplication.shared.applicationState == .background
     private var systemReconnecting = false
+    /// Set only when this side asks CoreBluetooth to cancel. It is diagnostic,
+    /// never used to infer the remote disconnect reason.
+    private var localCancelRequested = false
 
     init(radio: VoBLERadioController? = nil, peripheralID: UUID? = nil,
          pairingStore: any VoBLEPairingStoring = VoBLEPairingStore()) {
@@ -643,6 +646,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
         guard let peripheral else { return }
         peripheral.delegate = nil
         if peripheral.state != .disconnected {
+            localCancelRequested = true
             reconnectBarrier.begin(peripheral.identifier)
             radio.cancel(peripheralID: peripheral.identifier)
             observeCancellation(of: peripheral)
@@ -976,16 +980,25 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
     }
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         guard enabled, reconnectBarrier.permitsConnection, self.peripheral === peripheral else {
+            localCancelRequested = true
             central.cancelPeripheralConnection(peripheral)
+            traceConnectionEvent(phase: "connect_guard_cancelled", title: "VoBLE 连接被本地取消")
             return
         }
         connectionTimeoutTask?.cancel(); connectionTimeoutTask = nil
         systemReconnecting = false
+        traceConnectionEvent(phase: "connected", title: "VoBLE 已连接")
         apply(.connected); peripheral.discoverServices([Self.serviceUUID])
     }
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         if reconnectBarrier.finish(peripheral.identifier) { continueAfterCancellation(); return }
         guard self.peripheral === peripheral else { return }
+        traceConnectionEvent(
+            phase: "connect_failed",
+            title: "VoBLE 连接失败",
+            fields: errorFields(error),
+            isFailure: true
+        )
         resetConnection()
         apply(.disconnected(error?.localizedDescription ?? "蓝牙连接失败")); if enabled { restoreOrScan() }
     }
@@ -1000,6 +1013,17 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
     private func handleDisconnect(peripheral: CBPeripheral, error: Error?, isReconnecting: Bool) {
         if reconnectBarrier.finish(peripheral.identifier) { continueAfterCancellation(); return }
         guard self.peripheral === peripheral else { return }
+        let localCancel = localCancelRequested
+        localCancelRequested = false
+        traceConnectionEvent(
+            phase: "disconnected",
+            title: "VoBLE 连接断开",
+            fields: [
+                "is_reconnecting": isReconnecting ? "true" : "false",
+                "local_cancel": localCancel ? "true" : "false"
+            ].merging(errorFields(error)) { _, new in new },
+            isFailure: error != nil
+        )
         failPending(with: VoBLECentralError.disconnected)
         // Native automatic reconnect still targets this same peripheral. Keep
         // its reference so didConnect can rediscover and authenticate it.
@@ -1014,12 +1038,39 @@ extension VoBLECentralController: @preconcurrency CBCentralManagerDelegate {
             if enabled { restoreOrScan() }
         }
     }
+
+    private func traceConnectionEvent(
+        phase: String,
+        title: String,
+        fields: [String: String] = [:],
+        isFailure: Bool = false
+    ) {
+        Task { await AgentVerboseTraceRecorder.shared.recordEvent(
+            source: "ios", category: "voble", phase: phase,
+            title: title, fields: fields, isFailure: isFailure) }
+    }
+
+    /// Keep only stable error domains and numeric codes. Never include a
+    /// peripheral UUID, address, pairing material or free-form CB error text.
+    private func errorFields(_ error: Error?) -> [String: String] {
+        guard let error else { return ["error_domain": "none", "error_code": "0"] }
+        let value = error as NSError
+        let allowed: Set<String> = [
+            "CBErrorDomain", "CBATTErrorDomain", "NSOSStatusErrorDomain",
+            "NSPOSIXErrorDomain", "NSCocoaErrorDomain"
+        ]
+        return [
+            "error_domain": allowed.contains(value.domain) ? value.domain : "other",
+            "error_code": String(value.code)
+        ]
+    }
 }
 
 extension VoBLECentralController: @preconcurrency CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
         guard acceptsCallback(from: peripheral),
               invalidatedServices.contains(where: { $0.uuid == Self.serviceUUID }) else { return }
+        traceConnectionEvent(phase: "services_invalidated", title: "VoBLE 服务失效")
         invalidateServices()
         peripheral.discoverServices([Self.serviceUUID])
     }

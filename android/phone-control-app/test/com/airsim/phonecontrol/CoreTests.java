@@ -886,6 +886,9 @@ public final class CoreTests {
 					calls.incrementAndGet();
 					return com.airsim.phonecontrol.voble.VoBLECallController.Result.success("ok");
 				});
+		assertTrue(!controller.ownsCall("", 0));
+		assertTrue(!controller.ownsCall(null, 1));
+		assertTrue(!controller.ownsCall("call-1", 0));
 		controller.observeCall("call-1", 7, "incoming");
 		var request = new com.airsim.phonecontrol.voble.VoBLECallController.Request(
 				"request-1", "answer", "call-1", "", 7);
