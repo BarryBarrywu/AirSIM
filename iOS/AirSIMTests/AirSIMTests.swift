@@ -3127,6 +3127,29 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(state.cloudOnline, true)
     }
 
+    @MainActor
+    func testSMSNotificationLedgerUsesAgentAndDeliveryIdentity() {
+        let suite = "AirSIMTests.sms-notification-ledger.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let coordinator = SMSNotificationCoordinator(defaults: defaults)
+
+        let first = coordinator.key(agentID: "agent-a", deliveryID: "delivery-1")
+        XCTAssertEqual(first, coordinator.key(agentID: "agent-a", deliveryID: "delivery-1"))
+        XCTAssertNotEqual(first, coordinator.key(agentID: "agent-b", deliveryID: "delivery-1"))
+        XCTAssertNotEqual(first, coordinator.key(agentID: "agent-a", deliveryID: "delivery-2"))
+        XCTAssertEqual(coordinator.identifier(for: first), coordinator.identifier(for: first))
+
+        XCTAssertNotNil(coordinator.claimLocal(agentID: "agent-a", deliveryID: "delivery-1"))
+        XCTAssertNil(coordinator.claimLocal(agentID: "agent-a", deliveryID: "delivery-1"))
+        coordinator.markPush(agentID: "agent-a", deliveryID: "delivery-2")
+        XCTAssertNil(coordinator.claimLocal(agentID: "agent-a", deliveryID: "delivery-2"))
+        // Old Relay payload omitted agent_id; a later scoped local sync must
+        // still see the push by delivery ID.
+        coordinator.markPush(agentID: nil, deliveryID: "delivery-legacy")
+        XCTAssertNil(coordinator.claimLocal(agentID: "agent-a", deliveryID: "delivery-legacy"))
+    }
+
     func testPairingRecordsFollowAgentWithoutDuplicatingAfterAddressChange() throws {
         let suite = "AirSIMTests.pairing-records.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

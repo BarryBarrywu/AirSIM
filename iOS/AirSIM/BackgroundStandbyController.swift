@@ -1,5 +1,6 @@
 import AVFoundation
 import CallKit
+import CryptoKit
 import Foundation
 import UIKit
 import UserNotifications
@@ -208,6 +209,8 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         }
         do {
             let pushed = try IncomingRemoteSMS(userInfo: userInfo)
+            SMSNotificationCoordinator.shared.markPush(agentID: pushed.agentID,
+                                                        deliveryID: pushed.deliveryID)
             let saved = persistRemoteSMS(pushed)
             if saved {
                 NotificationCenter.default.post(name: .airsimRemoteSMSReceived, object: nil)
@@ -235,6 +238,10 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
             completionHandler([])
             return
         }
+        if let pushed = try? IncomingRemoteSMS(userInfo: notification.request.content.userInfo) {
+            SMSNotificationCoordinator.shared.markPush(agentID: pushed.agentID,
+                                                        deliveryID: pushed.deliveryID)
+        }
         completionHandler([.banner, .list, .sound])
     }
 
@@ -252,6 +259,10 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         }
         if response.notification.request.content.userInfo["event"] as? String == "incoming_sms" {
             let userInfo = response.notification.request.content.userInfo
+            if let pushed = try? IncomingRemoteSMS(userInfo: userInfo) {
+                SMSNotificationCoordinator.shared.markPush(agentID: pushed.agentID,
+                                                            deliveryID: pushed.deliveryID)
+            }
             if let pushed = try? IncomingRemoteSMS(userInfo: userInfo), persistRemoteSMS(pushed) {
                 NotificationCenter.default.post(name: .airsimRemoteSMSReceived, object: nil)
             }
@@ -660,6 +671,106 @@ final class IncomingCallNotifier {
     }
 }
 
+/// APNs alert and local SMS sync must agree on one notification identity.
+/// The key is source agent + delivery ID; the contact name is display-only.
+@MainActor
+final class SMSNotificationCoordinator {
+    static let shared = SMSNotificationCoordinator()
+    private struct Entry: Codable {
+        var key: String
+        var deliveryID: String? = nil
+        var agentID: String? = nil
+        var pushAt: Date? = nil
+        var localAt: Date? = nil
+        var localIdentifier: String? = nil
+        var touchedAt: Date
+    }
+    private let keyName = "airsim.sms.notification-ledger.v1"
+    private let defaults: UserDefaults
+    private var entries: [String: Entry]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: keyName),
+           let values = try? JSONDecoder().decode([String: Entry].self, from: data) {
+            entries = values
+        } else {
+            entries = [:]
+        }
+    }
+
+    func key(agentID: String?, deliveryID: String?) -> String {
+        let agent = agentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let delivery = deliveryID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let raw = "\(agent)\u{0}\(delivery)"
+        return SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func identifier(for key: String) -> String {
+        "airsim.sms.\(key.prefix(40))"
+    }
+
+    func markPush(agentID: String?, deliveryID: String?) {
+        guard let deliveryID, !deliveryID.isEmpty else { return }
+        let exact = key(agentID: agentID, deliveryID: deliveryID)
+        let target = entries[exact]
+            ?? entries.values.first(where: { entry in
+                entry.deliveryID == deliveryID
+                    && (agentID?.isEmpty != false || entry.agentID == nil || entry.agentID == agentID)
+            })
+        let key = target?.key ?? exact
+        var entry = target ?? Entry(key: key, deliveryID: deliveryID, agentID: agentID,
+                                    touchedAt: Date())
+        entry.pushAt = Date()
+        entry.touchedAt = Date()
+        entries[key] = entry
+        if let identifier = entry.localIdentifier {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
+        }
+        persist()
+    }
+
+    func claimLocal(agentID: String?, deliveryID: String?) -> (key: String, identifier: String)? {
+        guard let deliveryID, !deliveryID.isEmpty else { return nil }
+        let exact = key(agentID: agentID, deliveryID: deliveryID)
+        if entries[exact]?.pushAt != nil || entries[exact]?.localAt != nil { return nil }
+        // Older Relay payloads omitted agent_id. Match a legacy entry by
+        // delivery ID so a push-first arrival still suppresses local display.
+        if entries.values.contains(where: { entry in
+            entry.deliveryID == deliveryID
+                && (agentID?.isEmpty != false || entry.agentID == nil || entry.agentID == agentID)
+                && (entry.pushAt != nil || entry.localAt != nil)
+        }) { return nil }
+        let identifier = identifier(for: exact)
+        var entry = entries[exact] ?? Entry(key: exact, deliveryID: deliveryID,
+                                           agentID: agentID, touchedAt: Date())
+        entry.localAt = Date()
+        entry.localIdentifier = identifier
+        entry.touchedAt = Date()
+        entries[exact] = entry
+        persist()
+        return (exact, identifier)
+    }
+
+    /// Cloud/APNs is authoritative when a usable alert token exists. Local
+    /// notifications are only the owner for local/BLE-only operation.
+    func cloudOwnsNotifications() -> Bool {
+        CloudModePreference.isEnabled()
+            && VoIPPushController.shared.registrationReadiness().alertTokenReady
+    }
+
+    private func persist() {
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        entries = entries.filter { $0.value.touchedAt >= cutoff }
+        if entries.count > 500 {
+            let keep = entries.sorted { $0.value.touchedAt > $1.value.touchedAt }.prefix(500)
+            entries = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+        defaults.set(try? JSONEncoder().encode(entries), forKey: keyName)
+    }
+}
+
 /// 新短信已经由 Agent 的 +CMTI URC 单条读取；App 在后台时补发系统通知。
 @MainActor
 final class IncomingSMSNotifier {
@@ -667,6 +778,9 @@ final class IncomingSMSNotifier {
 
     func notify(message: SMSMessage, displayName: String, appIsActive: Bool) {
         guard !appIsActive, !notifiedMessageIDs.contains(message.id) else { return }
+        guard !SMSNotificationCoordinator.shared.cloudOwnsNotifications() else { return }
+        guard let claim = SMSNotificationCoordinator.shared.claimLocal(
+            agentID: message.sourceAgentID, deliveryID: message.deliveryID) else { return }
         notifiedMessageIDs.append(message.id)
         if notifiedMessageIDs.count > 64 { notifiedMessageIDs.removeFirst() }
 
@@ -676,7 +790,7 @@ final class IncomingSMSNotifier {
         content.sound = .default
         content.interruptionLevel = .active
         let request = UNNotificationRequest(
-            identifier: "airsim.sms.\(message.id.hashValue)",
+            identifier: claim.identifier,
             content: content,
             trigger: nil
         )

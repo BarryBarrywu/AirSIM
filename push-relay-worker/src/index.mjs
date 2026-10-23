@@ -1372,7 +1372,7 @@ async function receiveSMS(request, env) {
     ? new Date(now).toISOString()
     : message.timestamp;
 
-  const dedupeKey = `dedupe:sms:${authenticated.device.device_id}:${message.delivery_id}`;
+  const dedupeKey = `dedupe:sms:${authenticated.device.device_id}:${stringValue(message.agent_id)}:${message.delivery_id}`;
   if (await readRelayState(env, dedupeKey)) {
     return jsonResponse(202, { duplicate: true });
   }
@@ -1388,6 +1388,7 @@ async function receiveSMS(request, env) {
     },
     event: "incoming_sms",
     delivery_id: message.delivery_id,
+    agent_id: stringValue(message.agent_id),
     sender,
     content,
     content_truncated: truncated,
@@ -1400,7 +1401,7 @@ async function receiveSMS(request, env) {
       pushType: "alert",
       priority: "10",
       expiration: Math.floor(now / 1000) + 24 * 60 * 60,
-      collapseID: message.delivery_id,
+      collapseID: `${stringValue(message.agent_id)}:${message.delivery_id}`.slice(0, 64),
       payload,
     });
     await recordDashboardEvent(env, {

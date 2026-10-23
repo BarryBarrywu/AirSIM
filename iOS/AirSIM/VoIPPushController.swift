@@ -738,6 +738,7 @@ enum RemoteSMSPushError: LocalizedError {
 
 struct IncomingRemoteSMS: Equatable, Sendable {
     let deliveryID: String
+    let agentID: String?
     let sender: String
     let content: String
     let code: String?
@@ -758,6 +759,7 @@ struct IncomingRemoteSMS: Equatable, Sendable {
             throw RemoteSMSPushError.invalidTimestamp
         }
         self.deliveryID = deliveryID
+        agentID = Self.nonEmpty(userInfo["agent_id"] as? String)
         self.sender = sender
         self.content = content
         code = Self.nonEmpty(userInfo["code"] as? String)
@@ -782,7 +784,8 @@ struct IncomingRemoteSMS: Equatable, Sendable {
             code: code,
             timestamp: timestamp,
             deliveryID: deliveryID,
-            direction: .incoming
+            direction: .incoming,
+            sourceAgentID: agentID
         )
     }
 
