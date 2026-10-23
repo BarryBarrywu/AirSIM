@@ -904,6 +904,51 @@ final class WatchAgentRoutingTests: XCTestCase {
 }
 
 final class VoWLANNetworkRecoveryTests: XCTestCase {
+    func testSameStatusNewGatewayNeedsRecoveryButDuplicateDoesNot() {
+        var path = VoWLANNetworkPathGate()
+        XCTAssertFalse(path.observe(available: true, route: "synthetic-wifi-A"))
+        XCTAssertFalse(path.observe(available: true, route: "synthetic-wifi-A"))
+        XCTAssertTrue(path.observe(available: true, route: "synthetic-wifi-B"))
+        XCTAssertFalse(path.observe(available: true, route: "synthetic-wifi-B"))
+        XCTAssertTrue(path.observe(available: false, route: ""))
+        XCTAssertFalse(path.observe(available: false, route: ""))
+        XCTAssertTrue(path.observe(available: true, route: "synthetic-wifi-B"))
+    }
+    func testDuplicateSnapshotKeepsPendingNetworkRecoveryToken() {
+        var path = VoWLANNetworkPathGate()
+        var plan = VoWLANNetworkRecoveryPlan()
+        _ = path.observe(available: false, route: "")
+        XCTAssertTrue(path.observe(available: true, route: "synthetic-wifi-A"))
+        let pending = plan.changed(wifiAvailable: true)
+        if path.observe(available: true, route: "synthetic-wifi-A") {
+            _ = plan.changed(wifiAvailable: true)
+        }
+        XCTAssertTrue(plan.permits(pending, mode: .automatic, paired: true, callInProgress: false))
+        XCTAssertTrue(path.observe(available: true, route: "synthetic-wifi-B"))
+        _ = plan.changed(wifiAvailable: true)
+        XCTAssertFalse(plan.isCurrent(pending))
+        plan.invalidate()
+        XCTAssertFalse(plan.permits(pending, mode: .automatic, paired: true, callInProgress: false))
+    }
+    func testFreshSameAgentAddressOutranksUnverifiedPairingTimeManualRoute() throws {
+        let old = try VoWLANEndpoint(host: "192.168.1.10", controlPort: 7592, pcmPort: 7593)
+        let fresh = try VoWLANEndpoint(host: "10.1.0.10", controlPort: 7592, pcmPort: 7593)
+        let manual = VoWLANManualRoute(agentID: "synthetic-agent-A", host: old.host,
+            controlPort: old.controlPort, pcmPort: old.pcmPort)
+        let advertisement = VoWLANDiscoveredAgent(id: manual.agentID, endpoint: fresh,
+            deviceName: "fixture", manufacturer: nil, model: nil, phoneNumber: nil, agentKind: nil)
+        // The controller must pass no preferred endpoint for an unverified cache.
+        let candidates = VoWLANRouteCandidates.merge(discovered: [advertisement],
+            manual: [manual], live: [], preferred: nil)
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates.first?.id, manual.agentID)
+        XCTAssertEqual(candidates.first?.endpoint, fresh)
+        // A verified/active route is deliberately retained, protecting live calls.
+        let active = VoWLANRouteCandidates.merge(discovered: [advertisement],
+            manual: [manual], live: [], preferred: old)
+        XCTAssertEqual(active.first?.endpoint, old)
+    }
+
     func testRecoveryDoesNotMakeACloudOrBluetoothCallPollVoWLAN() {
         XCTAssertFalse(AgentPollingRouteSelector.shouldPollLocal(mode: .automatic, activeTransport: .cloud))
         XCTAssertFalse(AgentPollingRouteSelector.shouldPollLocal(mode: .automatic, activeTransport: .bluetooth))

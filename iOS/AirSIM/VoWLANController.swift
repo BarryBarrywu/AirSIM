@@ -363,6 +363,21 @@ struct VoWLANRecoveryGate {
     mutating func reset() { nextAttemptAt = .distantPast }
 }
 
+/// Route observations are process-local, never stored as pairing identity.
+struct VoWLANNetworkPathGate {
+    private var observed = false
+    private var previousAvailable = false
+    private var previousRoute = ""
+    mutating func observe(available: Bool, route: String) -> Bool {
+        let changed = observed && (previousAvailable != available
+            || (available && previousRoute != route))
+        observed = true
+        previousAvailable = available
+        previousRoute = route
+        return changed
+    }
+}
+
 struct VoWLANNetworkRecoveryPlan {
     private var generation: UInt64 = 0
     private var wifiAvailable = false
@@ -372,6 +387,7 @@ struct VoWLANNetworkRecoveryPlan {
         return generation
     }
     mutating func invalidate() { generation &+= 1; wifiAvailable = false }
+    func isCurrent(_ token: UInt64) -> Bool { token == generation }
     func permits(_ token: UInt64, mode: AirSIMConnectionMode, paired: Bool, callInProgress: Bool) -> Bool {
         token == generation && wifiAvailable && paired && !callInProgress
             && ConnectionModeRuntimePolicy(mode: mode).startsVoWLAN
@@ -406,8 +422,8 @@ final class VoWLANController: ObservableObject {
     private var networkMonitor: NWPathMonitor?
     private var networkRecoveryTask: Task<Void, Never>?
     private var networkRecoveryPlan = VoWLANNetworkRecoveryPlan()
-    private var hasObservedNetworkPath = false
-    private var lastNetworkAvailability: Bool?
+    private var networkPathGate = VoWLANNetworkPathGate()
+    private var samePathProbeTask: Task<Void, Never>?
 
     func forget(_ agentID: String) {
         identityEpoch &+= 1
@@ -459,6 +475,8 @@ final class VoWLANController: ObservableObject {
     }
 
     func restartBrowsing() {
+        samePathProbeTask?.cancel()
+        samePathProbeTask = nil
         identityEpoch &+= 1
         startNetworkMonitorIfNeeded()
         let generation = browserLifecycle.restart()
@@ -557,6 +575,9 @@ final class VoWLANController: ObservableObject {
     private func stopBrowserSession() {
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
+        samePathProbeTask?.cancel()
+        samePathProbeTask = nil
+        networkPathGate = VoWLANNetworkPathGate()
         networkRecoveryPlan.invalidate()
         networkMonitor?.pathUpdateHandler = nil
         networkMonitor?.cancel()
@@ -611,9 +632,11 @@ final class VoWLANController: ObservableObject {
     private func mergingManualRoutes(with discovered: [VoWLANDiscoveredAgent]) -> [VoWLANDiscoveredAgent] {
         VoWLANRouteCandidates.merge(discovered: discovered,
             manual: VoWLANManualRouteStore.routes().filter { PairedAndroidDeviceStore.permits($0.agentID) },
-            // Keep the currently selected endpoint stable while probing; a LAN address
-            // that just failed must not overwrite a Tailscale fallback before probeNow runs.
-            live: discoveredAgents, preferred: discoveredEndpoint)
+            live: discoveredAgents,
+            // A cached pairing-time IP is not a healthy route. Let fresh Bonjour
+            // for the same paired agent replace it until it actually verifies.
+            // Keep an established call's route stable; never mid-call hand over.
+            preferred: (availability.isOnlineForDisplay || callInProgress()) ? discoveredEndpoint : nil)
     }
 
     private func restoreManualRoutes() {
@@ -643,32 +666,33 @@ final class VoWLANController: ObservableObject {
         guard networkMonitor == nil,
               ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsVoWLAN else { return }
         let monitor = NWPathMonitor(requiredInterfaceType: .wifi)
-        hasObservedNetworkPath = false
+        networkPathGate = VoWLANNetworkPathGate()
         networkMonitor = monitor
         monitor.pathUpdateHandler = { [weak self, weak monitor] path in
             let available = path.status == .satisfied
+            // No SSID/location permission or persistent address/identity cache.
+            // Equal status can still describe a different local gateway/interface.
+            let route = path.availableInterfaces.map { "\($0.index):\($0.name)" }.sorted().joined(separator: ",")
+                + "|" + path.gateways.map { String(describing: $0) }.sorted().joined(separator: ",")
             Task { @MainActor [weak self, weak monitor] in
                 guard let self, let monitor, self.networkMonitor === monitor else { return }
-                self.networkChanged(wifiAvailable: available)
+                self.networkChanged(wifiAvailable: available, route: route)
             }
         }
         monitor.start(queue: queue)
     }
 
-    private func networkChanged(wifiAvailable: Bool) {
-        let token = networkRecoveryPlan.changed(wifiAvailable: wifiAvailable)
-        let initialSnapshot = !hasObservedNetworkPath
-        hasObservedNetworkPath = true
-        let previousAvailability = lastNetworkAvailability
-        lastNetworkAvailability = wifiAvailable
-        // NWPathMonitor can emit periodic "satisfied" snapshots on the same Wi-Fi
-        // (VPN/route refresh). Rebuilding Bonjour on every refresh produced hundreds
-        // of BROWSER_RESTARTED events; only a real availability transition triggers it.
-        if initialSnapshot || previousAvailability == wifiAvailable {
-            if wifiAvailable, discoveredEndpoint != nil { Task { await probeNow() } }
+    private func networkChanged(wifiAvailable: Bool, route: String) {
+        // A duplicate snapshot must not advance recovery's generation: otherwise
+        // it invalidates the one-second delayed task for the actual Wi-Fi change.
+        guard networkPathGate.observe(available: wifiAvailable, route: route) else {
+            if wifiAvailable { verifyUnchangedPathIfNeeded() }
             return
         }
+        let token = networkRecoveryPlan.changed(wifiAvailable: wifiAvailable)
         networkRecoveryTask?.cancel()
+        samePathProbeTask?.cancel()
+        samePathProbeTask = nil
         // Reject probes begun on the previous network, including an old successful response.
         identityEpoch &+= 1
         if !callInProgress(), let endpoint = discoveredEndpoint,
@@ -676,6 +700,9 @@ final class VoWLANController: ObservableObject {
             availability = .discovered(endpoint, at: Date())
         }
         networkRecoveryTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.networkRecoveryPlan.isCurrent(token) { self.networkRecoveryTask = nil }
+            }
             await AgentVerboseTraceRecorder.shared.recordEvent(source: "ios", category: "vowlan",
                 phase: "network_changed", title: "VoWLAN 网络变化",
                 fields: ["wifi_available": String(wifiAvailable), "revision": String(token)])
@@ -708,6 +735,28 @@ final class VoWLANController: ObservableObject {
                     phase: "network_recovery_pending", title: "VoWLAN 尚未恢复，保留其他可用链路",
                     fields: ["revision": String(token)])
             } catch { /* Cancellation is normal on another network/mode transition. */ }
+        }
+    }
+
+    /// Same gateway/interface can occur on different Wi-Fi networks. Use the
+    /// existing signed health request, never SSID or IP alone, to decide liveness.
+    /// Event-bound single task; no polling loop or new periodic timer.
+    private func verifyUnchangedPathIfNeeded() {
+        guard networkRecoveryTask == nil, samePathProbeTask == nil,
+              !callInProgress(), VoWLANCredentialStore.hasAny(),
+              ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsVoWLAN else { return }
+        let epoch = identityEpoch
+        samePathProbeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if epoch == self.identityEpoch { self.samePathProbeTask = nil } }
+            await self.probeNow()
+            guard !Task.isCancelled, epoch == self.identityEpoch,
+                  self.networkMonitor != nil, !self.callInProgress(),
+                  ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsVoWLAN,
+                  !self.availability.isOnlineForDisplay else { return }
+            self.samePathProbeTask = nil
+            self.recoveryGate.reset()
+            self.restartBrowsing()
         }
     }
 
@@ -816,8 +865,10 @@ final class VoWLANController: ObservableObject {
             }
             if let saved = manualRoute(for: endpoint),
                let alternate = latestBonjourAgents.first(where: { $0.id == saved.agentID && $0.endpoint != endpoint }) {
-                discoveredAgents = mergingManualRoutes(with: latestBonjourAgents)
+                // Change preferred route before merging, so the saved old-IP
+                // manual route cannot hide this agent's newly discovered endpoint.
                 discoveredEndpoint = alternate.endpoint
+                discoveredAgents = mergingManualRoutes(with: latestBonjourAgents)
                 availability = .discovered(alternate.endpoint, at: Date())
                 await probeNow()
                 return
