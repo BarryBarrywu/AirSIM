@@ -19,6 +19,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.NetworkInterface;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -185,6 +186,12 @@ public final class ShizukuBridgeUserService extends Binder {
             bridgeDesired = true;
             if (bridgeProcess != null && bridgeProcess.isAlive()) return statusLocked();
             if (sourceApk.isEmpty()) throw new IOException("application source path unavailable");
+            // AVF mode must not spawn a bridge that can only exit and restart
+            // forever when the AVF tap has not been created yet. Standalone uses
+            // loopback and does not require this interface.
+            if (!standalonePCM && NetworkInterface.getByName("avf_tap_fixed") == null) {
+                throw new IOException("AVF interface unavailable: avf_tap_fixed");
+            }
             stopStaleAudioBridges();
             List<String> command = new ArrayList<>();
             command.add("/system/bin/app_process");
