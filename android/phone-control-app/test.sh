@@ -127,6 +127,7 @@ mkdir -p "$OUT"
   "$ROOT"/test/android/os/Looper.java \
   "$ROOT"/test/android/os/Handler.java \
   "$ROOT"/test/android/telecom/Call.java \
+  "$ROOT"/test/android/telecom/DisconnectCause.java \
   "$ROOT"/test/android/telecom/TelecomManager.java \
   "$ROOT"/test/android/telecom/VideoProfile.java \
   "$ROOT"/test/com/airsim/phonecontrol/AppConfig.java \

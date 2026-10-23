@@ -3,6 +3,7 @@ package com.airsim.phonecontrol;
 import android.content.Intent;
 import android.net.Uri;
 import android.telecom.Call;
+import android.telecom.DisconnectCause;
 import android.telecom.InCallService;
 import android.os.Handler;
 import android.os.Looper;
@@ -47,7 +48,12 @@ public final class AirSIMInCallService extends InCallService {
     @Override
     public void onCallRemoved(Call call) {
         String callId = CallRepository.id(call);
-        BridgeLog.info("telecom_call_removed call_id=" + DebugRedactor.safeIdentifier(callId));
+        Call.Details details = call.getDetails();
+        DisconnectCause disconnect = details == null ? null : details.getDisconnectCause();
+        BridgeLog.info("telecom_call_removed call_id=" + DebugRedactor.safeIdentifier(callId)
+                + " raw_state=" + call.getState()
+                + " connect_time_ms=" + (details == null ? 0 : details.getConnectTimeMillis())
+                + " disconnect_code=" + (disconnect == null ? "none" : disconnect.getCode()));
         emit(callId, direction(call), "ended", number(call), slotIndex(call));
 		deduplicator.remove(callId);
 		callStates.remove(call);
@@ -68,8 +74,13 @@ public final class AirSIMInCallService extends InCallService {
         String callNumber = number(call);
         BridgeNotification.showCall(this, callId, callDirection,
                 AppConfig.mode(this), wireState, callNumber);
+        Call.Details details = call.getDetails();
+        DisconnectCause disconnect = details == null ? null : details.getDisconnectCause();
         BridgeLog.debug("telecom_state_changed call_id=" + DebugRedactor.safeIdentifier(callId)
-                + " direction=" + callDirection + " state=" + wireState);
+                + " direction=" + callDirection + " state=" + wireState
+                + " raw_state=" + state
+                + " connect_time_ms=" + (details == null ? 0 : details.getConnectTimeMillis())
+                + " disconnect_code=" + (disconnect == null ? "none" : disconnect.getCode()));
         if (!"unknown".equals(wireState) && deduplicator.shouldSend(callId, callDirection, wireState, callNumber)) {
 			emit(callId, callDirection, wireState, callNumber, slotIndex(call));
 		}
