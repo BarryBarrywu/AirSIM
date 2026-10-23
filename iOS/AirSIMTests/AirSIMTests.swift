@@ -3128,6 +3128,15 @@ final class AirSIMTests: XCTestCase {
     }
 
     @MainActor
+    func testSIMSwapEmptyNumberDoesNotKeepTheOldNumber() {
+        let slot = AndroidSIMSlot(id: "sim-1", label: "SIM 1", number: "", isDefault: true,
+            slotIndex: 0, subID: 1, carrierName: "", isEmbedded: false,
+            isDefaultVoice: true, isDefaultSMS: false)
+        XCTAssertNil(AppModel.agentPhoneNumber(nil, slots: [slot]))
+        XCTAssertEqual(AppModel.agentPhoneNumber("+15550199", slots: [slot]), "+15550199")
+    }
+
+    @MainActor
     func testSMSNotificationLedgerUsesAgentAndDeliveryIdentity() {
         let suite = "AirSIMTests.sms-notification-ledger.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

@@ -52,10 +52,22 @@ public final class AndroidAgentIdentity {
             String selected = DefaultCallAccount.selectedKey(context);
             if (!selected.isEmpty()) {
                 for (DefaultCallAccount.Account account : DefaultCallAccount.snapshot(context).accounts()) {
-                    if (selected.equals(account.key())) return clean(account.number());
+                    if (selected.equals(account.key())) {
+                        String value = clean(account.number());
+                        if (!value.isEmpty()) return value;
+                        // Some carriers expose the number only via the
+                        // subscription-scoped TelephonyManager.
+                        TelephonyManager scoped = context.getSystemService(TelephonyManager.class);
+                        if (scoped != null && account.subscriptionId() >= 0) {
+                            value = clean(scoped.createForSubscriptionId(
+                                    account.subscriptionId()).getLine1Number());
+                        }
+                        return value;
+                    }
                 }
-                // A disabled chosen card must not borrow another SIM's number.
-                return "";
+                // A disabled chosen card must not borrow another SIM's
+                // number. The paired iPhone still receives fresh sim_slots,
+                // which carry the replacement card's number when available.
             }
             SubscriptionManager manager = context.getSystemService(SubscriptionManager.class);
             if (manager != null && context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)

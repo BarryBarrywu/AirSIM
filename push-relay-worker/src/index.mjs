@@ -1438,7 +1438,12 @@ async function receiveAgentHeartbeat(request, env) {
     ...(nonEmpty(heartbeat.device_name) ? { device_name: heartbeat.device_name.trim() } : {}),
     ...(nonEmpty(heartbeat.manufacturer) ? { manufacturer: heartbeat.manufacturer.trim() } : {}),
     ...(nonEmpty(heartbeat.model) ? { model: heartbeat.model.trim() } : {}),
-    ...(nonEmpty(heartbeat.phone_number) ? { phone_number: heartbeat.phone_number.trim() } : {}),
+    // Heartbeats from current Agents always carry phone_number. An empty
+    // value after a SIM swap is authoritative and must clear the old number;
+    // older Agents that omit the field leave the previous value untouched.
+    ...(Object.prototype.hasOwnProperty.call(heartbeat, "phone_number")
+      ? { phone_number: stringValue(heartbeat.phone_number).trim() }
+      : {}),
     agent_version: stringValue(heartbeat.agent_version),
     at_ok: heartbeat.at_ok,
     cellular_state: heartbeat.cellular_state,

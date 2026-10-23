@@ -940,8 +940,12 @@ final class AppModel: ObservableObject {
             values[bluetoothID] = AndroidAgentPresentation(
                 id: bluetoothID,
                 deviceName: information?.deviceName ?? central.currentDeviceName ?? "Android 蓝牙 Agent",
-                phoneNumber: Self.agentPhoneNumber(information?.phoneNumber, slots: information?.simSlots)
-                    ?? previous?.phoneNumber,
+                // A fresh device_info is authoritative even when the new SIM
+                // cannot expose its number. Falling back would retain the old
+                // number after a SIM swap.
+                phoneNumber: information == nil
+                    ? previous?.phoneNumber
+                    : Self.agentPhoneNumber(information?.phoneNumber, slots: information?.simSlots),
                 agentKind: information?.agentKind ?? previous?.agentKind,
                 cloudOnline: previous?.cloudOnline ?? false,
                 vowlanOnline: previous?.vowlanOnline ?? false,
@@ -954,8 +958,7 @@ final class AppModel: ObservableObject {
             guard let health = localDevices.metadata(for: id), PairedAndroidDeviceStore.permits(id) else { continue }
             let previous = values[id]
             values[id] = .init(id: id, deviceName: health.deviceName ?? previous?.deviceName ?? "Android 手机",
-                phoneNumber: Self.agentPhoneNumber(health.phoneNumber, slots: health.simSlots)
-                    ?? previous?.phoneNumber,
+                phoneNumber: Self.agentPhoneNumber(health.phoneNumber, slots: health.simSlots),
                 agentKind: health.agentKind ?? previous?.agentKind,
                 cloudOnline: previous?.cloudOnline ?? false, vowlanOnline: true,
                 bluetoothOnline: previous?.bluetoothOnline ?? false, isCurrent: false)
@@ -1032,8 +1035,9 @@ final class AppModel: ObservableObject {
 
     /// The Agent identity number can arrive via BLE metadata or VoWLAN health;
     /// one transport may omit it while SIM slots still carry a display number.
-    /// Never let a nil/empty refresh erase a previously known number.
-    private static func agentPhoneNumber(_ direct: String?, slots: [AndroidSIMSlot]?) -> String? {
+    /// Prefer the authoritative current SIM slot; empty means the SIM exists
+    /// but its number is unavailable, not "keep the previous number".
+    static func agentPhoneNumber(_ direct: String?, slots: [AndroidSIMSlot]?) -> String? {
         if let value = direct?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
             return value
         }
