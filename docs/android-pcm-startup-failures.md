@@ -1,5 +1,7 @@
 # 三份音频日志的分流修复：候选 0.9.8.1（94）
 
+> 另见：[Shizuku 13.6.0 在 HyperOS 3 上的 PCM 启动回归](shizuku-13.6.0-pcm-regression.md)。这是 Shizuku 上游问题，不是 AirSIM 0.9.8.9 的音频桥缺陷。
+
 这是未发布的 Android Standalone／AVF Bridge 候选，不自动安装、提交推送或部署 Relay。保留 build 93 的臻情兼容修复，并补充 PCM 启动失败处理。iOS 已有的 0.9.8（92）音频图初始化顺序修正不在本轮重复修改。
 
 ## 必须区分的两类问题

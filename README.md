@@ -219,6 +219,7 @@ AirSIM 不附带原作者的 Apple Developer Team、App ID、证书或 provision
 | [Cloudflare Relay](push-relay-worker/README.md) | Wrangler、KV、Durable Objects、APNs、Secret 与自定义域名 |
 | [VoWLAN 设计](docs/2026-09-11-vowlan-design.md) | 本地传输设计与协议边界 |
 | [VoBLE 真机测试矩阵](docs/voble-real-device-test-matrix.md) | 蓝牙模式配置、自动化结果、设备矩阵与尚未完成的硬件验收 |
+| [Shizuku 13.6.0 PCM 回归](docs/shizuku-13.6.0-pcm-regression.md) | HyperOS 3 上升级 Shizuku 后 PCM 反复启动即退出；13.5.4 临时恢复 |
 | [三星热点配对协议](docs/samsung-hotspot-pairing-protocol.md) | 配对、密钥派生、HMAC 与防重放 |
 | [Codex 部署辅助](codex.md) | 面向 Codex 的全项目构建、验证与部署规则 |
 | [Claude 部署辅助](claude.md) | 面向 Claude 的全项目操作顺序与安全约束 |
