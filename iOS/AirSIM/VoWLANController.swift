@@ -443,6 +443,21 @@ final class VoWLANController: ObservableObject {
         if discoveredEndpoint != nil { Task { await probeNow() } }
     }
 
+    /// Foreground recovery should not tear down a working Bonjour browser just
+    /// because CallKit/ActivityKit briefly backgrounded the app. Probe the known
+    /// endpoint first; only start a new browser when the old one is gone.
+    func refreshAfterForeground() async {
+        startNetworkMonitorIfNeeded()
+        if browserLifecycle.isRunning {
+            if discoveredEndpoint != nil {
+                await probeNow()
+            }
+            return
+        }
+        startBrowsing()
+        await probeNow()
+    }
+
     func restartBrowsing() {
         identityEpoch &+= 1
         startNetworkMonitorIfNeeded()
@@ -719,7 +734,10 @@ final class VoWLANController: ObservableObject {
                     method: "GET", path: "/v1/health", body: Data()
                 )
                 var request = URLRequest(url: endpoint.controlBaseURL.appendingPathComponent("v1/health"))
-                request.timeoutInterval = 3
+                // Tailscale/VPN health probes can exceed the old 3s budget even
+                // when the authenticated control APIs are healthy. Keep the probe
+                // bounded, but do not turn normal VPN latency into a failure storm.
+                request.timeoutInterval = 6
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 Self.apply(signed, to: &request)
                 // NWConnection-based transport: ATS does not apply to the

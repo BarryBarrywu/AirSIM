@@ -1719,8 +1719,7 @@ final class AppModel: ObservableObject {
             if AppForegroundRecoveryPolicy.shouldRestartVoWLAN(
                 mode: selectedMode, callActive: callWasActive
             ) {
-                vowlan.restartBrowsing()
-                Task { await vowlan.probeNow() }
+                Task { await vowlan.refreshAfterForeground() }
             }
             // VoBLE is the persistent standby/control link; keep it alive even
             // when the selected mode is VoWLAN or cloud.
