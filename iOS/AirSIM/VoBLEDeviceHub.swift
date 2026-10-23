@@ -53,6 +53,7 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
     private var pending: [VoBLEDiscoveredPeer] = []
     private var reconnectTasks: [UUID: Task<Void, Never>] = [:]
     private var reconnectAttempts: [UUID: Int] = [:]
+    private var callActive = false
 
     init(radio: VoBLERadioController? = nil, pairingStore: any VoBLEPairingStoring = VoBLEPairingStore(),
          knownPeripheral: ((UUID) -> Bool)? = nil) {
@@ -91,15 +92,21 @@ final class VoBLEDeviceHub: ObservableObject, VoBLECentralControlling {
         syncMediaScanPolicy()
     }
 
-    /// Keep the shared scanner off while any session is carrying call audio.
-    /// Continuous scanning steals radio time from the BLE media connection and
-    /// backs up the uplink queue; pause while audio runs, resume when idle.
+    /// Pause the shared scanner only during a BLE call. An idle authenticated
+    /// link must remain discoverable/reconnectable; pausing merely because a
+    /// session is ready breaks multi-Agent discovery and existing tests.
     private func syncMediaScanPolicy() {
-        if sessions.values.contains(where: { $0.audio.running }) {
+        if callActive || sessions.values.contains(where: { $0.audio.running }) {
             radio.pauseScanForMedia()
         } else {
             radio.resumeScanAfterMedia()
         }
+    }
+
+    func setCallActive(_ active: Bool) {
+        guard callActive != active else { return }
+        callActive = active
+        syncMediaScanPolicy()
     }
     func restoreInBackgroundIfAuthorized() {
         guard UIApplication.shared.applicationState == .background,

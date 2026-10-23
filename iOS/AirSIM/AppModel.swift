@@ -1506,6 +1506,7 @@ final class AppModel: ObservableObject {
         let calls = bundle.calls
         let central = bundle.central
         calls.onOutgoingIntent = { [weak self, weak central] identity in
+            self?.vobleHub.setCallActive(true)
             self?.applyVoBLEState(identity: identity, state: .connecting, agentID: central?.authenticatedIdentity)
         }
         calls.mediaPermission = { [weak self, weak central] identity in
@@ -1520,11 +1521,13 @@ final class AppModel: ObservableObject {
         }
         calls.onIncoming = { [weak self, weak central] call in
             guard let self, let agentID = central?.authenticatedIdentity else { return }
+            self.vobleHub.setCallActive(true)
             _ = self.receiveOwnedCallEvent(DeviceCallEvent(agentID: agentID, callID: call.callID,
                 state: .ringing, transport: .bluetooth, transportEpoch: central?.transportEpoch ?? 0,
                 backendGeneration: call.generation, number: call.number))
         }
         calls.onState = { [weak self, weak central] identity, state in
+            self?.vobleHub.setCallActive(!(state.isTerminal || state == .ending))
             // A session that is still re-authenticating has no ready backend.
             // Only terminal/ending handoffs may use recoverableIdentity; a
             // ringing/active event there would create a sticky presentation
@@ -1534,9 +1537,13 @@ final class AppModel: ObservableObject {
             self?.applyVoBLEState(identity: identity, state: state, agentID: authenticated ?? recoverable)
         }
         calls.onEnded = { [weak self, weak central] identity in
+            self?.vobleHub.setCallActive(false)
             self?.finishVoBLECall(identity, agentID: central?.authenticatedIdentity ?? central?.recoverableIdentity)
         }
-        calls.onError = { [weak self] message in self?.errorMessage = message }
+        calls.onError = { [weak self] message in
+            self?.vobleHub.setCallActive(false)
+            self?.errorMessage = message
+        }
     }
 
     private func applyVoBLEState(identity: VoBLECallIdentity, state: CallLifecycleState, agentID: String?) {
