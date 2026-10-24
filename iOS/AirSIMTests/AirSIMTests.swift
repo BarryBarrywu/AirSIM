@@ -3138,6 +3138,33 @@ final class AirSIMTests: XCTestCase {
             callKitAudioActive: false))
     }
 
+    func testLiveActivityAgentPagingUsesFivePerPage() {
+        XCTAssertEqual(LiveActivityAgentPaging.pageSize, 5)
+        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 0), 1)
+        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 5), 1)
+        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 7), 2)
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 0), [0, 1, 2, 3, 4])
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 1), [5, 6])
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 9), [5, 6])
+    }
+
+    func testLiveActivityPinnedAgentsMoveToTop() {
+        let suite = "AirSIMTests.live-activity-order.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func agent(_ id: String) -> AndroidAgentPresentation {
+            AndroidAgentPresentation(id: id, deviceName: id, phoneNumber: nil,
+                agentKind: "standalone", cloudOnline: false, vowlanOnline: false,
+                bluetoothOnline: false, isCurrent: false)
+        }
+        let values = [agent("a"), agent("b"), agent("c")]
+        XCTAssertEqual(LiveActivityAgentOrder.ordered(values, defaults: defaults).map(\.id), ["a", "b", "c"])
+        LiveActivityAgentOrder.togglePin("c", defaults: defaults)
+        XCTAssertEqual(LiveActivityAgentOrder.ordered(values, defaults: defaults).map(\.id), ["c", "a", "b"])
+        LiveActivityAgentOrder.move("b", by: -1, agents: values, defaults: defaults)
+        XCTAssertEqual(LiveActivityAgentOrder.ordered(values, defaults: defaults).map(\.id), ["c", "b", "a"])
+    }
+
     func testVerboseRelayFilterIncludesCloudDetails() {
         XCTAssertTrue(AgentVerboseTraceFilter.relay.matches(
             source: "APP", category: "cloud-call-control", isFailure: false))

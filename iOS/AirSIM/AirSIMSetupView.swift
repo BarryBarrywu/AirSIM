@@ -330,6 +330,50 @@ struct AirSIMSettingsView: View {
                 }
 
                 Section {
+                    ForEach(model.liveActivityOrderedAgents) { agent in
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(agent.deviceName)
+                                    .lineLimit(1)
+                                if let number = agent.phoneNumber, !number.isEmpty {
+                                    Text(number)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: 4)
+                            Button {
+                                model.toggleLiveActivityAgentPin(agent.id)
+                            } label: {
+                                Image(systemName: LiveActivityAgentOrder.isPinned(agent.id)
+                                    ? "pin.fill" : "pin")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(LiveActivityAgentOrder.isPinned(agent.id)
+                                ? "取消置顶 \(agent.deviceName)" : "置顶 \(agent.deviceName)")
+                            Button {
+                                model.moveLiveActivityAgent(agent.id, by: -1)
+                            } label: {
+                                Image(systemName: "chevron.up")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("上移 \(agent.deviceName)")
+                            Button {
+                                model.moveLiveActivityAgent(agent.id, by: 1)
+                            } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("下移 \(agent.deviceName)")
+                        }
+                    }
+                } header: {
+                    Text("灵动岛设备排序")
+                } footer: {
+                    Text("置顶设备固定在前；其余按这里排序。灵动岛每页最多显示 5 台，右上角按钮翻到下一页。")
+                }
+
+                Section {
                     LabeledContent("远程通话与短信", value: runtimePolicy.startsCloud ? "已启用" : "已关闭")
 
                     TextField("https://relay.example.com", text: $relayURL)

@@ -15,6 +15,55 @@ enum LiveActivityCreationPolicy {
     }
 }
 
+enum LiveActivityAgentOrder {
+    static let orderKey = "airsim.live-activity-agent-order"
+    static let pinnedKey = "airsim.live-activity-pinned-agents"
+
+    static func ordered(
+        _ agents: [AndroidAgentPresentation],
+        defaults: UserDefaults = .standard
+    ) -> [AndroidAgentPresentation] {
+        let pinned = Set(defaults.stringArray(forKey: pinnedKey) ?? [])
+        let order = defaults.stringArray(forKey: orderKey) ?? []
+        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        return agents.sorted { left, right in
+            let leftPinned = pinned.contains(left.id)
+            let rightPinned = pinned.contains(right.id)
+            if leftPinned != rightPinned { return leftPinned }
+            let leftRank = rank[left.id] ?? Int.max
+            let rightRank = rank[right.id] ?? Int.max
+            if leftRank != rightRank { return leftRank < rightRank }
+            return left.deviceName.localizedCaseInsensitiveCompare(right.deviceName) == .orderedAscending
+        }
+    }
+
+    static func isPinned(_ id: String, defaults: UserDefaults = .standard) -> Bool {
+        Set(defaults.stringArray(forKey: pinnedKey) ?? []).contains(id)
+    }
+
+    static func togglePin(_ id: String, defaults: UserDefaults = .standard) {
+        var pinned = Set(defaults.stringArray(forKey: pinnedKey) ?? [])
+        if pinned.contains(id) { pinned.remove(id) } else { pinned.insert(id) }
+        defaults.set(Array(pinned).sorted(), forKey: pinnedKey)
+    }
+
+    /// Moves one row within the currently visible order and persists the full
+    /// normalized order so later additions append instead of reshuffling.
+    static func move(
+        _ id: String,
+        by delta: Int,
+        agents: [AndroidAgentPresentation],
+        defaults: UserDefaults = .standard
+    ) {
+        var ids = ordered(agents, defaults: defaults).map(\.id)
+        guard let index = ids.firstIndex(of: id) else { return }
+        let target = index + delta
+        guard ids.indices.contains(target) else { return }
+        ids.swapAt(index, target)
+        defaults.set(ids, forKey: orderKey)
+    }
+}
+
 struct LiveActivityAgentSnapshot: Equatable {
     let deviceName: String?
     let phoneNumber: String?
@@ -24,12 +73,14 @@ struct LiveActivityAgentSnapshot: Equatable {
     let bluetoothOnline: Bool
     let cloudOnline: Bool
     let agents: [AirSIMCallActivityAttributes.ContentState.AgentSummary]
+    let page: Int
 
     init(
         agent: AndroidAgentPresentation?,
         pairedAgentCount: Int,
         agents: [AndroidAgentPresentation] = [],
-        currentID: String? = nil
+        currentID: String? = nil,
+        page: Int = 0
     ) {
         let current = agent
             ?? agents.first(where: { $0.id == currentID })
@@ -42,6 +93,7 @@ struct LiveActivityAgentSnapshot: Equatable {
         vowlanOnline = current?.vowlanOnline == true
         bluetoothOnline = current?.bluetoothOnline == true
         cloudOnline = current?.cloudOnline == true
+        self.page = max(0, page)
         self.agents = agents.map { value in
             AirSIMCallActivityAttributes.ContentState.AgentSummary(
                 id: value.id,
@@ -87,7 +139,8 @@ enum LiveActivityStateBuilder {
                 vowlanOnline: agent?.vowlanOnline,
                 bluetoothOnline: agent?.bluetoothOnline,
                 cloudOnline: agent?.cloudOnline,
-                agents: agent?.agents
+                agents: agent?.agents,
+                agentPage: agent?.page
             )
         }
         // Calls are managed exclusively by CallKit; the Live Activity is an Agent-status
@@ -113,7 +166,8 @@ enum LiveActivityStateBuilder {
             vowlanOnline: agent?.vowlanOnline,
             bluetoothOnline: agent?.bluetoothOnline,
             cloudOnline: agent?.cloudOnline,
-            agents: agent?.agents
+            agents: agent?.agents,
+            agentPage: agent?.page
         )
     }
 }

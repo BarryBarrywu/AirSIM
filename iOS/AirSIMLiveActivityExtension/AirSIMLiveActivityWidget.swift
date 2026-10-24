@@ -214,8 +214,10 @@ struct AirSIMLiveActivityWidget: Widget {
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
         let count = agentCount(state)
+        let pages = LiveActivityAgentPaging.pageCount(for: count)
+        let page = LiveActivityAgentPaging.pageIndex(state.agentPage, for: count)
         return HStack(spacing: 4) {
-            if #available(iOS 17.0, *), count > 1 {
+            if #available(iOS 17.0, *), pages > 1 {
                 Button(intent: SwitchAirSIMAgentIntent()) {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.system(size: 9, weight: .semibold))
@@ -224,18 +226,25 @@ struct AirSIMLiveActivityWidget: Widget {
                         .background(Color.white.opacity(0.10), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("切换到下一台 Android Agent")
+                .accessibilityLabel("切换到下一页 Android Agent")
             }
-            Text("共 \(count) 台")
+            Text(pages > 1
+                ? "第 \(page + 1)/\(pages) 页 · 共 \(count) 台"
+                : "共 \(count) 台")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.white.opacity(0.52))
                 .lineLimit(1)
         }
     }
 
-    private func agentListFooter(_ count: Int) -> String {
-        if count > 3 {
-            return "共 \(count) 台 · 点右上角切换下一台"
+    private func agentListFooter(
+        _ state: AirSIMCallActivityAttributes.ContentState
+    ) -> String {
+        let count = agentCount(state)
+        let pages = LiveActivityAgentPaging.pageCount(for: count)
+        if pages > 1 {
+            let page = LiveActivityAgentPaging.pageIndex(state.agentPage, for: count)
+            return "第 \(page + 1)/\(pages) 页 · 点右上角翻页"
         }
         return count > 1 ? "轻点设备，切换下一通拨号" : "Android Agent 列表"
     }
@@ -243,7 +252,9 @@ struct AirSIMLiveActivityWidget: Widget {
     private func agentListCenter(
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
-        let current = displayAgents(state).first(where: \.isCurrent) ?? displayAgents(state).first
+        let current = state.agents?.first(where: \.isCurrent)
+            ?? displayAgents(state).first(where: \.isCurrent)
+            ?? displayAgents(state).first
         return Text(current?.name ?? "Android Agent")
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(.white.opacity(0.9))
@@ -263,9 +274,8 @@ struct AirSIMLiveActivityWidget: Widget {
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> [AirSIMCallActivityAttributes.ContentState.AgentSummary] {
         if let values = state.agents, !values.isEmpty {
-            return Array(values
-                .sorted { $0.isCurrent && !$1.isCurrent }
-                .prefix(3))
+            // AppModel 已按“置顶固定 + 用户排序”排好序；这里只做 5 台分页。
+            return LiveActivityAgentPaging.slice(values, requestedPage: state.agentPage)
         }
         guard let name = nonEmpty(state.agentDeviceName) else {
             return [.init(
@@ -295,7 +305,6 @@ struct AirSIMLiveActivityWidget: Widget {
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
         let agents = displayAgents(state)
-        let count = agentCount(state)
         return VStack(spacing: 5) {
             HStack(spacing: 8) {
                 agentListBrandMark
@@ -313,7 +322,7 @@ struct AirSIMLiveActivityWidget: Widget {
                     agentRow(agent, compact: false)
                 }
             }
-            Text(agentListFooter(count))
+            Text(agentListFooter(state))
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.48))
                 .lineLimit(1)
@@ -343,7 +352,6 @@ struct AirSIMLiveActivityWidget: Widget {
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> some View {
         let agents = displayAgents(state)
-        let count = agentCount(state)
         return VStack(spacing: 1) {
             ForEach(Array(agents.enumerated()), id: \.offset) { index, agent in
                 if index > 0 {
@@ -354,7 +362,7 @@ struct AirSIMLiveActivityWidget: Widget {
                 }
                 agentRow(agent, compact: true)
             }
-            Text(agentListFooter(count))
+            Text(agentListFooter(state))
                 .font(.system(size: 8.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.48))
                 .lineLimit(1)

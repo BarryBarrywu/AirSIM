@@ -49,8 +49,10 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
         let vowlanOnline: Bool?
         let bluetoothOnline: Bool?
         let cloudOnline: Bool?
-        /// 待机列表最多保留三台；可选以兼容 0.9.8.9 之前推送的 ContentState。
+        /// 排序后的完整待机列表；页码由主人 App 维护。可选以兼容旧版 ContentState。
         let agents: [AgentSummary]?
+        /// 0-based 当前页；每页最多 5 台。旧版没有该字段时按第 1 页处理。
+        let agentPage: Int?
 
         struct AgentSummary: Codable, Hashable, Identifiable {
             let id: String
@@ -90,7 +92,8 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             vowlanOnline: Bool? = nil,
             bluetoothOnline: Bool? = nil,
             cloudOnline: Bool? = nil,
-            agents: [AgentSummary]? = nil
+            agents: [AgentSummary]? = nil,
+            agentPage: Int? = nil
         ) {
             self.callID = callID
             self.number = number
@@ -112,6 +115,7 @@ struct AirSIMCallActivityAttributes: ActivityAttributes {
             self.bluetoothOnline = bluetoothOnline
             self.cloudOnline = cloudOnline
             self.agents = agents
+            self.agentPage = agentPage
         }
 
         enum Phase: String, Codable, Hashable {
@@ -159,8 +163,28 @@ extension AirSIMCallActivityAttributes.ContentState {
             vowlanOnline: vowlanOnline,
             bluetoothOnline: bluetoothOnline,
             cloudOnline: cloudOnline,
-            agents: agents
+            agents: agents,
+            agentPage: agentPage
         )
+    }
+}
+
+enum LiveActivityAgentPaging {
+    static let pageSize = 5
+
+    static func pageCount(for total: Int) -> Int {
+        max(1, (max(0, total) + pageSize - 1) / pageSize)
+    }
+
+    static func pageIndex(_ requested: Int?, for total: Int) -> Int {
+        min(max(0, requested ?? 0), pageCount(for: total) - 1)
+    }
+
+    static func slice<T>(_ values: [T], requestedPage: Int?) -> [T] {
+        let page = pageIndex(requestedPage, for: values.count)
+        let start = page * pageSize
+        guard start < values.count else { return [] }
+        return Array(values[start..<min(values.count, start + pageSize)])
     }
 }
 
@@ -305,11 +329,11 @@ struct RejectAirSIMCallIntent: LiveActivityIntent {
     }
 }
 
-/// 待机态切换当前 Android Agent（及其号码）；通话中不切换，避免媒体/控制
-/// 会话跨设备漂移。
+/// 待机态翻到下一页 Android Agent；通话中不翻页，避免媒体/控制会话
+/// 跨设备漂移。单台设备仍可通过行内点击选择。
 @available(iOS 17.0, *)
 struct SwitchAirSIMAgentIntent: LiveActivityIntent {
-    static var title: LocalizedStringResource = "切换 Android Agent"
+    static var title: LocalizedStringResource = "下一页 Android Agent"
     static var openAppWhenRun = false
 
     init() {}

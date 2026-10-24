@@ -356,6 +356,7 @@ final class AppModel: ObservableObject {
     let incomingNotifier = IncomingCallNotifier()
     let incomingSMSNotifier = IncomingSMSNotifier()
     let liveActivity = LiveActivityController()
+    private var liveActivityAgentPage = 0
 
     private let historyStore: LocalHistoryStore
     private lazy var vobleMode = VoBLEModeController(bluetooth: vobleHub)
@@ -1145,6 +1146,7 @@ final class AppModel: ObservableObject {
     func bindAndroidAgent(_ agentID: String) {
         guard PairedAndroidDeviceStore.permits(agentID) else { return }
         AndroidAgentBindingPreference.set(agentID)
+        liveActivityAgentPage = 0
         if let peer = PairedAndroidDeviceStore.peripheralID(for: agentID) { vobleHub.select(peripheralID: peer) }
         vobleHub.ensureConnected(agentID: agentID)
         vowlan.bind(to: agentID)
@@ -2450,7 +2452,7 @@ final class AppModel: ObservableObject {
     }
 
     private var liveActivityAgentSnapshot: LiveActivityAgentSnapshot? {
-        let agents = pairedAndroidAgents
+        let agents = LiveActivityAgentOrder.ordered(pairedAndroidAgents)
         guard !agents.isEmpty else { return nil }
         let current = deviceCalls.active.flatMap { owner in
             agents.first { $0.id == owner.agentID }
@@ -2459,8 +2461,37 @@ final class AppModel: ObservableObject {
             agent: current,
             pairedAgentCount: agents.count,
             agents: agents,
-            currentID: current?.id
+            currentID: current?.id,
+            page: liveActivityAgentPage
         )
+    }
+
+    var liveActivityOrderedAgents: [AndroidAgentPresentation] {
+        LiveActivityAgentOrder.ordered(pairedAndroidAgents)
+    }
+
+    func toggleLiveActivityAgentPin(_ agentID: String) {
+        LiveActivityAgentOrder.togglePin(agentID)
+        liveActivityAgentPage = 0
+        objectWillChange.send()
+        Task { await refreshLiveActivityIdle() }
+    }
+
+    func moveLiveActivityAgent(_ agentID: String, by delta: Int) {
+        LiveActivityAgentOrder.move(agentID, by: delta,
+            agents: pairedAndroidAgents)
+        liveActivityAgentPage = 0
+        objectWillChange.send()
+        Task { await refreshLiveActivityIdle() }
+    }
+
+    private var liveActivityPageCount: Int {
+        LiveActivityAgentPaging.pageCount(for: liveActivityOrderedAgents.count)
+    }
+
+    private func advanceLiveActivityAgentPage() {
+        liveActivityAgentPage = (LiveActivityAgentPaging.pageIndex(
+            liveActivityAgentPage, for: liveActivityOrderedAgents.count) + 1) % liveActivityPageCount
     }
 
     private static func pcmRoute(for route: LocalAgentRoute) -> PCMRoute {
@@ -2663,11 +2694,11 @@ final class AppModel: ObservableObject {
     @MainActor
     func performLiveActivityAction(_ action: AirSIMLiveActivityAction, callID: String) async -> Bool {
         if action == .switchAgent {
-            // Switching during a call would move media/control ownership between
-            // Android devices. The island only offers this in standby anyway.
+            // The top-right island control pages through the Agent list; it does
+            // not move media/control ownership during a call.
             guard !callLifecycleSnapshot.state.representsCall,
                   !IPhoneCloudCallSession.shared.hasActiveCall else { return true }
-            switchToNextAndroidAgent()
+            advanceLiveActivityAgentPage()
             await refreshLiveActivityIdle()
             return true
         }
