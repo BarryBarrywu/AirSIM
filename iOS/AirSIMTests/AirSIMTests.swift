@@ -3127,6 +3127,13 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(state.cloudOnline, true)
     }
 
+    func testCallKitAudioSessionIsNotDeactivatedByStandbySuspend() {
+        XCTAssertFalse(BackgroundStandbySuspensionPolicy.shouldDeactivateSession(
+            callKitAudioActive: true))
+        XCTAssertTrue(BackgroundStandbySuspensionPolicy.shouldDeactivateSession(
+            callKitAudioActive: false))
+    }
+
     @MainActor
     func testSIMSwapEmptyNumberDoesNotKeepTheOldNumber() {
         let slot = AndroidSIMSlot(id: "sim-1", label: "SIM 1", number: "", isDefault: true,

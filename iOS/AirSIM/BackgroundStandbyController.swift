@@ -9,6 +9,13 @@ enum BackgroundStandbySuspensionPolicy {
     static func shouldStopAudio(isAlreadySuspended: Bool) -> Bool {
         !isAlreadySuspended
     }
+
+    /// CallKit owns the shared AVAudioSession while a system call is active.
+    /// Deactivating it from the standby engine tears down CallKit audio and can
+    /// end the call immediately after answer.
+    static func shouldDeactivateSession(callKitAudioActive: Bool) -> Bool {
+        !callKitAudioActive
+    }
 }
 
 extension Notification.Name {
@@ -566,7 +573,8 @@ final class BackgroundStandbyController {
             isAlreadySuspended: suspendedForCall
         ) else { return }
         suspendedForCall = true
-        stop(deactivateSession: true)
+        stop(deactivateSession: BackgroundStandbySuspensionPolicy.shouldDeactivateSession(
+            callKitAudioActive: CallKitController.shared.audioSessionIsActive))
     }
 
     func resumeAfterCall() {
