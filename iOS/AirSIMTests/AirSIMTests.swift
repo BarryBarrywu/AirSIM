@@ -3132,6 +3132,10 @@ final class AirSIMTests: XCTestCase {
             callKitAudioActive: true))
         XCTAssertTrue(BackgroundStandbySuspensionPolicy.shouldDeactivateSession(
             callKitAudioActive: false))
+        XCTAssertFalse(BackgroundStandbySuspensionPolicy.shouldRunStandby(
+            callKitAudioActive: true))
+        XCTAssertTrue(BackgroundStandbySuspensionPolicy.shouldRunStandby(
+            callKitAudioActive: false))
     }
 
     @MainActor

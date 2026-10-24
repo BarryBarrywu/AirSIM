@@ -16,6 +16,10 @@ enum BackgroundStandbySuspensionPolicy {
     static func shouldDeactivateSession(callKitAudioActive: Bool) -> Bool {
         !callKitAudioActive
     }
+
+    static func shouldRunStandby(callKitAudioActive: Bool) -> Bool {
+        !callKitAudioActive
+    }
 }
 
 extension Notification.Name {
@@ -537,7 +541,9 @@ final class BackgroundStandbyController {
 
     /// 回到前台或后台音频被系统中断后重新确认静音播放仍在运行。
     func ensureRunning() {
-        guard enabled, appIsBackground, !suspendedForCall else { return }
+        guard enabled, appIsBackground, !suspendedForCall,
+              BackgroundStandbySuspensionPolicy.shouldRunStandby(
+                  callKitAudioActive: CallKitController.shared.audioSessionIsActive) else { return }
         retryTask?.cancel()
         retryTask = nil
         do {
