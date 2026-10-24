@@ -2,6 +2,29 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+private struct AgentVerboseShareItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct AgentVerboseShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let popover = controller.popoverPresentationController {
+            popover.sourceView = controller.view
+            popover.sourceRect = CGRect(x: controller.view.bounds.midX,
+                                        y: controller.view.bounds.midY,
+                                        width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
 struct AgentVerboseTextDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.plainText] }
     var text: String
@@ -159,6 +182,16 @@ final class AgentVerboseTraceViewModel: ObservableObject {
         await refresh()
     }
 
+    /// Materialize the export outside SwiftUI's FileDocument machinery. The
+    /// share sheet only needs a stable file URL and cannot race the once-per-second
+    /// trace refresh.
+    func writeExportFile() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AirSIM-Verbose-\(Int(Date().timeIntervalSince1970)).txt")
+        try Data(exportText.utf8).write(to: url, options: .atomic)
+        return url
+    }
+
     fileprivate var timeline: [AgentVerboseTimelineItem] {
         let local = localEntries.map { entry in
             let fields = (entry.fields ?? [:])
@@ -255,8 +288,7 @@ struct AgentVerboseTraceView: View {
     @State private var filter: AgentVerboseTraceFilter = .all
     @State private var selectedItem: AgentVerboseTimelineItem?
     @State private var showingClearConfirmation = false
-    @State private var showingExport = false
-    @State private var exportDocument = AgentVerboseTextDocument(text: "")
+    @State private var shareItem: AgentVerboseShareItem?
 
     init(api: AirSIMAPI? = nil) {
         _model = StateObject(wrappedValue: AgentVerboseTraceViewModel(api: api))
@@ -353,13 +385,16 @@ struct AgentVerboseTraceView: View {
                 Button {
                     Task {
                         await model.refresh()
-                        exportDocument = AgentVerboseTextDocument(text: model.exportText)
-                        showingExport = true
+                        do {
+                            shareItem = AgentVerboseShareItem(url: try model.writeExportFile())
+                        } catch {
+                            model.errorMessage = error.localizedDescription
+                        }
                     }
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
-                .accessibilityLabel("导出 TXT 调试日志")
+                .accessibilityLabel("分享 TXT 调试日志")
                 Button(role: .destructive) { showingClearConfirmation = true } label: {
                     Image(systemName: "trash")
                 }
@@ -367,10 +402,12 @@ struct AgentVerboseTraceView: View {
         }
         .task { await model.run() }
         .refreshable { await model.refresh() }
-        .fileExporter(isPresented: $showingExport, document: exportDocument,
-            contentType: .plainText, defaultFilename: "AirSIM-Verbose-\(Int(Date().timeIntervalSince1970)).txt") { result in
-                if case let .failure(error) = result { model.errorMessage = error.localizedDescription }
-            }
+        .sheet(item: $shareItem, onDismiss: {
+            if let url = shareItem?.url { try? FileManager.default.removeItem(at: url) }
+            shareItem = nil
+        }) { item in
+            AgentVerboseShareSheet(url: item.url)
+        }
         .sheet(item: $selectedItem) { item in
             AgentVerboseTraceDetailView(item: item)
         }
