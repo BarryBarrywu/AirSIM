@@ -3138,6 +3138,19 @@ final class AirSIMTests: XCTestCase {
             callKitAudioActive: false))
     }
 
+    func testVerboseRelayFilterIncludesCloudDetails() {
+        XCTAssertTrue(AgentVerboseTraceFilter.relay.matches(
+            source: "APP", category: "cloud-call-control", isFailure: false))
+        XCTAssertTrue(AgentVerboseTraceFilter.relay.matches(
+            source: "APP", category: "cloud-call-audio", isFailure: false))
+        XCTAssertTrue(AgentVerboseTraceFilter.relay.matches(
+            source: "APP", category: "cloud-media-health", isFailure: false))
+        XCTAssertTrue(AgentVerboseTraceFilter.relay.matches(
+            source: "RELAY", category: "relay", isFailure: false))
+        XCTAssertFalse(AgentVerboseTraceFilter.relay.matches(
+            source: "APP", category: "vowlan", isFailure: false))
+    }
+
     @MainActor
     func testSIMSwapEmptyNumberDoesNotKeepTheOldNumber() {
         let slot = AndroidSIMSlot(id: "sim-1", label: "SIM 1", number: "", isDefault: true,

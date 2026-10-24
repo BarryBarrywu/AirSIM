@@ -18,12 +18,29 @@ enum AgentVerboseTraceFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case failures = "错误"
     case calls = "通话"
-    case relay = "Relay"
+    case relay = "Relay / 云端"
     case vowlan = "VoWLAN"
     case voble = "VoBLE"
     case sms = "短信"
 
     var id: String { rawValue }
+
+    func matches(source: String, category: String, isFailure: Bool) -> Bool {
+        let category = category.lowercased()
+        switch self {
+        case .all: return true
+        case .failures: return isFailure
+        case .calls:
+            return ["voice", "cloud-call", "cloud-call-control", "cloud-call-audio",
+                    "cloud-media-health", "relay", "voble", "call-audio",
+                    "callkit-audio", "call_transport"].contains(category)
+        case .relay:
+            return source == "RELAY" || category == "relay" || category.hasPrefix("cloud")
+        case .vowlan: return ["vowlan", "call-audio"].contains(category)
+        case .voble: return ["voble", "bluetooth"].contains(category)
+        case .sms: return category == "sms"
+        }
+    }
 }
 
 private struct AgentVerboseTimelineItem: Identifiable, Equatable {
@@ -365,17 +382,7 @@ struct AgentVerboseTraceView: View {
 
     private var filteredTimeline: [AgentVerboseTimelineItem] {
         model.timeline.filter { item in
-            switch filter {
-            case .all: return true
-            case .failures: return item.isFailure
-            case .calls:
-                return ["voice", "cloud-call", "cloud-call-control", "voble", "call-audio",
-                        "callkit-audio", "call_transport"].contains(item.category.lowercased())
-            case .relay: return item.source == "RELAY" || item.category.lowercased() == "relay"
-            case .vowlan: return ["vowlan", "call-audio"].contains(item.category.lowercased())
-            case .voble: return ["voble", "bluetooth"].contains(item.category.lowercased())
-            case .sms: return item.category.lowercased() == "sms"
-            }
+            filter.matches(source: item.source, category: item.category, isFailure: item.isFailure)
         }
     }
 
