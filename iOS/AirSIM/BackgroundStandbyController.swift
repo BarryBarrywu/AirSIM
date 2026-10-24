@@ -587,7 +587,9 @@ final class BackgroundStandbyController {
         retryTask = nil
         player?.stop()
         engine?.stop()
-        if deactivateSession {
+        if deactivateSession,
+           BackgroundStandbySuspensionPolicy.shouldDeactivateSession(
+               callKitAudioActive: CallKitController.shared.audioSessionIsActive) {
             try? AVAudioSession.sharedInstance().setActive(
                 false,
                 options: .notifyOthersOnDeactivation

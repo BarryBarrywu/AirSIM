@@ -2587,7 +2587,8 @@ final class AppModel: ObservableObject {
 
     func presentCurrentCallInApp() {
         if remoteCall == nil, let incoming = callKit.currentIncomingPush {
-            remoteCall = Self.remoteCallRecord(from: incoming, state: "incoming")
+            let answered = callKit.currentCallIsAnswered || IPhoneCloudCallSession.shared.answered
+            remoteCall = Self.remoteCallRecord(from: incoming, state: answered ? "active" : "incoming")
         }
         guard callLifecycleSnapshot.state.representsCall else { return }
         _ = IncomingCallPresentationRequest.consume()
@@ -2603,12 +2604,13 @@ final class AppModel: ObservableObject {
                   hasLocalCall: lifecycleRecord(from: activeCall) != nil,
                   hasRemoteCall: lifecycleRecord(from: remoteCall) != nil
               ) else { return }
+        let answered = callKit.currentCallIsAnswered || IPhoneCloudCallSession.shared.answered
         if remoteCall == nil, let incoming = callKit.currentIncomingPush {
             remoteCall = Self.remoteCallRecord(
                 from: incoming,
-                state: callKit.currentCallIsAnswered ? "active" : "incoming"
+                state: answered ? "active" : "incoming"
             )
-        } else if callKit.currentCallIsAnswered {
+        } else if answered {
             updateRemoteCallState("active")
         }
         callPresentationSurface = .app
