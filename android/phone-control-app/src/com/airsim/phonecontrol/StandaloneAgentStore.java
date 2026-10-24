@@ -17,25 +17,53 @@ final class StandaloneAgentStore {
     private static final String LAST_HEARTBEAT = "last_heartbeat";
     private static final String LAST_SEEN = "last_seen";
 
+    private final Context context;
     private final SharedPreferences preferences;
 
     StandaloneAgentStore(Context context) {
+        this.context = context;
         preferences = context.getSharedPreferences(FILE, Context.MODE_PRIVATE);
     }
 
     synchronized JSONObject registration() {
         String encoded = preferences.getString(REGISTRATION, "");
         if (encoded == null || encoded.isBlank()) return null;
-        try { return new JSONObject(encoded); }
-        catch (Exception error) {
+        try {
+            JSONObject value = new JSONObject(encoded);
+            if (normalizeIdentity(value)) {
+                preferences.edit().putString(REGISTRATION, value.toString()).apply();
+            }
+            return value;
+        } catch (Exception error) {
             BridgeLog.error("standalone_registration_corrupt", error);
             return null;
         }
     }
 
+    /** Older/direct pairing records omitted the local identity; never let that
+     * make every cloud cycle fail in StandaloneCloudMediaManager.identity(). */
+    private boolean normalizeIdentity(JSONObject value) throws Exception {
+        boolean changed = false;
+        if (value.optString("android_agent_id", "").isBlank()) {
+            value.put("android_agent_id", AndroidAgentIdentity.agentID(context)); changed = true;
+        }
+        if (value.optString("android_device_name", "").isBlank()) {
+            value.put("android_device_name", AndroidAgentIdentity.deviceName()); changed = true;
+        }
+        if (value.optString("android_agent_kind", "").isBlank()) {
+            value.put("android_agent_kind", RuntimeMode.isStandalone(context) ? "standalone" : "avf");
+            changed = true;
+        }
+        if (value.optString("android_phone_number", "").isBlank()) {
+            value.put("android_phone_number", AndroidAgentIdentity.phoneNumber(context)); changed = true;
+        }
+        return changed;
+    }
+
     synchronized JSONObject saveRegistration(String encoded) throws Exception {
         JSONObject value = new JSONObject(encoded);
         validateRegistration(value);
+        normalizeIdentity(value);
         boolean localMode = value.optBoolean("local_mode", false);
         if (localMode) value.put("cloud_enabled", false);
         if (value.has("device_id")) value.put("device_id", value.optString("device_id", "").trim());
