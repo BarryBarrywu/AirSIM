@@ -352,7 +352,9 @@ enum CloudSelfTestStepID: String, CaseIterable, Sendable {
     case configuration
     case relayIdentity
     case deviceRegistration
+    case agentDirectory
     case agentHeartbeat
+    case commandRouting
 }
 
 enum CloudSelfTestStepState: Equatable, Sendable {
@@ -378,7 +380,9 @@ struct CloudSelfTestReport: Equatable, Sendable {
             CloudSelfTestStep(id: .configuration, title: "本机配置", state: .pending, detail: "等待检查"),
             CloudSelfTestStep(id: .relayIdentity, title: "Relay 身份", state: .pending, detail: "等待检查"),
             CloudSelfTestStep(id: .deviceRegistration, title: "设备注册", state: .pending, detail: "等待检查"),
-            CloudSelfTestStep(id: .agentHeartbeat, title: "Agent 心跳", state: .pending, detail: "等待检查"),
+            CloudSelfTestStep(id: .agentDirectory, title: "Agent 记录", state: .pending, detail: "查询 Relay 已登记的 Android Agent"),
+            CloudSelfTestStep(id: .agentHeartbeat, title: "Agent 心跳", state: .pending, detail: "检查最近 90 秒心跳"),
+            CloudSelfTestStep(id: .commandRouting, title: "命令路由", state: .pending, detail: "检查 Agent 是否支持定向接听/挂断"),
         ],
         completedAt: nil
     )
@@ -1165,7 +1169,7 @@ final class VoIPPushController: NSObject {
     ) async -> CloudSelfTestReport {
         var report = CloudSelfTestReport.initial
 
-        report.update(.configuration, state: .running, detail: "检查 Relay、PushKit 与通知凭据")
+        report.update(.configuration, state: .running, detail: "云端开关 · 设备身份 · PushKit/通知 Token · Relay URL")
         onUpdate(report)
         let readiness = registrationReadiness()
         var missing: [String] = []
@@ -1179,11 +1183,17 @@ final class VoIPPushController: NSObject {
             onUpdate(report)
             return report
         }
-        report.update(
-            .configuration,
-            state: .passed,
-            detail: "设备 \(readiness.deviceIDHint ?? "已生成") · APNs \(readiness.environment)"
-        )
+        var configDetail = [
+            "云端已开启",
+            "设备 \(readiness.deviceIDHint ?? "已生成")",
+            "APNs \(readiness.environment)",
+            "PushKit \(readiness.voIPTokenReady ? "就绪" : "缺失")",
+            "通知 \(readiness.alertTokenReady ? "就绪" : "缺失")",
+        ].joined(separator: " · ")
+        if let host = URL(string: registration.relayURL)?.host {
+            configDetail += " · Relay \(host)"
+        }
+        report.update(.configuration, state: .passed, detail: configDetail)
         onUpdate(report)
 
         report.update(.relayIdentity, state: .running, detail: "验证 AirSIM Relay 服务身份")
@@ -1210,26 +1220,70 @@ final class VoIPPushController: NSObject {
             return report
         }
 
-        report.update(.agentHeartbeat, state: .running, detail: "查询 AVF Agent 最近 90 秒心跳")
+        report.update(.agentDirectory, state: .running, detail: "查询 Relay 已登记的 Android Agent")
         onUpdate(report)
+        let status: CloudAgentStatus
         do {
-            let status = try await fetchCloudAgentStatusForDiagnostics()
-            guard status.cloudOnline else {
-                report.fail(.agentHeartbeat, detail: "Relay 已连接，但 AVF Agent 90 秒内无心跳")
-                onUpdate(report)
-                return report
-            }
-            let version = status.agentVersion?.isEmpty == false ? status.agentVersion! : "未知版本"
-            let cellular = status.cellularState?.isEmpty == false ? " · 蜂窝 \(status.cellularState!)" : ""
-            report.update(.agentHeartbeat, state: .passed, detail: "Agent \(version) 在线\(cellular)")
-            report.completedAt = Date()
-            onUpdate(report)
-            return report
+            status = try await fetchCloudAgentStatusForDiagnostics()
         } catch {
-            report.fail(.agentHeartbeat, detail: "心跳查询失败：\(error.localizedDescription)")
+            report.fail(.agentDirectory, detail: "Relay 返回 Agent 记录失败：\(error.localizedDescription)")
             onUpdate(report)
             return report
         }
+        guard !status.agents.isEmpty else {
+            report.fail(.agentDirectory,
+                detail: "Relay 没有 Android Agent 记录：Android 未完成云端注册或从未发送心跳")
+            onUpdate(report)
+            return report
+        }
+        let directory = status.agents.map { agent in
+            let name = agent.deviceName?.isEmpty == false ? agent.deviceName! : agent.agentID
+            let online = agent.cloudOnline ? "在线" : "心跳过期"
+            let kind = agent.agentKind?.isEmpty == false ? agent.agentKind! : "unknown"
+            let routing = agent.commandRoutingVersion.map { "routing=v\($0)" } ?? "routing=missing"
+            return "\(name)(\(kind), \(online), \(routing))"
+        }.joined(separator: "；")
+        report.update(.agentDirectory, state: .passed,
+            detail: "已登记 \(status.agents.count) 台：\(directory)；active=\(status.activeAgentID ?? "none")")
+        onUpdate(report)
+
+        report.update(.agentHeartbeat, state: .running, detail: "检查最近 90 秒心跳与版本")
+        onUpdate(report)
+        guard status.cloudOnline else {
+            let known = status.agents.map {
+                "\($0.deviceName ?? $0.agentID)=\($0.cloudOnline ? "在线" : "超过90秒")"
+            }.joined(separator: "；")
+            report.fail(.agentHeartbeat,
+                detail: "90 秒内无有效心跳；Relay 记录：\(known)；active=\(status.activeAgentID ?? "none")")
+            onUpdate(report)
+            return report
+        }
+        let version = status.agentVersion?.isEmpty == false ? status.agentVersion! : "未知版本"
+        let cellular = status.cellularState?.isEmpty == false ? " · 蜂窝 \(status.cellularState!)" : ""
+        report.update(.agentHeartbeat, state: .passed,
+            detail: "Agent \(version) 在线\(cellular) · active=\(status.activeAgentID ?? "none")")
+        onUpdate(report)
+
+        report.update(.commandRouting, state: .running, detail: "检查 Agent 的 command_routing_version")
+        onUpdate(report)
+        let activeID = status.activeAgentID
+        let active = status.agents.first { $0.agentID == activeID } ?? status.agents.first
+        guard let active else {
+            report.fail(.commandRouting, detail: "找不到 active Agent 记录")
+            onUpdate(report)
+            return report
+        }
+        guard let routing = active.commandRoutingVersion, routing >= 1 else {
+            report.fail(.commandRouting,
+                detail: "Agent \(active.deviceName ?? active.agentID) 未声明 command_routing_version；接听/挂断命令无法定向")
+            onUpdate(report)
+            return report
+        }
+        report.update(.commandRouting, state: .passed,
+            detail: "Agent \(active.deviceName ?? active.agentID) 支持 command_routing=v\(routing)")
+        report.completedAt = Date()
+        onUpdate(report)
+        return report
     }
 
     private func scheduleRegistrationRetry(after delay: TimeInterval) {
