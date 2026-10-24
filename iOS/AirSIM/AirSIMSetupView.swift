@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// AirSIM 只引导 Android 配对；不检查旧模块固件或网络。
 struct AirSIMFirstConnectionView: View {
@@ -424,9 +425,11 @@ struct AirSIMSettingsView: View {
                                     .frame(width: 20)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(step.title)
+                                        .textSelection(.enabled)
                                     Text(step.detail)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
                                 }
                             }
                         }
@@ -434,6 +437,13 @@ struct AirSIMSettingsView: View {
                             Text(report.allPassed ? "云端模式自检通过" : "自检未通过，请按失败步骤修复后重试")
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(report.allPassed ? .green : .orange)
+                            Button {
+                                UIPasteboard.general.string = report.copyText
+                                message = "自检结果已复制"
+                            } label: {
+                                Label("复制自检结果", systemImage: "doc.on.doc")
+                            }
+                            .font(.footnote)
                         }
                     }
                 } header: {

@@ -3095,6 +3095,9 @@ final class AirSIMTests: XCTestCase {
 
         report.update(.agentHeartbeat, state: .failed, detail: "无心跳")
         XCTAssertFalse(report.allPassed)
+        XCTAssertTrue(report.copyText.contains("Agent 心跳"))
+        XCTAssertTrue(report.copyText.contains("FAIL"))
+        XCTAssertFalse(report.copyText.contains("device_secret"))
     }
 
     func testLiveActivityIncludesCurrentAndroidAgentIdentity() {

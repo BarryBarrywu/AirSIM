@@ -371,6 +371,17 @@ struct CloudSelfTestStep: Identifiable, Equatable, Sendable {
     var detail: String
 }
 
+extension CloudSelfTestStepState {
+    var diagnosticLabel: String {
+        switch self {
+        case .pending: return "PENDING"
+        case .running: return "RUNNING"
+        case .passed: return "PASS"
+        case .failed: return "FAIL"
+        }
+    }
+}
+
 struct CloudSelfTestReport: Equatable, Sendable {
     var steps: [CloudSelfTestStep]
     var completedAt: Date?
@@ -389,6 +400,23 @@ struct CloudSelfTestReport: Equatable, Sendable {
 
     var allPassed: Bool {
         completedAt != nil && steps.allSatisfy { $0.state == .passed }
+    }
+
+    /// Copyable diagnostic output. Contains only status, device hints, Agent
+    /// metadata and errors; never tokens, secrets, numbers or SMS content.
+    var copyText: String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var lines = ["AirSIM Cloud Self-Test"]
+        if let completedAt {
+            lines.append("completed_at=\(formatter.string(from: completedAt))")
+        }
+        lines.append("all_passed=\(allPassed)")
+        for step in steps {
+            lines.append("[\(step.state.diagnosticLabel)] \(step.title)")
+            lines.append("  \(step.detail)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     mutating func update(_ id: CloudSelfTestStepID, state: CloudSelfTestStepState, detail: String) {
@@ -1184,14 +1212,14 @@ final class VoIPPushController: NSObject {
             return report
         }
         var configDetail = [
-            "云端已开启",
-            "设备 \(readiness.deviceIDHint ?? "已生成")",
-            "APNs \(readiness.environment)",
-            "PushKit \(readiness.voIPTokenReady ? "就绪" : "缺失")",
-            "通知 \(readiness.alertTokenReady ? "就绪" : "缺失")",
-        ].joined(separator: " · ")
+            "云端=开启",
+            "设备=\(readiness.deviceIDHint ?? "已生成")",
+            "APNs=\(readiness.environment)",
+            "PushKit=\(readiness.voIPTokenReady ? "就绪" : "缺失")",
+            "通知Token=\(readiness.alertTokenReady ? "就绪" : "缺失")",
+        ].joined(separator: "\n")
         if let host = URL(string: registration.relayURL)?.host {
-            configDetail += " · Relay \(host)"
+            configDetail += "\nRelay=\(host)"
         }
         report.update(.configuration, state: .passed, detail: configDetail)
         onUpdate(report)
@@ -1241,20 +1269,20 @@ final class VoIPPushController: NSObject {
             let online = agent.cloudOnline ? "在线" : "心跳过期"
             let kind = agent.agentKind?.isEmpty == false ? agent.agentKind! : "unknown"
             let routing = agent.commandRoutingVersion.map { "routing=v\($0)" } ?? "routing=missing"
-            return "\(name)(\(kind), \(online), \(routing))"
-        }.joined(separator: "；")
+            return "  - \(name) · \(kind) · \(online) · \(routing)"
+        }.joined(separator: "\n")
         report.update(.agentDirectory, state: .passed,
-            detail: "已登记 \(status.agents.count) 台：\(directory)；active=\(status.activeAgentID ?? "none")")
+            detail: "已登记 \(status.agents.count) 台\n\(directory)\nactive=\(status.activeAgentID ?? "none")")
         onUpdate(report)
 
         report.update(.agentHeartbeat, state: .running, detail: "检查最近 90 秒心跳与版本")
         onUpdate(report)
         guard status.cloudOnline else {
             let known = status.agents.map {
-                "\($0.deviceName ?? $0.agentID)=\($0.cloudOnline ? "在线" : "超过90秒")"
-            }.joined(separator: "；")
+                "  - \($0.deviceName ?? $0.agentID) · \($0.cloudOnline ? "在线" : "超过90秒")"
+            }.joined(separator: "\n")
             report.fail(.agentHeartbeat,
-                detail: "90 秒内无有效心跳；Relay 记录：\(known)；active=\(status.activeAgentID ?? "none")")
+                detail: "90秒内无有效心跳\nRelay记录：\n\(known)\nactive=\(status.activeAgentID ?? "none")")
             onUpdate(report)
             return report
         }
