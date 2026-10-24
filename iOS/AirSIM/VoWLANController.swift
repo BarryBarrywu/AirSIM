@@ -620,9 +620,18 @@ final class VoWLANController: ObservableObject {
 
     func installManualRoute(_ route: VoWLANManualRoute) async throws {
         try VoWLANManualRouteStore.save(route)
-        if AndroidAgentBindingPreference.selected() == nil { AndroidAgentBindingPreference.set(route.agentID) }
+        // An explicit pairing is an explicit target selection. Without this,
+        // a previous binding makes selected() keep probing the old address and
+        // the freshly paired Tailscale gateway looks unreachable.
+        AndroidAgentBindingPreference.set(route.agentID)
         restartBrowsing()
         await probeNow()
+        if !availability.isOnlineForDisplay {
+            // Tailscale/userspace proxies can need a moment after the pairing
+            // socket closes before the control/PCM listeners accept again.
+            try? await Task.sleep(for: .milliseconds(600))
+            await probeNow()
+        }
     }
 
     private func manualRoute(for endpoint: VoWLANEndpoint) -> VoWLANManualRoute? {
