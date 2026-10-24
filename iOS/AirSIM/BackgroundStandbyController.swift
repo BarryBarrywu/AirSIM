@@ -776,6 +776,17 @@ final class SMSNotificationCoordinator {
             && VoIPPushController.shared.registrationReadiness().alertTokenReady
     }
 
+    func hasPush(agentID: String?, deliveryID: String?) -> Bool {
+        guard let deliveryID, !deliveryID.isEmpty else { return false }
+        let exact = key(agentID: agentID, deliveryID: deliveryID)
+        if entries[exact]?.pushAt != nil { return true }
+        return entries.values.contains { entry in
+            entry.deliveryID == deliveryID
+                && (agentID?.isEmpty != false || entry.agentID == nil || entry.agentID == agentID)
+                && entry.pushAt != nil
+        }
+    }
+
     private func persist() {
         let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
         entries = entries.filter { $0.value.touchedAt >= cutoff }
@@ -794,12 +805,31 @@ final class IncomingSMSNotifier {
 
     func notify(message: SMSMessage, displayName: String, appIsActive: Bool) {
         guard !appIsActive, !notifiedMessageIDs.contains(message.id) else { return }
-        guard !SMSNotificationCoordinator.shared.cloudOwnsNotifications() else { return }
+        guard !SMSNotificationCoordinator.shared.hasPush(
+            agentID: message.sourceAgentID, deliveryID: message.deliveryID) else { return }
+
+        if SMSNotificationCoordinator.shared.cloudOwnsNotifications() {
+            // A stale/misconfigured APNs token must not silently swallow the
+            // alert. Give a healthy push a short head start, then fall back to
+            // the same persistent notification ledger.
+            notifiedMessageIDs.append(message.id)
+            if notifiedMessageIDs.count > 64 { notifiedMessageIDs.removeFirst() }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard let self,
+                      UIApplication.shared.applicationState != .active,
+                      !SMSNotificationCoordinator.shared.hasPush(
+                          agentID: message.sourceAgentID, deliveryID: message.deliveryID) else { return }
+                self.post(message: message, displayName: displayName)
+            }
+            return
+        }
+        post(message: message, displayName: displayName)
+    }
+
+    private func post(message: SMSMessage, displayName: String) {
         guard let claim = SMSNotificationCoordinator.shared.claimLocal(
             agentID: message.sourceAgentID, deliveryID: message.deliveryID) else { return }
-        notifiedMessageIDs.append(message.id)
-        if notifiedMessageIDs.count > 64 { notifiedMessageIDs.removeFirst() }
-
         let content = UNMutableNotificationContent()
         content.title = displayName
         content.body = message.content
