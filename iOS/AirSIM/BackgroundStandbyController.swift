@@ -386,6 +386,11 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
         guard let api = await availableSamsungAPI() else { throw CallKitBridgeError.noReachableTransport }
         try await api.dial(number: number)
     }
+    func callKitPrepareAudioSession() throws {
+        if CallKitController.shared.currentIncomingPush?.authenticatedMediaURL != nil {
+            try IPhoneCloudCallSession.shared.prepareAudioForCallKit()
+        }
+    }
     func callKitAnswer(origin: CallAnswerOrigin) async throws {
         if let pushedCall = CallKitController.shared.currentIncomingPush,
            pushedCall.isVirtual {

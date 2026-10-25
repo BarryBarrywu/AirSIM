@@ -829,7 +829,12 @@ final class IPhoneCloudCallSession {
         guard let url = incoming.authenticatedMediaURL else {
             throw IPhoneCloudCallError.mediaUnavailable
         }
-        try media.prepareForCallKit()
+        // CallKit owns the shared AVAudioSession after didActivate. Re-setting its
+        // category from the cloud answer backend makes iOS deactivate the system
+        // call audio a moment after answer. Configure only before CallKit activates.
+        if !CallKitController.shared.audioSessionIsActive {
+            try media.prepareForCallKit()
+        }
         let callChanged = call?.uuid != incoming.uuid
         call = incoming
         answered = true
@@ -1041,6 +1046,10 @@ final class IPhoneCloudCallSession {
             ],
             isFailure: isFailure
         )
+    }
+
+    func prepareAudioForCallKit() throws {
+        try media.prepareForCallKit()
     }
 
     func startAudio() throws {

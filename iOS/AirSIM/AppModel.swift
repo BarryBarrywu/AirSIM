@@ -3855,7 +3855,14 @@ extension AppModel: CallKitActionHandling {
     func callKitPrepareAudioSession() throws {
         try CallKitAudioPreparationCoordinator.prepare(
             suspendStandby: { backgroundStandby.suspendForCall() },
-            configureCallAudio: { try audio.prepareForCallKit() },
+            configureCallAudio: {
+                if ConnectionModePreference.selected() == .cloud,
+                   callKit.currentIncomingPush?.authenticatedMediaURL != nil {
+                    try IPhoneCloudCallSession.shared.prepareAudioForCallKit()
+                } else {
+                    try audio.prepareForCallKit()
+                }
+            },
             resumeStandby: { backgroundStandby.resumeAfterCall() }
         )
     }
