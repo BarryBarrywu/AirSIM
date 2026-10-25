@@ -55,9 +55,8 @@ final class SystemCallToneOutput: CallToneOutput {
     }
     func stop(deactivateSession: Bool) {
         player?.stop(); player = nil
-        if deactivateSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        guard deactivateSession, !CallKitController.shared.audioSessionIsActive else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 
@@ -514,7 +513,7 @@ final class AudioSessionController: ObservableObject {
                 let session = AVAudioSession.sharedInstance()
                 // 清除本次通话的外放覆盖，避免影响下一次通话或其他 App。
                 try session.overrideOutputAudioPort(.none)
-                if !callKitManagedSession {
+                if !callKitManagedSession, !CallKitController.shared.audioSessionIsActive {
                     try session.setActive(false, options: .notifyOthersOnDeactivation)
                 }
             } catch {

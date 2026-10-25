@@ -482,6 +482,19 @@ final class CallKitController: NSObject {
         reason explicitReason: CXCallEndedReason? = nil
     ) {
         guard let uuid = currentUUID else { return }
+        let finishReason = explicitReason ?? endedReason(for: previous)
+        Task { @MainActor in
+            await AgentVerboseTraceRecorder.shared.recordEvent(
+                source: "APP", category: "callkit", phase: "finish",
+                title: "CallKit 通话结束",
+                fields: [
+                    "call_uuid": uuid.uuidString.lowercased(),
+                    "state": self.currentState ?? "none",
+                    "reason": String(finishReason.rawValue),
+                    "system_reported": String(self.systemCallReported),
+                ]
+            )
+        }
         if systemCallReported, !endActionFulfilled {
             let reason = explicitReason ?? endedReason(for: previous)
             provider.reportCall(with: uuid, endedAt: previous?.endedAt ?? Date(), reason: reason)
