@@ -4052,9 +4052,13 @@ extension AppModel: CallKitActionHandling {
                 return
             }
             let cloudMediaEnabled = CloudModePreference.isEnabled()
-            let vowlanRoute = await readyVoWLANRoute()
+            let selectedMode = ConnectionModePreference.selected()
+            // Do not probe VoWLAN from an explicit cloud answer. A local probe
+            // timeout used to consume the answer path before any cloud request.
+            let vowlanRoute: (AirSIMAPI, PCMRoute)? =
+                selectedMode == .cloud ? nil : await readyVoWLANRoute()
             let transport = CallTransportPolicy.preferred(
-                mode: ConnectionModePreference.selected(),
+                mode: selectedMode,
                 vowlanReady: vowlanRoute != nil,
                 cloudMediaAvailable: pushedCall?.authenticatedMediaURL != nil,
                 cloudMediaEnabled: cloudMediaEnabled
