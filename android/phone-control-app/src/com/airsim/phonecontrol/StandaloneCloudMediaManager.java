@@ -77,7 +77,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                     .put("issued_at", Instant.now().toString())
                     .put("expires_at", Instant.now().plusSeconds(90).toString())
                     .put("media_transport", "legacy_pcm");
-            relay.postJSON(registration, "/v2/events/call", payload, 15_000);
+            postRelay(registration, relay, "/v2/events/call", payload, 15_000);
             start(descriptor);
         } else if (descriptor != null && descriptor.androidID.isEmpty()
                 && "outgoing".equals(direction)) {
@@ -128,8 +128,13 @@ final class StandaloneCloudMediaManager implements Closeable {
      */
     private void postCallState(JSONObject registration, StandaloneRelayClient relay,
                                JSONObject lifecycle) throws Exception {
+        postRelay(registration, relay, "/v2/events/call-state", lifecycle, 12_000);
+    }
+
+    private void postRelay(JSONObject registration, StandaloneRelayClient relay, String path,
+                           JSONObject payload, int timeoutMillis) throws Exception {
         try {
-            relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
+            relay.postJSON(registration, path, payload, timeoutMillis);
         } catch (RelayHTTPException error) {
             if (error.statusCode() != 409) throw error;
             JSONObject response;
@@ -150,7 +155,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                     .put("trace_id", "standalone-stale-" + stale.optString("call_uuid"));
             relay.postJSON(registration, "/v2/events/call-state", ended, 12_000);
             BridgeLog.info("standalone_cloud_stale_call_cleared");
-            relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
+            relay.postJSON(registration, path, payload, timeoutMillis);
         }
     }
 
