@@ -192,8 +192,10 @@ final class StandaloneCloudMediaManager implements Closeable {
         CloudSession(Descriptor descriptor) { this.descriptor = descriptor; }
 
         @Override public void run() {
+            int reconnectFailures = 0;
             while (running) {
                 StandaloneWebSocket owner = null;
+                boolean connected = false;
                 try {
                     URI endpoint = URI.create(descriptor.relayURL.replaceFirst("^https", "wss")
                             + "/v1/calls/" + descriptor.callUUID + "/connect?role=agent&token="
@@ -206,9 +208,14 @@ final class StandaloneCloudMediaManager implements Closeable {
                     owner.writeText(status("agent_ready", ""));
                     BridgeLog.info("standalone_cloud_media_connected call_uuid="
                             + DebugRedactor.safeIdentifier(descriptor.callUUID));
+                    connected = true;
+                    reconnectFailures = 0;
                     readLoop(owner);
                 } catch (Exception error) {
-                    if (running) BridgeLog.error("standalone_cloud_media_disconnected", error);
+                    if (running) {
+                        reconnectFailures = Math.min(4, reconnectFailures + 1);
+                        BridgeLog.error("standalone_cloud_media_disconnected", error);
+                    }
                 } finally {
                     closeSocket(owner);
                     synchronized (this) {
@@ -225,7 +232,14 @@ final class StandaloneCloudMediaManager implements Closeable {
                     }
                 }
                 if (running) {
-                    try { Thread.sleep(1_000); }
+                    // A Relay/DO failure or quota exhaustion must not turn into a
+                    // 1 Hz request loop. Back off to at most one attempt per 15 s.
+                    long delay = connected ? 1_000L : Math.min(15_000L, 1_000L << reconnectFailures);
+                    if (!connected) {
+                        BridgeLog.info("standalone_cloud_media_retry delay_ms=" + delay
+                                + " failures=" + reconnectFailures);
+                    }
+                    try { Thread.sleep(delay); }
                     catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
                 }
             }
