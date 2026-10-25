@@ -4033,7 +4033,11 @@ extension AppModel: CallKitActionHandling {
                 currentCallTransport = .bluetooth
                 return
             }
+            // App 内来电页不一定经过 CallKit push 回调；纯云端模式的
+            // authoritative call 已经在 IPhoneCloudCallSession 中。回退到
+            // currentIncomingPush 会让内页接听误走 VoWLAN/local。
             let pushedCall = callKit.currentIncomingPush
+                ?? IPhoneCloudCallSession.shared.call
             if let pushedCall, pushedCall.isVirtual {
                 try VirtualCallTTSController.shared.prepare(pushedCall)
                 clearLockedTransport()
