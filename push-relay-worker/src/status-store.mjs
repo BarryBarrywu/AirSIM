@@ -316,21 +316,31 @@ export async function writeDeviceRecord(env, deviceID, record) {
     await env.DEVICES.put(`${DEVICE_PREFIX}${deviceID}`, JSON.stringify(record));
     return;
   }
-  const response = await stub.fetch(`https://status.internal/device/${encodeURIComponent(deviceID)}`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(record),
-  });
-  if (!response.ok) throw new Error(`device registry returned HTTP ${response.status}`);
+  try {
+    const response = await stub.fetch(`https://status.internal/device/${encodeURIComponent(deviceID)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    if (!response.ok) throw new Error(`device registry returned HTTP ${response.status}`);
+  } catch (error) {
+    // Registration and APNs tokens must survive a Durable Objects quota/outage.
+    // KV remains the authoritative fallback for the push path.
+    console.warn("device registry write failed; using KV mirror", safeError(error));
+  }
   await bestEffortKVPut(env.DEVICES, `${DEVICE_PREFIX}${deviceID}`, record);
 }
 
 export async function readDeviceRecord(env, deviceID) {
   const stub = registryStub(env);
   if (stub) {
-    const response = await stub.fetch(`https://status.internal/device/${encodeURIComponent(deviceID)}`);
-    if (response.ok) return response.json();
-    if (response.status !== 404) throw new Error(`device registry returned HTTP ${response.status}`);
+    try {
+      const response = await stub.fetch(`https://status.internal/device/${encodeURIComponent(deviceID)}`);
+      if (response.ok) return response.json();
+      if (response.status !== 404) throw new Error(`device registry returned HTTP ${response.status}`);
+    } catch (error) {
+      console.warn("device registry read failed; using KV mirror", safeError(error));
+    }
   }
   return readKVRecord(env.DEVICES, `${DEVICE_PREFIX}${deviceID}`);
 }

@@ -1172,7 +1172,7 @@ async function receiveCall(request, env) {
   }
 
   const lifecycleKey = `call-lifecycle:${authenticated.device.device_id}`;
-  const lifecycle = applyCallLifecycle(await readRelayRecord(env, lifecycleKey), {
+  const lifecycle = applyCallLifecycle(await bestEffortReadRelayRecord(env, lifecycleKey), {
     call_id: call.call_id.trim(),
     call_uuid: call.call_uuid.toLowerCase(),
     generation,
@@ -1186,30 +1186,30 @@ async function receiveCall(request, env) {
   if (!lifecycle.accepted) {
     return jsonResponse(409, { accepted: false, reason: lifecycle.reason, lifecycle: lifecycle.snapshot });
   }
-  await writeRelayState(env, lifecycleKey, JSON.stringify(lifecycle.snapshot), 5 * 60 * 60);
+  await bestEffortWriteRelayState(env, lifecycleKey, JSON.stringify(lifecycle.snapshot), 5 * 60 * 60);
 
   const voipDedupeKey = `dedupe:call:voip:${authenticated.device.device_id}:${call.call_uuid}`;
   const watchDedupeKey = `dedupe:call:watch:${authenticated.device.device_id}:${call.call_uuid}`;
   const alertDedupeKey = `dedupe:call:alert:${authenticated.device.device_id}:${call.call_uuid}`;
   const activityDedupeKey = `dedupe:call:liveactivity:${authenticated.device.device_id}:${call.call_uuid}`;
   const voipDuplicate = !authenticated.device.voip_token ||
-    Boolean(await readRelayState(env, voipDedupeKey));
+    Boolean(await bestEffortReadRelayState(env, voipDedupeKey));
   const watchDuplicate = !mediaReady || !authenticated.device.watch_voip_token ||
-    Boolean(await readRelayState(env, watchDedupeKey));
+    Boolean(await bestEffortReadRelayState(env, watchDedupeKey));
   const alertDuplicate = !authenticated.device.alert_token ||
-    Boolean(await readRelayState(env, alertDedupeKey));
-  const currentActivity = await readRelayRecord(
+    Boolean(await bestEffortReadRelayState(env, alertDedupeKey));
+  const currentActivity = await bestEffortReadRelayRecord(
     env,
     `liveactivity:current:${authenticated.device.device_id}`,
   );
   const activityToken = currentActivity?.update_token ||
     authenticated.device.live_activity_push_to_start_token || "";
-  const activityDuplicate = !activityToken || Boolean(await readRelayState(env, activityDedupeKey));
+  const activityDuplicate = !activityToken || Boolean(await bestEffortReadRelayState(env, activityDedupeKey));
   let activityPushed = false;
 
   const mediaURL = `${new URL(request.url).origin.replace(/^http/, "ws")}/v1/calls/${call.call_uuid}/connect`;
   if (mediaReady) {
-    await writeRelayState(env, `call:${call.call_uuid}`, JSON.stringify({
+    await bestEffortWriteRelayState(env, `call:${call.call_uuid}`, JSON.stringify({
       device_id: authenticated.device.device_id,
       call_id: call.call_id,
       call_uuid: call.call_uuid.toLowerCase(),
@@ -1248,7 +1248,7 @@ async function receiveCall(request, env) {
         collapseID: call.call_uuid,
         payload: voipPayload,
       });
-      await writeRelayState(env, voipDedupeKey, "1", 180);
+      await bestEffortWriteRelayState(env, voipDedupeKey, "1", 180);
     }
 
     if (!watchDuplicate) {
@@ -1260,7 +1260,7 @@ async function receiveCall(request, env) {
         collapseID: call.call_uuid,
         payload: voipPayload,
       });
-      await writeRelayState(env, watchDedupeKey, "1", 180);
+      await bestEffortWriteRelayState(env, watchDedupeKey, "1", 180);
     }
 
     if (!alertDuplicate) {
@@ -1292,7 +1292,7 @@ async function receiveCall(request, env) {
         collapseID: call.call_uuid,
         payload: alertPayload,
       });
-      await writeRelayState(env, alertDedupeKey, "1", 180);
+      await bestEffortWriteRelayState(env, alertDedupeKey, "1", 180);
     }
 
     if (!activityDuplicate) {
@@ -1313,12 +1313,12 @@ async function receiveCall(request, env) {
             startedAt: call.issued_at,
           }),
         });
-        await writeRelayState(env, activityDedupeKey, "1", 180);
+        await bestEffortWriteRelayState(env, activityDedupeKey, "1", 180);
         activityPushed = true;
       } catch (error) {
         // Live Activity 是来电展示增强，token 失效不能反向破坏已经成功的 VoIP/CallKit。
         if (isUpdate) {
-          await deleteRelayState(env, `liveactivity:current:${authenticated.device.device_id}`);
+          await bestEffortDeleteRelayState(env, `liveactivity:current:${authenticated.device.device_id}`);
         }
         console.error("APNs Live Activity delivery failed", safeError(error));
       }
@@ -1373,10 +1373,10 @@ async function receiveSMS(request, env) {
     : message.timestamp;
 
   const dedupeKey = `dedupe:sms:${authenticated.device.device_id}:${stringValue(message.agent_id)}:${message.delivery_id}`;
-  if (await readRelayState(env, dedupeKey)) {
+  if (await bestEffortReadRelayState(env, dedupeKey)) {
     return jsonResponse(202, { duplicate: true });
   }
-  await writeRelayState(env, dedupeKey, "1", 7 * 24 * 60 * 60);
+  await bestEffortWriteRelayState(env, dedupeKey, "1", 7 * 24 * 60 * 60);
 
   const [content, truncated] = truncateCodePoints(message.content, 700);
   const payload = {
@@ -1410,7 +1410,7 @@ async function receiveSMS(request, env) {
     });
     return jsonResponse(202, { pushed: true });
   } catch (error) {
-    await deleteRelayState(env, dedupeKey);
+    await bestEffortDeleteRelayState(env, dedupeKey);
     await recordDashboardEvent(env, {
       type: "sms", device_id: authenticated.device.device_id, status: "failed",
       channel: "alert", environment: authenticated.device.environment,
@@ -1881,6 +1881,24 @@ async function readRelayRecord(env, key) {
   const value = await readRelayState(env, key);
   if (!value) return null;
   try { return JSON.parse(value); } catch { return null; }
+}
+
+/** APNs delivery is the priority path. DO lifecycle/dedupe is best effort. */
+async function bestEffortReadRelayRecord(env, key) {
+  try { return await readRelayRecord(env, key); }
+  catch (error) { console.warn("relay record read degraded", safeError(error)); return null; }
+}
+async function bestEffortReadRelayState(env, key) {
+  try { return await readRelayState(env, key); }
+  catch (error) { console.warn("relay state read degraded", safeError(error)); return null; }
+}
+async function bestEffortWriteRelayState(env, key, value, ttlSeconds = null) {
+  try { await writeRelayState(env, key, value, ttlSeconds); return true; }
+  catch (error) { console.warn("relay state write degraded", safeError(error)); return false; }
+}
+async function bestEffortDeleteRelayState(env, key) {
+  try { await deleteRelayState(env, key); }
+  catch (error) { console.warn("relay state delete degraded", safeError(error)); }
 }
 
 function deviceKey(deviceID) {
