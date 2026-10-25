@@ -69,7 +69,16 @@ final class NotificationForwarder {
             String contentType = "application/json";
 
             switch (channel) {
-                case "bark" -> body.put("title", "AirSIM").put("body", text).put("group", "AirSIM");
+                case "bark" -> {
+                    String[] target = barkTarget(url, destination.optString("deviceKey", ""));
+                    url = target[0];
+                    body.put("device_key", target[1])
+                            .put("title", barkTitle(sms, missed))
+                            .put("body", text)
+                            .put("group", "AirSIM")
+                            .put("level", sms ? "active" : "timeSensitive")
+                            .put("isArchive", "1");
+                }
                 case "discord" -> body.put("content", text);
                 case "slack" -> body.put("text", text);
                 case "wecom" -> body.put("msgtype", "text")
@@ -109,6 +118,30 @@ final class NotificationForwarder {
         } catch (Exception error) {
             BridgeLog.error("notification_forward_failed", error);
         }
+    }
+
+    private static String barkTitle(boolean sms, boolean missed) {
+        return sms ? "AirSIM 短信" : missed ? "AirSIM 未接来电" : "AirSIM 来电";
+    }
+
+    private static String[] barkTarget(String configured, String key) throws Exception {
+        String value = configured == null ? "" : configured.trim();
+        if (value.isEmpty()) value = "https://api.day.app/push";
+        URL url = new URL(value);
+        if (!"https".equalsIgnoreCase(url.getProtocol())) {
+            throw new IllegalArgumentException("Bark endpoint must use HTTPS");
+        }
+        String path = url.getPath();
+        if (path.endsWith("/push")) {
+            if (key == null || key.isBlank()) throw new IllegalArgumentException("Bark device key missing");
+            return new String[]{url.toString(), key.trim()};
+        }
+        String[] segments = path.split("/");
+        String pathKey = segments.length == 0 ? "" : segments[segments.length - 1].trim();
+        String deviceKey = key == null || key.isBlank() ? pathKey : key.trim();
+        if (deviceKey.isBlank()) throw new IllegalArgumentException("Bark device key missing");
+        String endpoint = url.getProtocol() + "://" + url.getAuthority() + "/push";
+        return new String[]{endpoint, deviceKey};
     }
 
     private static String render(JSONObject destination, JSONObject event,

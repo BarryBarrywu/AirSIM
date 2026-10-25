@@ -669,6 +669,7 @@ struct NotificationForwardingDestination: Codable, Identifiable, Equatable, Send
     var webhookURL = ""
     var token = ""
     var chatID = ""
+    var deviceKey: String? = nil
     var secret = ""
     var sendSMS = true
     var sendIncomingCall = true
@@ -795,6 +796,13 @@ private struct NotificationForwardingEditor: View {
                     TextField("Webhook URL", text: $destination.webhookURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    if destination.channel == .bark {
+                        TextField("Bark Device Key（URL 不含 key 时填写）", text: Binding(
+                            get: { destination.deviceKey ?? "" },
+                            set: { destination.deviceKey = $0 }
+                        ))
+                        .textInputAutocapitalization(.never)
+                    }
                     if destination.channel == .telegram || destination.channel == .qq {
                         TextField("Bot Token", text: $destination.token)
                             .textInputAutocapitalization(.never)
