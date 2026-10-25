@@ -9,6 +9,11 @@ public final class WireJson {
 
     public static String callEvent(String eventId, String callId, String direction, String state,
                                    String number, String mode, int slotIndex) {
+        return callEvent(eventId, callId, direction, state, number, mode, slotIndex, false);
+    }
+
+    public static String callEvent(String eventId, String callId, String direction, String state,
+                                   String number, String mode, int slotIndex, boolean missed) {
         return "{" +
                 field("event_id", eventId) + "," +
                 field("call_id", callId) + "," +
@@ -17,7 +22,8 @@ public final class WireJson {
                 field("number", number) + "," +
                 field("mode", mode) + "," +
                 "\"slot_index\":" + slotIndex + "," +
-                "\"slot_id\":" + slotIndex + "}";
+                "\"slot_id\":" + slotIndex + "," +
+                "\"missed\":" + missed + "}";
     }
 
     public static String commandResult(String id, boolean success, String error) {

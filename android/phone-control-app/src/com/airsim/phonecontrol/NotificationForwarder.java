@@ -38,15 +38,14 @@ final class NotificationForwarder {
         boolean call = type.contains("call") || event.has("direction");
         boolean ringing = "incoming".equals(event.optString("direction"))
                 && "incoming".equals(event.optString("state"));
-        boolean missed = "ended".equals(event.optString("state"))
-                && "incoming".equals(event.optString("direction"));
+        boolean missed = event.optBoolean("missed", false);
 
         for (int i = 0; i < destinations.length(); i++) {
             JSONObject destination = destinations.optJSONObject(i);
             if (destination == null || !destination.optBoolean("enabled", true)) continue;
             if (sms && !destination.optBoolean("sendSMS", true)) continue;
             if (call && ringing && !destination.optBoolean("sendIncomingCall", true)) continue;
-            if (call && missed && !destination.optBoolean("sendMissedCall", false)) continue;
+            if (call && missed && !destination.optBoolean("sendMissedCall", true)) continue;
             if (call && !ringing && !missed) continue;
             if (!sms && !call) continue;
             final JSONObject target = destination;
@@ -114,8 +113,14 @@ final class NotificationForwarder {
 
     private static String render(JSONObject destination, JSONObject event,
                                  boolean sms, boolean missed) {
-        String template = destination.optString("template", "");
-        if (template.isBlank()) template = "{event}\n{device}\n{number}\n{sender}\n{content}\n{time}";
+        String template = missed
+                ? destination.optString("missedTemplate", "")
+                : destination.optString("template", "");
+        if (template.isBlank()) {
+            template = missed
+                    ? "{event}\n{device}\n{number}\n{time}"
+                    : "{event}\n{device}\n{number}\n{sender}\n{content}\n{time}";
+        }
         String number = destination.optBoolean("includeNumber", true)
                 ? event.optString("number", "") : "";
         String content = destination.optBoolean("includeBody", true)

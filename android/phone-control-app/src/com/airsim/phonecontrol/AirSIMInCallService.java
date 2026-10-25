@@ -54,7 +54,9 @@ public final class AirSIMInCallService extends InCallService {
                 + " raw_state=" + call.getState()
                 + " connect_time_ms=" + (details == null ? 0 : details.getConnectTimeMillis())
                 + " disconnect_code=" + (disconnect == null ? "none" : disconnect.getCode()));
-        emit(callId, direction(call), "ended", number(call), slotIndex(call));
+        boolean missed = "incoming".equals(direction(call))
+                && (details == null || details.getConnectTimeMillis() == 0);
+        emit(callId, direction(call), "ended", number(call), slotIndex(call), missed);
 		deduplicator.remove(callId);
 		callStates.remove(call);
 		updateLocalAudioPolicy();
@@ -82,7 +84,10 @@ public final class AirSIMInCallService extends InCallService {
                 + " connect_time_ms=" + (details == null ? 0 : details.getConnectTimeMillis())
                 + " disconnect_code=" + (disconnect == null ? "none" : disconnect.getCode()));
         if (!"unknown".equals(wireState) && deduplicator.shouldSend(callId, callDirection, wireState, callNumber)) {
-			emit(callId, callDirection, wireState, callNumber, slotIndex(call));
+			boolean missed = "incoming".equals(callDirection)
+                    && (wireState.equals("ended") || wireState.equals("ending"))
+                    && (details == null || details.getConnectTimeMillis() == 0);
+			emit(callId, callDirection, wireState, callNumber, slotIndex(call), missed);
 		}
     }
 
@@ -145,11 +150,16 @@ public final class AirSIMInCallService extends InCallService {
     }
 
     private void emit(String callId, String direction, String state, String number, int slotIndex) {
+        emit(callId, direction, state, number, slotIndex, false);
+    }
+
+    private void emit(String callId, String direction, String state, String number, int slotIndex,
+                      boolean missed) {
         com.airsim.phonecontrol.voble.VoBLEGatewayService.publishCallState(
                 this, callId, direction, state, number);
         String eventId = Long.toString(System.currentTimeMillis()) + "-" + events.incrementAndGet();
         String json = WireJson.callEvent(eventId, callId, direction, state, number, AppConfig.mode(this),
-                slotIndex);
+                slotIndex, missed);
         network.execute(() -> {
             try {
                 new AgentClient(this).sendEvent(json);

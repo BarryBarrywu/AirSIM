@@ -672,7 +672,7 @@ struct NotificationForwardingDestination: Codable, Identifiable, Equatable, Send
     var secret = ""
     var sendSMS = true
     var sendIncomingCall = true
-    var sendMissedCall = false
+    var sendMissedCall = true
     var includeBody = true
     var includeNumber = true
     var template = """
@@ -683,6 +683,7 @@ struct NotificationForwardingDestination: Codable, Identifiable, Equatable, Send
     内容：{content}
     时间：{time}
     """
+    var missedTemplate: String? = nil
 }
 
 struct NotificationForwardingConfig: Codable, Equatable, Sendable {
@@ -821,7 +822,17 @@ private struct NotificationForwardingEditor: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
-                    Text("自定义格式")
+                    Text("短信 / 来电格式")
+                }
+                Section {
+                    TextEditor(text: Binding(
+                        get: { destination.missedTemplate ?? "{event}\n设备：{device}\n号码：{number}\n时间：{time}" },
+                        set: { destination.missedTemplate = $0 }
+                    ))
+                        .frame(minHeight: 100)
+                        .font(.system(.footnote, design: .monospaced))
+                } header: {
+                    Text("未接来电格式")
                 }
             }
             .navigationTitle("转发目标")
