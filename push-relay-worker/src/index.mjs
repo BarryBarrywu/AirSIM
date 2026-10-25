@@ -1238,6 +1238,8 @@ async function receiveCall(request, env) {
     media_transport: mediaTransport,
   };
 
+  let voipPushed = false;
+  let watchPushed = false;
   try {
     if (!voipDuplicate) {
       await sendAPNs(env, authenticated.device, authenticated.device.voip_token, {
@@ -1249,8 +1251,15 @@ async function receiveCall(request, env) {
         payload: voipPayload,
       });
       await bestEffortWriteRelayState(env, voipDedupeKey, "1", 180);
+      voipPushed = true;
     }
+  } catch (error) {
+    // The ordinary alert below must still be attempted when the VoIP token is
+    // stale or APNs rejects the VoIP push.
+    console.error("APNs VoIP delivery failed", safeError(error));
+  }
 
+  try {
     if (!watchDuplicate) {
       await sendAPNs(env, authenticated.device, authenticated.device.watch_voip_token, {
         topic: `${authenticated.device.watch_bundle_id}.voip`,
@@ -1261,8 +1270,14 @@ async function receiveCall(request, env) {
         payload: voipPayload,
       });
       await bestEffortWriteRelayState(env, watchDedupeKey, "1", 180);
+      watchPushed = true;
     }
+  } catch (error) {
+    console.error("APNs watch VoIP delivery failed", safeError(error));
+  }
 
+  let alertPushed = false;
+  try {
     if (!alertDuplicate) {
       const displayName = stringValue(call.caller_name) || stringValue(call.number) || "未知号码";
       const alertBody = stringValue(call.caller_name) && stringValue(call.number)
@@ -1284,15 +1299,22 @@ async function receiveCall(request, env) {
         issued_at: call.issued_at,
         expires_at: call.expires_at,
       };
-      await sendAPNs(env, authenticated.device, authenticated.device.alert_token, {
-        topic: authenticated.device.bundle_id,
-        pushType: "alert",
-        priority: "10",
-        expiration: Math.floor(expiresAt / 1000),
-        collapseID: call.call_uuid,
-        payload: alertPayload,
-      });
-      await bestEffortWriteRelayState(env, alertDedupeKey, "1", 180);
+      try {
+        await sendAPNs(env, authenticated.device, authenticated.device.alert_token, {
+          topic: authenticated.device.bundle_id,
+          pushType: "alert",
+          priority: "10",
+          expiration: Math.floor(expiresAt / 1000),
+          collapseID: call.call_uuid,
+          payload: alertPayload,
+        });
+        await bestEffortWriteRelayState(env, alertDedupeKey, "1", 180);
+        alertPushed = true;
+      } catch (error) {
+        // CallKit/VoIP may already have failed. Do not let the ordinary alert
+        // prevent the remaining delivery attempts.
+        console.error("APNs call alert delivery failed", safeError(error));
+      }
     }
 
     if (!activityDuplicate) {
@@ -1327,16 +1349,23 @@ async function receiveCall(request, env) {
     if (voipDuplicate && watchDuplicate && alertDuplicate && activityDuplicate) {
       return jsonResponse(202, { duplicate: true });
     }
+    if (!voipPushed && !watchPushed && !alertPushed && !activityPushed) {
+      await recordDashboardEvent(env, {
+        type: "call", device_id: authenticated.device.device_id, status: "failed",
+        channel: "relay", environment: authenticated.device.environment,
+      });
+      return jsonResponse(502, { error: "APNs delivery failed" });
+    }
     await recordDashboardEvent(env, {
       type: "call", device_id: authenticated.device.device_id, status: "delivered",
-      channel: !voipDuplicate ? "iphone" : !watchDuplicate ? "watch" : !alertDuplicate ? "alert" : "live_activity",
+      channel: voipPushed ? "iphone" : watchPushed ? "watch" : alertPushed ? "alert" : "live_activity",
       environment: authenticated.device.environment,
     });
     return jsonResponse(202, {
       pushed: true,
-      voip_pushed: !voipDuplicate,
-      watch_pushed: !watchDuplicate,
-      alert_pushed: !alertDuplicate,
+      voip_pushed: voipPushed,
+      watch_pushed: watchPushed,
+      alert_pushed: alertPushed,
       live_activity_pushed: activityPushed,
     });
   } catch (error) {
