@@ -5,11 +5,17 @@ import android.content.Context;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Base64;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -98,8 +104,11 @@ final class NotificationForwarder {
                 case "slack" -> body.put("text", text);
                 case "wecom" -> body.put("msgtype", "text")
                         .put("text", new JSONObject().put("content", text));
-                case "feishu" -> body.put("msg_type", "text")
-                        .put("content", new JSONObject().put("text", text));
+                case "feishu" -> {
+                    body.put("msg_type", "text")
+                            .put("content", new JSONObject().put("text", text));
+                    addFeishuSignature(destination, body);
+                }
                 case "telegram" -> {
                     String token = destination.optString("token", "");
                     if (url.isEmpty()) url = "https://api.telegram.org/bot" + token + "/sendMessage";
@@ -205,11 +214,43 @@ final class NotificationForwarder {
                 output.write(body.getBytes(StandardCharsets.UTF_8));
             }
             int status = connection.getResponseCode();
+            String responseBody = read(status >= 200 && status < 300
+                    ? connection.getInputStream() : connection.getErrorStream());
             if (status < 200 || status >= 300) {
                 throw new IllegalStateException("forwarding HTTP " + status);
             }
+            if ("feishu".equals(channel)) {
+                JSONObject reply = new JSONObject(responseBody);
+                int code = reply.optInt("code", reply.optInt("StatusCode", 0));
+                if (code != 0) {
+                    throw new IllegalStateException("feishu code=" + code
+                            + " msg=" + reply.optString("msg", reply.optString("StatusMessage", "")));
+                }
+            }
         } finally {
             connection.disconnect();
+        }
+    }
+
+    private static void addFeishuSignature(JSONObject destination, JSONObject body) throws Exception {
+        String secret = destination.optString("secret", "");
+        if (secret.isBlank()) return;
+        long timestamp = System.currentTimeMillis() / 1000;
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec((timestamp + "\n" + secret).getBytes(StandardCharsets.UTF_8),
+                "HmacSHA256"));
+        String sign = Base64.getEncoder().encodeToString(
+                mac.doFinal(new byte[0]));
+        body.put("timestamp", String.valueOf(timestamp)).put("sign", sign);
+    }
+
+    private static String read(InputStream input) throws Exception {
+        if (input == null) return "";
+        try (input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+            return output.toString(StandardCharsets.UTF_8.name());
         }
     }
 
