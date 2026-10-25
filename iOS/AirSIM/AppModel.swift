@@ -474,6 +474,13 @@ final class AppModel: ObservableObject {
         let effects = deviceCalls.apply(event)
         guard let key = deviceCalls.key(agentID: event.agentID, callID: event.callID) else { return effects }
         if dismissAndroidAnsweredCloudCallIfNeeded(event, key: key) { return effects }
+        // Explicit cloud mode must not turn an Android LAN discovery event into
+        // an in-app ringing page. That page has no cloud media URL and its answer
+        // falls back to VoWLAN, producing a misleading timeout. Cloud calls enter
+        // through PushKit/CallKit or an already prepared cloud session.
+        if ConnectionModePreference.selected() == .cloud, event.transport != .cloud {
+            return effects
+        }
         if presentedDeviceCall == nil, event.state.representsCall { presentedDeviceCall = key }
         if let presentation, deviceCallCanPresent(key),
            deviceCalls.latestEvent(for: key)?.state == event.state,
