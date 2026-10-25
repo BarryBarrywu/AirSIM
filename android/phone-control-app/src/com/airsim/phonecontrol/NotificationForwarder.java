@@ -76,8 +76,15 @@ final class NotificationForwarder {
     private static void send(Context context, JSONObject destination, JSONObject event,
                              boolean sms, boolean missed) {
         try {
-            String delivery = event.optString("delivery_id",
-                    event.optString("call_uuid") + ":" + event.optString("state"));
+            String delivery = event.optString("delivery_id", "");
+            if (delivery.isEmpty()) {
+                // Call events do not carry delivery_id/call_uuid. A constant
+                // ":incoming" key used to suppress every call after the first.
+                delivery = event.optString("call_id",
+                        event.optString("event_id", "call"))
+                        + ":" + event.optString("state")
+                        + ":" + event.optString("direction");
+            }
             if (delivery.isEmpty() || alreadyForwarded(context, destination, delivery)) return;
 
             String text = render(destination, event, sms, missed);
