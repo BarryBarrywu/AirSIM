@@ -34,7 +34,10 @@ final class NotificationForwarder {
         if (destinations == null || destinations.length() == 0) return;
 
         String type = event.optString("event", "");
-        boolean sms = "incoming_sms".equals(type) || "sms".equals(type);
+        // Older SMS events had no event field; delivery_id + no call direction is
+        // the stable SMS identity. Keep both forms so existing queues forward too.
+        boolean sms = "incoming_sms".equals(type) || "sms".equals(type)
+                || (event.has("delivery_id") && !event.has("call_id"));
         boolean call = type.contains("call") || event.has("direction");
         boolean ringing = "incoming".equals(event.optString("direction"))
                 && "incoming".equals(event.optString("state"));
