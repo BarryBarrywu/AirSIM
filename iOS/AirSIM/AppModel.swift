@@ -2808,6 +2808,10 @@ final class AppModel: ObservableObject {
     }
 
     private func rejectUsingAvailableTransport() async throws {
+        if ConnectionModePreference.selected() == .cloud {
+            await IPhoneCloudCallSession.shared.end()
+            return
+        }
         if currentCallTransport == .cloud || IPhoneCloudCallSession.shared.isPrepared {
             await IPhoneCloudCallSession.shared.end()
             return
@@ -2825,6 +2829,10 @@ final class AppModel: ObservableObject {
     }
 
     private func hangupUsingAvailableTransport() async throws {
+        if ConnectionModePreference.selected() == .cloud {
+            await IPhoneCloudCallSession.shared.end()
+            return
+        }
         if currentCallTransport == .cloud || IPhoneCloudCallSession.shared.isPrepared {
             await IPhoneCloudCallSession.shared.end()
             return
