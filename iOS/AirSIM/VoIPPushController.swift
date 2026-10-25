@@ -1392,7 +1392,7 @@ final class VoIPPushController: NSObject {
         number: String,
         target: CloudCommandTarget,
         mediaTransport: CloudMediaTransport? = nil,
-        timeout: TimeInterval = 25
+        timeout: TimeInterval = 6
     ) async throws -> IncomingVoIPCall {
         let commandID = UUID()
         guard let registration = currentRegistration() else { throw CloudCommandError.unavailable }
@@ -1409,8 +1409,20 @@ final class VoIPPushController: NSObject {
               let mediaURL = URL(string: call.mediaURL) else {
             throw CloudCommandError.invalidResponse
         }
-        let outcome = try await waitForCloudCommand(commandID: commandID, target: target, registration: registration, timeout: timeout)
-        guard outcome.status == "completed", outcome.result?.dialing == true else {
+        // The enqueue response already contains the authenticated call/media
+        // identity. Android dials the cellular call immediately; waiting for the
+        // command-result KV write used to consume the whole CallKit start window.
+        // A slow result is advisory; media/control events still terminate a real
+        // failed call. Only an explicit failed result blocks the outgoing call.
+        let outcome = try? await waitForCloudCommand(
+            commandID: commandID, target: target,
+            registration: registration, timeout: timeout
+        )
+        if let outcome, outcome.status == "failed" {
+            throw CloudCommandError.failed(outcome.error ?? "模块未能开始拨号")
+        }
+        if let outcome, outcome.status == "completed",
+           outcome.result?.dialing != true {
             throw CloudCommandError.failed(outcome.error ?? "模块未能开始拨号")
         }
         return try IncomingVoIPCall(
