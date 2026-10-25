@@ -845,6 +845,11 @@ final class IPhoneCloudCallSession {
             mediaHealthTracker?.recordRoute(media.audioRouteDescription)
             publishMediaHealth()
         }
+        // Submitting answer must not wait for the media WebSocket. Relay can
+        // forward the answer while the PCM socket is still connecting; otherwise
+        // CallKit sits with an active audio session for tens of seconds and iOS
+        // eventually deactivates it.
+        submitEarlyAnswer(incoming)
         if callChanged || !media.isConnected {
             media.stop()
             do {
@@ -1181,6 +1186,34 @@ final class IPhoneCloudCallSession {
         audioState = .idle
         mediaHealthTracker = nil
         mediaHealthSnapshot = CloudMediaHealthSnapshot()
+    }
+
+    /// Best-effort HTTP answer before the media socket is ready. The in-band
+    /// confirmation loop remains authoritative and retries if this request races.
+    private func submitEarlyAnswer(_ incoming: IncomingVoIPCall) {
+        guard let envelope = media.controlEnvelope(action: "answer", call: incoming),
+              let credentials = VoIPPushController.shared.cloudCallControlCredentials() else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.tracePersistentControl(envelope, phase: "early_submitting")
+            do {
+                let receipt = try await CloudCallControlClient.submit(
+                    envelope: envelope, credentials: credentials
+                )
+                guard self.call?.uuid == incoming.uuid, self.answered else { return }
+                await self.tracePersistentControl(
+                    envelope,
+                    phase: receipt.agentConnected == true ? "early_forwarded" : "early_persisted",
+                    detail: receipt.status
+                )
+            } catch {
+                guard self.call?.uuid == incoming.uuid, self.answered else { return }
+                await self.tracePersistentControl(
+                    envelope, phase: "early_failed",
+                    detail: error.localizedDescription, isFailure: true
+                )
+            }
+        }
     }
 
     private func scheduleAnswerConfirmation(for incoming: IncomingVoIPCall) {
