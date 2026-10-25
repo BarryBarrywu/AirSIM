@@ -1369,6 +1369,33 @@ private struct CloudCallControlOperationIdentity {
     let traceID: String
 }
 
+/// URLSession ping cancellation can race the explicit stopped/identity check.
+/// A CheckedContinuation must be resumed exactly once, otherwise Swift traps.
+private final class OneShotThrowingContinuation {
+    private let lock = NSLock()
+    private var finished = false
+    private let continuation: CheckedContinuation<Void, Error>
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume() { resume(with: .success(())) }
+
+    func resume(throwing error: Error) { resume(with: .failure(error)) }
+
+    private func resume(with result: Result<Void, Error>) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        lock.unlock()
+        continuation.resume(with: result)
+    }
+}
+
 private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
     var onConnectionLost: ((UUID) -> Void)?
     var onControl: ((CloudPCMControlMessage, UUID) -> Void)?
@@ -1423,9 +1450,10 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
     func connect(to url: URL) async throws {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
+            let gate = OneShotThrowingContinuation(continuation)
             queue.async { [weak self] in
                 guard let self else {
-                    continuation.resume(throwing: IPhoneCloudCallError.connectionClosed)
+                    gate.resume(throwing: IPhoneCloudCallError.connectionClosed)
                     return
                 }
                 stopped = false
@@ -1436,12 +1464,13 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
                 receiveNext(socket)
                 socket.sendPing { error in
                     self.queue.async {
-                        guard !self.stopped, self.webSocket === socket else {
-                            continuation.resume(throwing: IPhoneCloudCallError.connectionClosed)
-                            return
+                        if self.stopped || self.webSocket !== socket {
+                            gate.resume(throwing: IPhoneCloudCallError.connectionClosed)
+                        } else if let error {
+                            gate.resume(throwing: error)
+                        } else {
+                            gate.resume()
                         }
-                        if let error { continuation.resume(throwing: error) }
-                        else { continuation.resume() }
                     }
                 }
             }
