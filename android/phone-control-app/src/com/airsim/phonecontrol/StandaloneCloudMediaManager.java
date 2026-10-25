@@ -100,7 +100,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                         .put("generation", descriptor.generation).put("phase", phase)
                         .put("source", "agent").put("timestamp", Instant.now().toString())
                         .put("trace_id", "standalone-" + descriptor.callUUID + "-" + phase);
-                relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
+                postCallState(registration, relay, lifecycle);
                 if ("active".equals(phase) || "ended".equals(phase)) {
                     JSONObject owner = identity(registration).put("event", "call_owner")
                             .put("call_id", descriptor.callID).put("call_uuid", descriptor.callUUID)
@@ -117,6 +117,40 @@ final class StandaloneCloudMediaManager implements Closeable {
                 }
             }
             if ("ended".equals(state)) closeActive(descriptor);
+        }
+    }
+
+    /**
+     * A crash/uninstall can leave a ringing/active lifecycle in Relay forever. The
+     * next real call is then rejected with 409 identity_mismatch and never reaches
+     * PushKit. Close only the exact stale identity returned by Relay, then retry the
+     * current lifecycle once.
+     */
+    private void postCallState(JSONObject registration, StandaloneRelayClient relay,
+                               JSONObject lifecycle) throws Exception {
+        try {
+            relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
+        } catch (RelayHTTPException error) {
+            if (error.statusCode() != 409) throw error;
+            JSONObject response;
+            try { response = new JSONObject(error.detailBody()); }
+            catch (Exception ignored) { throw error; }
+            if (!"identity_mismatch".equals(response.optString("reason"))) throw error;
+            JSONObject stale = response.optJSONObject("lifecycle");
+            if (stale == null || stale.optString("call_id").isBlank()
+                    || stale.optString("call_uuid").isBlank()) throw error;
+            JSONObject ended = identity(registration)
+                    .put("event", "call_state")
+                    .put("call_id", stale.optString("call_id"))
+                    .put("call_uuid", stale.optString("call_uuid"))
+                    .put("generation", Math.max(1, stale.optLong("generation", 1)))
+                    .put("phase", "ended")
+                    .put("source", "agent")
+                    .put("timestamp", Instant.now().toString())
+                    .put("trace_id", "standalone-stale-" + stale.optString("call_uuid"));
+            relay.postJSON(registration, "/v2/events/call-state", ended, 12_000);
+            BridgeLog.info("standalone_cloud_stale_call_cleared");
+            relay.postJSON(registration, "/v2/events/call-state", lifecycle, 12_000);
         }
     }
 

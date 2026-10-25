@@ -6,6 +6,7 @@ import java.io.IOException;
 final class RelayHTTPException extends IOException {
     private final int statusCode;
     private final long retryAfterMillis;
+    private final String detail;
 
     RelayHTTPException(int statusCode, String detail) {
         this(statusCode, detail, 0);
@@ -14,10 +15,12 @@ final class RelayHTTPException extends IOException {
         super("Relay HTTP " + statusCode + (detail == null || detail.isBlank() ? "" : ": " + detail));
         this.statusCode = statusCode;
         this.retryAfterMillis = Math.max(0, retryAfterMillis);
+        this.detail = detail == null ? "" : detail;
     }
 
     int statusCode() { return statusCode; }
     long retryAfterMillis() { return retryAfterMillis; }
+    String detailBody() { return detail; }
     static long parseRetryAfter(String value, long wallTimeMillis) {
         if (value == null) return 0;
         try {
