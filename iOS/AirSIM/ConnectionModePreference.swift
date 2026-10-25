@@ -156,8 +156,10 @@ struct ConnectionModeRuntimePolicy: Equatable, Sendable {
     var startsCloud: Bool { mode == .cloud || mode == .automatic }
     var allowsCrossModeFallback: Bool { mode == .automatic }
 
-    /// 蓝牙来电同样依赖系统通话界面；仅传统 VoWLAN 本地模式关闭 CallKit。
-    var usesCallKit: Bool { mode != .vowlan }
+    /// CallKit is a legitimate native presentation for every real transport:
+    /// VoWLAN, VoBLE, and cloud. Do not disable it merely because the media is
+    /// local; system call UI and audio ownership must stay consistent.
+    var usesCallKit: Bool { true }
 }
 
 /// 统一拨号路由选择。显式模式绝不借用其他链路；自动模式只在通话建立前

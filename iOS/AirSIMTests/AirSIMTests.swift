@@ -2361,6 +2361,14 @@ final class AirSIMTests: XCTestCase {
         ))
     }
 
+    func testVoWLANModeUsesCallKit() {
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .vowlan).usesCallKit)
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .automatic).usesCallKit)
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .localDual).usesCallKit)
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .bluetooth).usesCallKit)
+        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .cloud).usesCallKit)
+    }
+
     func testExplicitBluetoothModeDisablesUnrelatedLifecycles() {
         let policy = ConnectionModeRuntimePolicy(mode: .bluetooth)
 
