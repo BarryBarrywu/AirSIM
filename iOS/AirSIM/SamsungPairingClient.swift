@@ -164,9 +164,15 @@ enum SamsungPairingRegistrationPolicy {
     static func registration(
         localOnly: Bool,
         vowlanSecret: String,
+        notificationForwarding: NotificationForwardingConfig? = nil,
         cloudRegistration: () -> AgentPushRegistration?
     ) throws -> AgentPushRegistration {
-        if localOnly { return .local(vowlanSecret: vowlanSecret) }
+        if localOnly {
+            return .local(
+                vowlanSecret: vowlanSecret,
+                notificationForwarding: notificationForwarding
+            )
+        }
         guard var registration = cloudRegistration(), !registration.localMode else {
             throw SamsungPairingClientError.registrationUnavailable
         }

@@ -454,6 +454,20 @@ struct AirSIMSettingsView: View {
                         : "依次验证本机 Push 凭据、Relay 身份、设备注册、Agent 记录、90 秒心跳和命令路由；失败步骤会给出具体卡点，不会拨号或发送短信。")
                 }
 
+                Section("通知转发") {
+                    NavigationLink {
+                        NotificationForwardingView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("通知转发")
+                                Text("短信与来电转发到 Bark、Discord、Slack、企业微信、飞书、Telegram、QQ 或 Webhook")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } icon: { Image(systemName: "paperplane") }
+                    }
+                }
+
                 Section("调试") {
                     NavigationLink {
                         AgentVerboseTraceView(api: model.verboseDiagnosticsAPI)
@@ -621,6 +635,207 @@ struct AirSIMSettingsView: View {
         case .running: return .blue
         case .passed: return .green
         case .failed: return .red
+        }
+    }
+}
+
+import Foundation
+import SwiftUI
+
+enum NotificationForwardingChannel: String, CaseIterable, Codable, Identifiable, Sendable {
+    case bark, discord, slack, wecom, feishu, telegram, qq, webhook
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bark: return "Bark"
+        case .discord: return "Discord"
+        case .slack: return "Slack"
+        case .wecom: return "企业微信"
+        case .feishu: return "飞书自定义机器人"
+        case .telegram: return "Telegram Bot"
+        case .qq: return "QQ 官方 Bot"
+        case .webhook: return "通用 Webhook"
+        }
+    }
+}
+
+struct NotificationForwardingDestination: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID()
+    var enabled = true
+    var name = ""
+    var channel: NotificationForwardingChannel = .webhook
+    var webhookURL = ""
+    var token = ""
+    var chatID = ""
+    var secret = ""
+    var sendSMS = true
+    var sendIncomingCall = true
+    var sendMissedCall = false
+    var includeBody = true
+    var includeNumber = true
+    var template = """
+    {event}
+    设备：{device}
+    号码：{number}
+    发件人：{sender}
+    内容：{content}
+    时间：{time}
+    """
+}
+
+struct NotificationForwardingConfig: Codable, Equatable, Sendable {
+    var enabled = false
+    var destinations: [NotificationForwardingDestination] = []
+}
+
+enum NotificationForwardingStore {
+    static let key = "airsim.notification-forwarding"
+
+    static func load(defaults: UserDefaults = .standard) -> NotificationForwardingConfig {
+        guard let data = defaults.data(forKey: key),
+              let value = try? JSONDecoder().decode(NotificationForwardingConfig.self, from: data) else {
+            return NotificationForwardingConfig()
+        }
+        return value
+    }
+
+    static func save(_ value: NotificationForwardingConfig, defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        defaults.set(data, forKey: key)
+    }
+}
+
+struct NotificationForwardingView: View {
+    @State private var config = NotificationForwardingStore.load()
+    @State private var editing: NotificationForwardingDestination?
+    @State private var showingAdd = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("启用通知转发", isOn: $config.enabled)
+                Text("配置随下一次配对发送给 Android。Android 直接发送 Webhook，不依赖 Relay、APNs 或 iPhone 是否运行。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("转发目标") {
+                ForEach(config.destinations) { destination in
+                    Button {
+                        editing = destination
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(destination.name.isEmpty ? destination.channel.title : destination.name)
+                                Text(destination.channel.title + (destination.enabled ? "" : " · 已停用"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    config.destinations.remove(atOffsets: offsets)
+                    save()
+                }
+                Button {
+                    showingAdd = true
+                } label: {
+                    Label("添加转发目标", systemImage: "plus.circle")
+                }
+            }
+        }
+        .navigationTitle("通知转发")
+        .onChange(of: config) { _ in save() }
+        .sheet(isPresented: $showingAdd) {
+            NotificationForwardingEditor(destination: NotificationForwardingDestination()) { value in
+                config.destinations.append(value)
+                save()
+            }
+        }
+        .sheet(item: $editing) { destination in
+            NotificationForwardingEditor(destination: destination) { value in
+                if let index = config.destinations.firstIndex(where: { $0.id == value.id }) {
+                    config.destinations[index] = value
+                }
+                save()
+            }
+        }
+    }
+
+    private func save() {
+        // Delivered only inside the next encrypted pairing registration; never
+        // upload webhook URLs/tokens to Relay or APNs.
+        NotificationForwardingStore.save(config)
+    }
+}
+
+private struct NotificationForwardingEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var destination: NotificationForwardingDestination
+    let onSave: (NotificationForwardingDestination) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("目标") {
+                    TextField("备注名称", text: $destination.name)
+                    Picker("渠道", selection: $destination.channel) {
+                        ForEach(NotificationForwardingChannel.allCases) { channel in
+                            Text(channel.title).tag(channel)
+                        }
+                    }
+                    Toggle("启用", isOn: $destination.enabled)
+                }
+                Section("连接") {
+                    TextField("Webhook URL", text: $destination.webhookURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if destination.channel == .telegram || destination.channel == .qq {
+                        TextField("Bot Token", text: $destination.token)
+                            .textInputAutocapitalization(.never)
+                    }
+                    if destination.channel == .telegram || destination.channel == .qq {
+                        TextField("Chat ID / OpenID", text: $destination.chatID)
+                    }
+                    if destination.channel == .feishu {
+                        TextField("签名 Secret（可选）", text: $destination.secret)
+                            .textInputAutocapitalization(.never)
+                    }
+                }
+                Section("事件") {
+                    Toggle("短信", isOn: $destination.sendSMS)
+                    Toggle("来电", isOn: $destination.sendIncomingCall)
+                    Toggle("未接来电", isOn: $destination.sendMissedCall)
+                    Toggle("包含短信正文", isOn: $destination.includeBody)
+                    Toggle("包含号码", isOn: $destination.includeNumber)
+                }
+                Section {
+                    TextEditor(text: $destination.template)
+                        .frame(minHeight: 150)
+                        .font(.system(.footnote, design: .monospaced))
+                    Text("可用占位符：{event} {device} {number} {sender} {content} {time}")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("自定义格式")
+                }
+            }
+            .navigationTitle("转发目标")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(destination)
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }

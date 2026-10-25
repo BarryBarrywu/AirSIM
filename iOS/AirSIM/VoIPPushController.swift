@@ -667,6 +667,7 @@ struct AgentPushRegistration: Encodable, Equatable, Sendable {
     var appMediaCapabilities: [String] = [CloudMediaTransport.legacyPCM.rawValue]
     var forceLegacyPCM: Bool = true
     var vowlanSecret: String? = nil
+    var notificationForwarding: NotificationForwardingConfig? = nil
 
     enum CodingKeys: String, CodingKey {
         case cloudModeEnabled = "cloud_enabled"
@@ -685,6 +686,7 @@ struct AgentPushRegistration: Encodable, Equatable, Sendable {
         case appMediaCapabilities = "app_media_capabilities"
         case forceLegacyPCM = "force_legacy_pcm"
         case vowlanSecret = "vowlan_secret"
+        case notificationForwarding = "notification_forwarding"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -692,6 +694,7 @@ struct AgentPushRegistration: Encodable, Equatable, Sendable {
         try values.encode(cloudModeEnabled, forKey: .cloudModeEnabled)
         try values.encode(localMode, forKey: .localMode)
         try values.encodeIfPresent(vowlanSecret, forKey: .vowlanSecret)
+        try values.encodeIfPresent(notificationForwarding, forKey: .notificationForwarding)
         guard !localMode else { return }
 
         try values.encode(deviceID, forKey: .deviceID)
@@ -709,7 +712,10 @@ struct AgentPushRegistration: Encodable, Equatable, Sendable {
         try values.encode(forceLegacyPCM, forKey: .forceLegacyPCM)
     }
 
-    static func local(vowlanSecret: String) -> Self {
+    static func local(
+        vowlanSecret: String,
+        notificationForwarding: NotificationForwardingConfig? = nil
+    ) -> Self {
         .init(
             cloudModeEnabled: false,
             localMode: true,
@@ -723,7 +729,8 @@ struct AgentPushRegistration: Encodable, Equatable, Sendable {
             bundleID: "",
             environment: "",
             relayURL: "",
-            vowlanSecret: vowlanSecret
+            vowlanSecret: vowlanSecret,
+            notificationForwarding: notificationForwarding
         )
     }
 }
@@ -1608,7 +1615,11 @@ final class VoIPPushController: NSObject {
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(registration)
+        // Webhook URLs/tokens are local pairing material. Relay only needs push
+        // registration fields, so never upload forwarding credentials.
+        var relayRegistration = registration
+        relayRegistration.notificationForwarding = nil
+        request.httpBody = try JSONEncoder().encode(relayRegistration)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 10
@@ -1674,6 +1685,7 @@ final class VoIPPushController: NSObject {
         guard let secret = try? VoWLANCredentialStore.generate().encodedSecret else { return nil }
         return try? SamsungPairingRegistrationPolicy.registration(
             localOnly: localOnly, vowlanSecret: secret,
+            notificationForwarding: NotificationForwardingStore.load(),
             cloudRegistration: { self.currentRegistration(allowLocalMode: true) }
         )
     }
@@ -1716,7 +1728,8 @@ final class VoIPPushController: NSObject {
             mediaTransport: CloudMediaTransportPreference.requested().rawValue,
             appMediaCapabilities: [CloudMediaTransport.legacyPCM.rawValue],
             forceLegacyPCM: CloudMediaTransportPreference.forceLegacy(),
-            vowlanSecret: nil
+            vowlanSecret: nil,
+            notificationForwarding: NotificationForwardingStore.load()
         )
     }
 

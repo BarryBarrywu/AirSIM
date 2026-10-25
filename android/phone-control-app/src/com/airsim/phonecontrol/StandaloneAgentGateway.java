@@ -68,6 +68,7 @@ final class StandaloneAgentGateway {
 
     String registerPairing(String registrationJSON) throws Exception {
         JSONObject registration = store.saveRegistration(registrationJSON);
+        ForwardingConfigStore.saveFromRegistration(context, registration);
         StandaloneAgentService.start(context);
         if (registration.optBoolean("local_mode", false)) {
             BridgeLog.info("standalone_local_pairing_saved");
@@ -81,6 +82,7 @@ final class StandaloneAgentGateway {
 
     void sendCallEvent(String json) throws Exception {
         JSONObject event = new JSONObject(json);
+        NotificationForwarder.handle(context, event);
         applyCallEvent(event);
         if (store.configured() && store.cloudEnabled()) {
             StandaloneAgentService.enqueueCallEvent(context, event.toString());
@@ -89,6 +91,7 @@ final class StandaloneAgentGateway {
 
     void sendSMSEvent(String json) throws Exception {
         JSONObject event = new JSONObject(json);
+        NotificationForwarder.handle(context, event);
         if (smsStore.add(event, store.configured() && store.cloudEnabled())) {
             agentEvents.advance();
             if (store.configured() && store.cloudEnabled()) StandaloneAgentService.start(context);
