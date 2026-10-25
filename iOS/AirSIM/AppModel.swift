@@ -3810,7 +3810,7 @@ enum CallKitAudioPreparationCoordinator {
 extension AppModel: CallKitActionHandling {
     func callKitAnswer(uuid: UUID, origin: CallAnswerOrigin) async throws {
         if let route = deviceCallRouter.route(for: uuid) {
-            audio.stopCallTone()
+            audio.stopCallTone(deactivateSession: false)
             backgroundStandby.suspendForCall()
             callPresentationSurface = origin == .app ? .app : .system
             try await answerOwnedCall(route.key)
@@ -4019,7 +4019,10 @@ extension AppModel: CallKitActionHandling {
             try await callKitAnswer(uuid: route.systemUUID, origin: origin); return
         }
         beginCallTransitionProtection()
-        audio.stopCallTone()
+        // CallKit may already own the shared session at this point. Stopping the
+        // ringtone must not setActive(false) or iOS deactivates CallKit audio
+        // immediately after answer.
+        audio.stopCallTone(deactivateSession: false)
         backgroundStandby.suspendForCall()
         audio.resetSpeakerPreferenceForNewCall()
         callPresentationSurface = origin == .app ? .app : .system
