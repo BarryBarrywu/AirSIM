@@ -41,7 +41,12 @@ final class NotificationForwarder {
         boolean call = type.contains("call") || event.has("direction");
         boolean ringing = "incoming".equals(event.optString("direction"))
                 && "incoming".equals(event.optString("state"));
-        boolean missed = event.optBoolean("missed", false);
+        // Legacy call events had no missed field. Preserve forwarding for queued
+        // missed calls; new events carry the authoritative missed flag.
+        boolean missed = event.has("missed")
+                ? event.optBoolean("missed", false)
+                : "incoming".equals(event.optString("direction"))
+                    && "ended".equals(event.optString("state"));
 
         for (int i = 0; i < destinations.length(); i++) {
             JSONObject destination = destinations.optJSONObject(i);
@@ -51,6 +56,11 @@ final class NotificationForwarder {
             if (call && missed && !destination.optBoolean("sendMissedCall", true)) continue;
             if (call && !ringing && !missed) continue;
             if (!sms && !call) continue;
+            if (call && ringing && !destination.optBoolean("sendIncomingCall", true)) {
+                BridgeLog.info("notification_forward_skipped channel="
+                        + destination.optString("channel") + " reason=incoming_disabled");
+                continue;
+            }
             final JSONObject target = destination;
             final JSONObject payload = event;
             WORKERS.execute(() -> send(context, target, payload, sms, missed));
@@ -79,7 +89,9 @@ final class NotificationForwarder {
                             .put("title", barkTitle(sms, missed))
                             .put("body", text)
                             .put("group", "AirSIM")
-                            .put("level", sms ? "active" : "timeSensitive")
+                            // timeSensitive can be suppressed by Focus; use active
+                            // for reliable call alerts, matching SMS behavior.
+                            .put("level", "active")
                             .put("isArchive", "1");
                 }
                 case "discord" -> body.put("content", text);
