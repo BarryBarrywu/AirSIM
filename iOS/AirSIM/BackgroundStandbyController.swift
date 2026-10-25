@@ -199,7 +199,11 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
             if CallKitController.shared.matchesCurrentCall(
                 callID: callID, uuid: uuid, generation: generation
             ) {
+                // Cloud answer acknowledgment and the Android call_owner push can
+                // arrive out of order. A prepared/answered cloud session already
+                // proves this iPhone owns the call; do not end it as answeredElsewhere.
                 let answered = CallKitController.shared.currentCallIsAnswered
+                    || IPhoneCloudCallSession.shared.answered
                 if owner == "android", phase == "active", answered {
                     completionHandler(.noData)
                     return
