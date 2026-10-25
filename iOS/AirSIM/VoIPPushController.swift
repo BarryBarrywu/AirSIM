@@ -1562,13 +1562,29 @@ final class VoIPPushController: NSObject {
         guard let url = RelayEndpoint.url(base: registration.relayURL, path: "healthz") else {
             throw CloudAgentStatusError.invalidRelayURL
         }
+        // A single cold DNS/TLS handshake to Cloudflare is not a reliable
+        // identity verdict. Retry the read-only health probe a few times so a
+        // transient first-packet loss does not fail the whole self-test.
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                return try await fetchRelayHealthVersionOnce(url: url)
+            } catch {
+                lastError = error
+                if attempt < 3 { try? await Task.sleep(for: .milliseconds(300 * attempt)) }
+            }
+        }
+        throw lastError ?? CloudAgentStatusError.invalidResponse
+    }
+
+    private func fetchRelayHealthVersionOnce(url: URL) async throws -> String {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 5
+        request.timeoutInterval = 6
         request.cachePolicy = .reloadIgnoringLocalCacheData
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 5
-        configuration.timeoutIntervalForResource = 6
+        configuration.timeoutIntervalForRequest = 6
+        configuration.timeoutIntervalForResource = 8
         let (data, response) = try await URLSession(configuration: configuration).data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw CloudAgentStatusError.invalidResponse
