@@ -101,7 +101,7 @@ final class StandaloneAgentGateway {
         if ("GET".equalsIgnoreCase(method)) {
             return switch (path) {
                 case "/api/health" -> ok(health());
-                case "/api/android/status" -> ok(status());
+                case "/api/android/status", "/api/status" -> ok(status());
                 case "/api/push/status" -> ok(pushStatus());
                 case "/api/debug" -> ok(debugSnapshot());
                 case "/api/calls/status" -> ok(callSnapshot().toString());
