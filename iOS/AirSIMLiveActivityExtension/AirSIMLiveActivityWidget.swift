@@ -25,6 +25,8 @@ struct AirSIMLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.leading) {
                     if usesAgentList(state) {
                         agentListBrandMark
+                            .padding(.top, 2)
+                            .padding(.leading, 2)
                     } else {
                         islandIdentity(for: state)
                     }
@@ -48,6 +50,8 @@ struct AirSIMLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.trailing) {
                     if usesAgentList(state) {
                         agentListCount(state)
+                            .padding(.top, 2)
+                            .padding(.trailing, 2)
                     } else {
                         expandedTrailingView(state)
                     }
@@ -206,8 +210,11 @@ struct AirSIMLiveActivityWidget: Widget {
 
     private var agentListBrandMark: some View {
         Text("AirSIM")
-            .font(.system(size: 13, weight: .bold))
+            .font(.system(size: 12, weight: .bold))
             .foregroundStyle(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .allowsTightening(true)
     }
 
     private func agentListCount(
@@ -231,9 +238,11 @@ struct AirSIMLiveActivityWidget: Widget {
             Text(pages > 1
                 ? "第 \(page + 1)/\(pages) 页 · 共 \(count) 台"
                 : "共 \(count) 台")
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.52))
                 .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .allowsTightening(true)
         }
     }
 
