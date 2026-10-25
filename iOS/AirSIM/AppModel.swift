@@ -4033,6 +4033,7 @@ extension AppModel: CallKitActionHandling {
             let cloudMediaEnabled = CloudModePreference.isEnabled()
             let vowlanRoute = await readyVoWLANRoute()
             let transport = CallTransportPolicy.preferred(
+                mode: ConnectionModePreference.selected(),
                 vowlanReady: vowlanRoute != nil,
                 cloudMediaAvailable: pushedCall?.authenticatedMediaURL != nil,
                 cloudMediaEnabled: cloudMediaEnabled

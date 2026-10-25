@@ -500,13 +500,27 @@ enum PushDeviceIdentity {
 
 enum CallTransportPolicy {
     static func preferred(
+        mode: AirSIMConnectionMode,
         vowlanReady: Bool,
         cloudMediaAvailable: Bool,
         cloudMediaEnabled: Bool = true
     ) -> CallTransport? {
-        if vowlanReady { return .vowlan }
-        if cloudMediaEnabled && cloudMediaAvailable { return .cloud }
-        return nil
+        switch mode {
+        case .automatic:
+            if vowlanReady { return .vowlan }
+            if cloudMediaEnabled && cloudMediaAvailable { return .cloud }
+            return nil
+        case .cloud:
+            // Explicit cloud means Relay media only. Falling back to a reachable
+            // VoWLAN route here made the UI show cloud while the call silently
+            // ran over the LAN, with no cloud/Relay events in Verbose.
+            guard cloudMediaEnabled && cloudMediaAvailable else { return nil }
+            return .cloud
+        case .vowlan, .localDual:
+            return vowlanReady ? .vowlan : nil
+        case .bluetooth:
+            return nil
+        }
     }
 }
 

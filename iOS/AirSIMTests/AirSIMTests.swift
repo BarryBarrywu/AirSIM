@@ -3082,6 +3082,47 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(unreachable.status, "不可达")
     }
 
+    func testExplicitCloudAnswerDoesNotFallBackToVoWLAN() {
+        XCTAssertEqual(
+            CallTransportPolicy.preferred(
+                mode: .cloud,
+                vowlanReady: true,
+                cloudMediaAvailable: true
+            ),
+            .cloud
+        )
+        XCTAssertNil(
+            CallTransportPolicy.preferred(
+                mode: .cloud,
+                vowlanReady: true,
+                cloudMediaAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            CallTransportPolicy.preferred(
+                mode: .automatic,
+                vowlanReady: true,
+                cloudMediaAvailable: true
+            ),
+            .vowlan
+        )
+        XCTAssertEqual(
+            CallTransportPolicy.preferred(
+                mode: .vowlan,
+                vowlanReady: true,
+                cloudMediaAvailable: true
+            ),
+            .vowlan
+        )
+        XCTAssertNil(
+            CallTransportPolicy.preferred(
+                mode: .vowlan,
+                vowlanReady: false,
+                cloudMediaAvailable: true
+            )
+        )
+    }
+
     func testCloudSelfTestReportOnlyPassesWhenEveryStagePasses() {
         var report = CloudSelfTestReport.initial
         XCTAssertFalse(report.allPassed)

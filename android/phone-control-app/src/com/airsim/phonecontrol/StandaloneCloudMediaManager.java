@@ -86,7 +86,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                 if (active != null && active.descriptor == descriptor) {
                     synchronized (active) {
                         if (active.running && active.mediaStarted && active.pcm != null && !active.pcm.isClosed()) {
-                            RemoteAudioSessionRegistry.setCloud(active.pcm, true, androidID);
+                            RemoteAudioSessionRegistry.setCloud(active.pcm, true, descriptor.callID);
                         }
                     }
                 }
@@ -259,7 +259,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                             closeSocket(owner);
                         }, sessions);
                         mediaPump.start();
-                        RemoteAudioSessionRegistry.setCloud(connection, true, descriptor.androidID);
+                        RemoteAudioSessionRegistry.setCloud(connection, true, descriptor.callID);
                     }
                     owner.writeText(status("pcm_listening", ""));
                     owner.writeText(status("active", ""));
