@@ -219,12 +219,31 @@ final class NotificationForwarder {
             if (status < 200 || status >= 300) {
                 throw new IllegalStateException("forwarding HTTP " + status);
             }
-            if ("feishu".equals(channel)) {
+            if (!responseBody.isBlank()) {
                 JSONObject reply = new JSONObject(responseBody);
-                int code = reply.optInt("code", reply.optInt("StatusCode", 0));
-                if (code != 0) {
-                    throw new IllegalStateException("feishu code=" + code
-                            + " msg=" + reply.optString("msg", reply.optString("StatusMessage", "")));
+                if ("feishu".equals(channel)) {
+                    int code = reply.optInt("code", reply.optInt("StatusCode", 0));
+                    if (code != 0) {
+                        throw new IllegalStateException("feishu code=" + code
+                                + " msg=" + reply.optString("msg", reply.optString("StatusMessage", "")));
+                    }
+                } else if ("wecom".equals(channel)) {
+                    int errcode = reply.optInt("errcode", 0);
+                    if (errcode != 0) {
+                        throw new IllegalStateException("wecom errcode=" + errcode
+                                + " msg=" + reply.optString("errmsg", ""));
+                    }
+                } else if ("slack".equals(channel) || "telegram".equals(channel)) {
+                    if (reply.has("ok") && !reply.optBoolean("ok", true)) {
+                        throw new IllegalStateException(channel + " rejected: "
+                                + reply.optString("error", reply.optString("description", "")));
+                    }
+                } else if ("qq".equals(channel)) {
+                    int code = reply.optInt("code", 0);
+                    if (code != 0) {
+                        throw new IllegalStateException("qq code=" + code
+                                + " message=" + reply.optString("message", ""));
+                    }
                 }
             }
         } finally {
