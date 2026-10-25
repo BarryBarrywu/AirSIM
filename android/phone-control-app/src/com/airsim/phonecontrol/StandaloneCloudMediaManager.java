@@ -213,6 +213,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                     readLoop(owner);
                 } catch (Exception error) {
                     if (running) {
+                        connected = false;
                         reconnectFailures = Math.min(4, reconnectFailures + 1);
                         BridgeLog.error("standalone_cloud_media_disconnected", error);
                     }
