@@ -723,6 +723,7 @@ final class IPhoneCloudCallSession {
     private var answerRetryTask: Task<Void, Never>?
     private var answerRetryGeneration = 0
     private var answerAcknowledged = false
+    private var earlyAnswerEnvelope: CloudCallControlEnvelope?
 
     var isPrepared: Bool { call != nil && media.isConnected }
     var hasActiveCall: Bool { call != nil && answered && lifecycleState == .active }
@@ -1183,6 +1184,7 @@ final class IPhoneCloudCallSession {
         answered = false
         lifecycleState = .idle
         answerAcknowledged = false
+        earlyAnswerEnvelope = nil
         audioState = .idle
         mediaHealthTracker = nil
         mediaHealthSnapshot = CloudMediaHealthSnapshot()
@@ -1193,6 +1195,7 @@ final class IPhoneCloudCallSession {
     private func submitEarlyAnswer(_ incoming: IncomingVoIPCall) {
         guard let envelope = media.controlEnvelope(action: "answer", call: incoming),
               let credentials = VoIPPushController.shared.cloudCallControlCredentials() else { return }
+        earlyAnswerEnvelope = envelope
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.tracePersistentControl(envelope, phase: "early_submitting")
@@ -1235,7 +1238,11 @@ final class IPhoneCloudCallSession {
                       answered,
                       !answerAcknowledged,
                       call?.uuid == incoming.uuid else { return }
-                media.sendControl("answer", call: incoming)
+                if let earlyAnswerEnvelope {
+                    media.sendControl(earlyAnswerEnvelope)
+                } else {
+                    media.sendControl("answer", call: incoming)
+                }
             }
             guard answered, !answerAcknowledged, call?.uuid == incoming.uuid else { return }
             audioState = .failed("模块未确认接听，正在等待 Agent 控制通道恢复")
@@ -1473,6 +1480,20 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    func sendControl(_ envelope: CloudCallControlEnvelope) {
+        queue.async { [weak self] in
+            guard let self, let socket = webSocket,
+                  let data = try? JSONEncoder().encode(envelope),
+                  let text = String(data: data, encoding: .utf8) else { return }
+            traceControl(envelope, phase: "sending")
+            socket.send(.string(text)) { [weak self] error in
+                guard let error else { return }
+                self?.traceControl(envelope, phase: "send_failed",
+                                   detail: error.localizedDescription, isFailure: true)
             }
         }
     }
