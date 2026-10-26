@@ -186,7 +186,6 @@ struct DialPadView: View {
     @State private var zeroWasLongPressed = false
     @State private var dialKeyFeedback = DialKeyFeedback()
     @State private var pairedAgentListPresentation: PairedAgentListPresentation?
-    @State private var clipboardFeedback: String?
 
     private let rows = [
         [("1", ""), ("2", "ABC"), ("3", "DEF")],
@@ -233,47 +232,16 @@ struct DialPadView: View {
                             .foregroundStyle(.green)
                             .frame(height: metrics.contactHeight)
 
-                        HStack(spacing: 22) {
-                            Button {
-                                UIPasteboard.general.string = model.numberInput
-                                clipboardFeedback = "已复制号码"
-                            } label: {
-                                Label("复制", systemImage: "doc.on.doc")
-                            }
-                            .disabled(model.numberInput.isEmpty)
-
-                            Button {
-                                guard let raw = UIPasteboard.general.string else { return }
-                                let value = DialPadPasteSanitizer.sanitize(raw)
-                                guard !value.isEmpty else { return }
-                                model.numberInput = value
-                                clipboardFeedback = "已粘贴号码"
-                            } label: {
-                                Label("粘贴", systemImage: "doc.on.clipboard")
-                            }
-                        }
-                        .font(.caption.weight(.medium))
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-
-                        if let clipboardFeedback {
-                            Text(clipboardFeedback)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .transition(.opacity)
-                        }
                     }
                     .padding(.horizontal, 12)
                     .contextMenu {
                         Button {
                             UIPasteboard.general.string = model.numberInput
-                            clipboardFeedback = "已复制号码"
                         } label: { Label("复制号码", systemImage: "doc.on.doc") }
                         .disabled(model.numberInput.isEmpty)
                         Button {
                             guard let raw = UIPasteboard.general.string else { return }
                             model.numberInput = DialPadPasteSanitizer.sanitize(raw)
-                            clipboardFeedback = "已粘贴号码"
                         } label: { Label("粘贴号码", systemImage: "doc.on.clipboard") }
                     }
 
@@ -1212,6 +1180,10 @@ private struct MessageThreadView: View {
                                     if message.isOutgoing {
                                         Text(L10n.t("已发送"))
                                             .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    } else if let simSlot = message.simSlot, !simSlot.isEmpty {
+                                        Text(simSlot)
+                                            .font(.caption2.weight(.medium))
                                             .foregroundStyle(.secondary)
                                     }
                                 }

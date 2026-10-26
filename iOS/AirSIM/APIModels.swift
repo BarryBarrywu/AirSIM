@@ -325,6 +325,8 @@ struct SMSMessage: Codable, Equatable, Sendable, Identifiable {
     var direction: SMSDirection? = nil
     /// Known authenticated producer. Legacy records remain explicitly unscoped.
     var sourceAgentID: String? = nil
+    /// Android subscription slot label ("SIM 1"/"SIM 2"); absent on legacy records.
+    var simSlot: String? = nil
 
     var isOutgoing: Bool { direction == .outgoing }
 
@@ -343,6 +345,7 @@ struct SMSMessage: Codable, Equatable, Sendable, Identifiable {
         case sender, content, code, timestamp, direction
         case deliveryID = "delivery_id"
         case sourceAgentID = "source_agent_id"
+        case simSlot = "sim_slot"
     }
 }
 
