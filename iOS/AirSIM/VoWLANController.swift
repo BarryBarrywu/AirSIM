@@ -408,7 +408,19 @@ struct VoWLANNetworkRecoveryPlan {
 final class VoWLANController: ObservableObject {
     @Published private(set) var availability: VoWLANAvailability =
         !VoWLANCredentialStore.hasAny() ? .unpaired : .discovering {
-        didSet { onAvailabilityChange?(availability) }
+        didSet {
+            onAvailabilityChange?(availability)
+            switch availability {
+            case let .discovered(endpoint, _):
+                let resetsAttempts = watchdogEndpoint != endpoint
+                watchdogEndpoint = endpoint
+                armVerificationWatchdog(for: endpoint, resetAttempts: resetsAttempts)
+            case .verified:
+                cancelVerificationWatchdog()
+            default:
+                cancelVerificationWatchdog()
+            }
+        }
     }
 
     var onAvailabilityChange: ((VoWLANAvailability) -> Void)?
@@ -434,6 +446,9 @@ final class VoWLANController: ObservableObject {
     private var networkRecoveryPlan = VoWLANNetworkRecoveryPlan()
     private var networkPathGate = VoWLANNetworkPathGate()
     private var samePathProbeTask: Task<Void, Never>?
+    private var verificationWatchdogTask: Task<Void, Never>?
+    private var verificationWatchdogAttempts = 0
+    private var watchdogEndpoint: VoWLANEndpoint?
 
     func forget(_ agentID: String) {
         identityEpoch &+= 1
@@ -810,6 +825,41 @@ final class VoWLANController: ObservableObject {
             paired: VoWLANCredentialStore.hasAny(), callInProgress: callInProgress())
     }
 
+    private func armVerificationWatchdog(for endpoint: VoWLANEndpoint, resetAttempts: Bool) {
+        guard !callInProgress() else { return }
+        verificationWatchdogTask?.cancel()
+        if resetAttempts { verificationWatchdogAttempts = 0 }
+        verificationWatchdogTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            guard let self, !Task.isCancelled,
+                  self.discoveredEndpoint == endpoint,
+                  self.availability.endpoint == endpoint,
+                  !self.availability.isOnlineForDisplay,
+                  !self.callInProgress(),
+                  ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsVoWLAN
+            else { return }
+            self.verificationWatchdogAttempts += 1
+            await self.probeNow()
+            guard !Task.isCancelled,
+                  self.discoveredEndpoint == endpoint,
+                  self.availability.endpoint == endpoint,
+                  !self.availability.isOnlineForDisplay else { return }
+            if self.verificationWatchdogAttempts >= 3 {
+                self.availability = .unavailable("VoWLAN 验证超时，请确认 iPhone 与安卓处于同一 Wi-Fi")
+                self.verificationWatchdogTask = nil
+                return
+            }
+            self.armVerificationWatchdog(for: endpoint, resetAttempts: false)
+        }
+    }
+
+    private func cancelVerificationWatchdog() {
+        verificationWatchdogTask?.cancel()
+        verificationWatchdogTask = nil
+        verificationWatchdogAttempts = 0
+        watchdogEndpoint = nil
+    }
+
     func probeNow() async {
         guard let endpoint = availability.endpoint ?? discoveredEndpoint else { return }
         let expectedID = discoveredAgents.first { $0.endpoint == endpoint }?.id
@@ -844,7 +894,23 @@ final class VoWLANController: ObservableObject {
                   identity.ok else {
                 throw VoWLANControllerError.authenticationFailed
             }
-            guard epoch == identityEpoch, discoveredEndpoint == endpoint, probeGeneration.accepts(probe) else { return }
+            guard epoch == identityEpoch, discoveredEndpoint == endpoint, probeGeneration.accepts(probe) else {
+                // A successful health response can become stale when a newer
+                // browser/network probe starts. Do not leave the UI in
+                // "discovered, verifying" forever; the watchdog will issue a
+                // fresh probe if this endpoint is still the active one.
+                if discoveredEndpoint == endpoint, availability.endpoint == endpoint,
+                   !availability.isOnlineForDisplay {
+                    await AgentVerboseTraceRecorder.shared.recordEvent(
+                        source: "ios", category: "vowlan", phase: "probe_stale",
+                        title: "VoWLAN 验证结果已过期，等待新探针",
+                        fields: ["host": endpoint.host,
+                                 "generation": String(probe),
+                                 "epoch": String(epoch)]
+                    )
+                }
+                return
+            }
             if let expectedID, VoWLANCredentialStore.load(agentID: expectedID) != nil {
                 guard identity.agentID == expectedID,
                       VoWLANHealthProof.verify(identity.identityProof, nonce: nonce,
