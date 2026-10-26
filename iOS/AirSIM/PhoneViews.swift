@@ -1199,6 +1199,7 @@ private struct MessageThreadView: View {
                                     spacing: 3
                                 ) {
                                     Text(message.content)
+                                        .textSelection(.enabled)
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 9)
                                         .background(
@@ -1218,6 +1219,11 @@ private struct MessageThreadView: View {
                             }
                             .id(message.id)
                             .contextMenu {
+                                Button {
+                                    UIPasteboard.general.string = message.content
+                                } label: {
+                                    Label("复制短信内容", systemImage: "doc.on.doc")
+                                }
                                 if !message.isOutgoing,
                                    let code = SMSVerificationCodeExtractor.extract(from: message.content) {
                                     Button {
