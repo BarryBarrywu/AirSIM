@@ -174,6 +174,7 @@ struct AirSIMSettingsView: View {
     @State private var updateViewVisible = false
     @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
+    @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
     @State private var relayURL = RelayConfiguration.effectiveURL(
         stored: UserDefaults.standard.string(forKey: "airsim.push-relay-url"),
         buildSetting: Bundle.main.object(forInfoDictionaryKey: "AirSIMPushRelayURL") as? String,
@@ -452,6 +453,13 @@ struct AirSIMSettingsView: View {
                     Text(!runtimePolicy.startsCloud
                         ? "当前连接模式不运行云端自检。"
                         : "依次验证本机 Push 凭据、Relay 身份、设备注册、Agent 记录、90 秒心跳和命令路由；失败步骤会给出具体卡点，不会拨号或发送短信。")
+                }
+
+                Section("短信") {
+                    Toggle("自动复制验证码到剪贴板", isOn: $autoCopySMSCode)
+                    Text("收到新验证码短信后自动复制，便于系统键盘显示粘贴建议。会覆盖当前剪贴板内容，可随时关闭。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("通知转发") {

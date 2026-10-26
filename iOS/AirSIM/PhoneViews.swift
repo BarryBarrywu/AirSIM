@@ -14,6 +14,26 @@ enum DialPadPasteSanitizer {
     }
 }
 
+enum SMSVerificationCodeClipboard {
+    static let enabledKey = "airsim.auto-copy-sms-code"
+
+    @MainActor
+    static func handle(_ messages: [SMSMessage]) {
+        let defaults = UserDefaults.standard
+        let enabled = defaults.object(forKey: enabledKey) as? Bool ?? true
+        guard enabled else { return }
+        let recent = messages
+            .filter { !$0.isOutgoing && $0.timestamp > Date().addingTimeInterval(-300) }
+            .sorted { $0.timestamp < $1.timestamp }
+        guard let message = recent.last,
+              let code = SMSVerificationCodeExtractor.extract(from: message.content) else { return }
+        let delivery = message.deliveryID ?? message.id
+        guard defaults.string(forKey: "airsim.last-auto-copied-sms-code") != delivery else { return }
+        UIPasteboard.general.string = code
+        defaults.set(delivery, forKey: "airsim.last-auto-copied-sms-code")
+    }
+}
+
 enum SMSVerificationCodeExtractor {
     static func extract(from text: String) -> String? {
         let patterns = [

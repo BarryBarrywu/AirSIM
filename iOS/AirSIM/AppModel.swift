@@ -3085,6 +3085,7 @@ final class AppModel: ObservableObject {
             let newlyReceived = remoteMessages
                 .filter { !existingIDs.contains($0.id) }
                 .sorted { $0.timestamp < $1.timestamp }
+            SMSVerificationCodeClipboard.handle(newlyReceived)
             let mergedMessages = await mergeMessages(remoteMessages, acknowledgingOn: fetched.agent)
             if messages != mergedMessages { messages = mergedMessages }
             if notifyIfBackground {
