@@ -7,4 +7,9 @@ public final class Handler {
         action.run();
         return true;
     }
+
+    public boolean postDelayed(Runnable action, long delayMillis) {
+        action.run();
+        return true;
+    }
 }

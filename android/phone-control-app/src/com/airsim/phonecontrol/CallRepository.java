@@ -143,7 +143,12 @@ public final class CallRepository {
                     case "dtmf" -> {
                         if (command.number.length() != 1) throw new IllegalArgumentException("DTMF digit missing");
                         call.playDtmfTone(command.number.charAt(0));
-                        call.stopDtmfTone();
+                        // Some ColorOS/Telecom stacks cancel a DTMF tone when
+                        // stopDtmfTone() is called in the same main-thread turn.
+                        // Let the tone reach the network before stopping it.
+                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                            try { call.stopDtmfTone(); } catch (RuntimeException ignored) {}
+                        }, 180);
                     }
                     default -> throw new IllegalArgumentException("unsupported action");
                 }
@@ -167,6 +172,27 @@ public final class CallRepository {
                     return ActionResult.success();
                 }
                 Thread.sleep(50);
+            }
+            // A few OEM Telecom implementations accept Call.disconnect() but
+            // never deliver the terminal callback. Ask Telecom to end the same
+            // call once before reporting failure; never reboot/restart audio.
+            if ("end".equals(command.action) && !IDS.containsKey(call)) return ActionResult.success();
+            if ("end".equals(command.action)) {
+                try {
+                    TelecomManager telecom = context.getSystemService(TelecomManager.class);
+                    if (telecom != null) {
+                        java.lang.reflect.Method endCall =
+                                TelecomManager.class.getMethod("endCall");
+                        endCall.invoke(telecom);
+                    }
+                } catch (Exception ignored) {}
+                long fallbackDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (System.nanoTime() < fallbackDeadline) {
+                    if (!IDS.containsKey(call) || call.getState() == Call.STATE_DISCONNECTED) {
+                        return ActionResult.success();
+                    }
+                    Thread.sleep(50);
+                }
             }
             return ActionResult.failure("Telecom state confirmation timeout");
         } catch (Exception error) {
