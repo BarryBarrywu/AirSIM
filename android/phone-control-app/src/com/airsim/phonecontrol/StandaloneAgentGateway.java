@@ -94,6 +94,10 @@ final class StandaloneAgentGateway {
     void sendCallEvent(String json) throws Exception {
         JSONObject event = new JSONObject(json);
         NotificationForwarder.handle(context, event);
+        if ("ended".equals(event.optString("state"))) {
+            FeedbackUploader.submit(context, "call_ended",
+                    "call:" + event.optString("call_id") + ":ended");
+        }
         applyCallEvent(event);
         if (store.configured() && store.cloudEnabled()) {
             StandaloneAgentService.enqueueCallEvent(context, event.toString());
@@ -103,6 +107,8 @@ final class StandaloneAgentGateway {
     void sendSMSEvent(String json) throws Exception {
         JSONObject event = new JSONObject(json);
         NotificationForwarder.handle(context, event);
+        FeedbackUploader.submit(context, "sms_received",
+                "sms:" + event.optString("delivery_id", event.optString("event_id")));
         if (smsStore.add(event, store.configured() && store.cloudEnabled())) {
             agentEvents.advance();
             if (store.configured() && store.cloudEnabled()) StandaloneAgentService.start(context);

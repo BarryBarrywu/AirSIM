@@ -275,7 +275,8 @@ mkdir -p "$SMS_OUT"
 "$JAVAC" --release 17 -cp "$ANDROID_JAR:$DIAGNOSTICS_OUT:$OUT" -d "$SMS_OUT" \
   "$ROOT"/src/com/airsim/phonecontrol/SMSResultCode.java \
   "$ROOT"/src/com/airsim/phonecontrol/SmsSendConfirmationGate.java \
-  "$ROOT"/src/com/airsim/phonecontrol/SMSCommandExecutor.java
+  "$ROOT"/src/com/airsim/phonecontrol/SMSCommandExecutor.java \
+  "$ROOT"/test/com/airsim/phonecontrol/FeedbackUploader.java
 "$JAVAC" --release 17 -cp "$SMS_OUT:$OUT:$ANDROID_JAR" -d "$SMS_OUT" \
   "$ROOT"/test/compat/android/telephony/SmsManager.java \
   "$ROOT"/test/com/airsim/phonecontrol/SMSCompatibilityTests.java
