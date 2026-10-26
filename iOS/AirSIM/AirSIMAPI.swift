@@ -335,7 +335,26 @@ struct AirSIMAPI: Sendable {
             VoWLANController.apply(signed, to: &request)
         }
         do {
-            let response = try await transport.send(request, uploadFileURL: uploadFileURL)
+            var response = try await transport.send(request, uploadFileURL: uploadFileURL)
+            // Long-poll requests can be queued behind connection setup; a
+            // signature created before that queue may be older than the
+            // Android gateway's 30 s clock window and return 401. Retrying an
+            // idempotent GET with a fresh nonce/timestamp is safe; never retry
+            // dial/SMS/answer POSTs here.
+            if response.statusCode == 401, method == "GET",
+               let credential = route.credential {
+                var retry = originalRequest
+                if let trace {
+                    retry.setValue(trace.id, forHTTPHeaderField: "X-AirSIM-Trace-ID")
+                }
+                let signed = try VoWLANRequestSigner(credential: credential).sign(
+                    method: method,
+                    path: path,
+                    body: retry.httpBody ?? Data()
+                )
+                VoWLANController.apply(signed, to: &retry)
+                response = try await transport.send(retry, uploadFileURL: uploadFileURL)
+            }
             if let trace {
                 await AgentVerboseTraceRecorder.shared.finish(
                     trace,
