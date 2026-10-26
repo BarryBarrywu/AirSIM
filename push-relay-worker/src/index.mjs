@@ -6,6 +6,7 @@ import {
   recordDashboardEvent,
 } from "./dashboard.mjs";
 import { constantTimeEqual, sha256Hex } from "./auth-crypto.mjs";
+import { handleFeedback } from "./feedback.mjs";
 import { RoutingError, parseAgentID, agentSocketKey, matchesTarget, resolveTarget, requestAgentID } from "./command-routing.mjs";
 import {
   authenticateAndReadAgentHeartbeats,
@@ -73,6 +74,9 @@ async function routeRequest(request, env) {
   }
   if (request.method === "GET" && url.pathname === "/dashboard") {
     return dashboardHTMLResponse();
+  }
+  if (request.method === "POST" && url.pathname === "/v1/feedback") {
+    return handleFeedback(request, env);
   }
   if (request.method === "GET" && url.pathname === "/dashboard/api/summary") {
     const auth = dashboardAuthorized(request, env);
