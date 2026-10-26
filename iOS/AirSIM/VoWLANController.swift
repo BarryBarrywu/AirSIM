@@ -116,6 +116,16 @@ struct VoWLANHealthIdentity: Decodable {
     }
 }
 
+enum VoWLANNetworkChangePolicy {
+    /// A LAN endpoint is tied to the DHCP lease/subnet that produced it. After
+    /// a Wi-Fi path change, keep probing Tailscale/manual routes but never keep
+    /// using the old local LAN address just because it is still cached.
+    static func discardsLocalRoute(host: String, isLocalSubnet: Bool, callInProgress: Bool) -> Bool {
+        !callInProgress && !VoWLANNetworkRoutePolicy.usesSystemRouting(
+            host: host, isLocalSubnet: isLocalSubnet)
+    }
+}
+
 enum VoWLANRouteCandidates {
     /// A saved route for the same phone at a different address (typically Tailscale)
     /// is the fallback when the current LAN route stops responding.
@@ -474,7 +484,7 @@ final class VoWLANController: ObservableObject {
         await probeNow()
     }
 
-    func restartBrowsing() {
+    func restartBrowsing(preservingLANManualRoutes: Bool = true) {
         samePathProbeTask?.cancel()
         samePathProbeTask = nil
         identityEpoch &+= 1
@@ -484,7 +494,7 @@ final class VoWLANController: ObservableObject {
         discoveredEndpoint = nil
         discoveredAgents = []
         latestBonjourAgents = []
-        restoreManualRoutes()
+        restoreManualRoutes(preservingLANManualRoutes: preservingLANManualRoutes)
         beginBrowsing(generation: generation)
         if discoveredEndpoint != nil { Task { await probeNow() } }
         Task {
@@ -648,10 +658,25 @@ final class VoWLANController: ObservableObject {
             preferred: (availability.isOnlineForDisplay || callInProgress()) ? discoveredEndpoint : nil)
     }
 
-    private func restoreManualRoutes() {
-        discoveredAgents = mergingManualRoutes(with: discoveredAgents)
-        let route = VoWLANManualRouteStore.selected()
-        if let endpoint = route?.endpoint { discoveredEndpoint = endpoint }
+    private func restoreManualRoutes(preservingLANManualRoutes: Bool = true) {
+        let routes = VoWLANManualRouteStore.routes().filter { route in
+            guard PairedAndroidDeviceStore.permits(route.agentID),
+                  let endpoint = route.endpoint else { return false }
+            return preservingLANManualRoutes
+                || VoWLANNetworkRoutePolicy.usesSystemRouting(
+                    host: endpoint.host, isLocalSubnet: LocalWiFiSubnet.contains(endpoint.host))
+        }
+        discoveredAgents = VoWLANRouteCandidates.merge(
+            discovered: [], manual: routes, live: discoveredAgents, preferred: nil)
+        let bound = AndroidAgentBindingPreference.selected()
+        let route = routes.last { bound == nil || $0.agentID == bound }
+        if let endpoint = route?.endpoint {
+            discoveredEndpoint = endpoint
+            availability = .discovered(endpoint, at: Date())
+        } else if discoveredEndpoint != nil {
+            discoveredEndpoint = nil
+            availability = .discovering
+        }
     }
 
     /// Called by the existing local status loop when no verified route remains.
@@ -704,8 +729,19 @@ final class VoWLANController: ObservableObject {
         samePathProbeTask = nil
         // Reject probes begun on the previous network, including an old successful response.
         identityEpoch &+= 1
+        // A DHCP/Wi-Fi change invalidates the cached local LAN address. Do not
+        // probe or restore that old IP; wait for fresh Bonjour/health instead.
+        if let endpoint = discoveredEndpoint,
+           VoWLANNetworkChangePolicy.discardsLocalRoute(
+                host: endpoint.host,
+                isLocalSubnet: LocalWiFiSubnet.contains(endpoint.host),
+                callInProgress: callInProgress()) {
+            discoveredEndpoint = nil
+            discoveredAgents.removeAll { $0.endpoint == endpoint }
+            availability = .discovering
+        }
         if !callInProgress(), let endpoint = discoveredEndpoint,
-           !VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host) {
+           VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host) {
             availability = .discovered(endpoint, at: Date())
         }
         networkRecoveryTask = Task { @MainActor [weak self] in
@@ -725,7 +761,7 @@ final class VoWLANController: ObservableObject {
                 }
                 guard let self, self.mayRecoverNetwork(token) else { return }
                 self.recoveryGate.reset()
-                self.restartBrowsing()
+                self.restartBrowsing(preservingLANManualRoutes: false)
                 for delay in [0, 2, 5] {
                     if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
                     try Task.checkCancellation()
