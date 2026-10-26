@@ -4,7 +4,7 @@
 
 ## 1. 接手结论
 
-VoBLE 当前 HEAD 5c75013，比远端 main（cc2ade3）多 9 个提交。AirSIM-ZTE 仍停在 a60962a。
+VoBLE 当前 HEAD 8731b75，比远端 main（cc2ade3）多 11 个提交。AirSIM-ZTE 仍停在 a60962a。
 
 本轮后续完成了：
 
@@ -23,8 +23,8 @@ VoBLE 当前 HEAD 5c75013，比远端 main（cc2ade3）多 9 个提交。AirSIM-
 | 项目 | 状态 |
 | --- | --- |
 | VoBLE worktree | /Users/kyle/.codex/worktrees/voble/AirSIM |
-| VoBLE HEAD | 5c75013 |
-| origin/main | cc2ade3（落后 VoBLE 9 个提交） |
+| VoBLE HEAD | 8731b75 |
+| origin/main | cc2ade3（落后 VoBLE 11 个提交） |
 | AirSIM-ZTE | a60962a（未同步本轮） |
 | main worktree | /Users/kyle/codex project/AirSIM，有 stash 与未跟踪文件 |
 | Apps | Android 0.9.8.12 (117)，iOS 0.9.8 (141) |
@@ -40,6 +40,7 @@ VoBLE 当前 HEAD 5c75013，比远端 main（cc2ade3）多 9 个提交。AirSIM-
     51ebdd4 fix: use capture-safe minimum volume for every vendor
     bdb343f fix: keep Xiaomi VOICE_DOWNLINK capture unmuted at minimum volume
     5c75013 fix: retry idempotent VoWLAN GETs once after stale-signature 401
+    8731b75 fix: discard cached LAN route after Wi-Fi/DHCP changes
 
 ## 3. 通话音频与红米问题
 
@@ -119,6 +120,12 @@ Android 侧同时出现：
 
 如果仍 401，下一步抓 Android vowlan_control_rejected 和 iOS 请求时间戳，检查 30 秒时钟窗、nonce 复用、多个 pairing 记录。
 
+### DHCP / Wi-Fi 重连后的旧 IP
+
+日志在 09:53 出现 NETWORK_CHANGED，但之后一直复用旧 LAN host，直到前台再次重建浏览器。已修复：网络路径变化时，本地 LAN 的缓存 endpoint 和手动 LAN route 会被丢弃，等待新的 Bonjour/健康检查；Tailscale/非本地子网路由保留，通话中不切换。
+
+提交 8731b75。需要真机验证 DHCP 换 IP 后出现新的 DISCOVERED/VERIFIED，而不是继续探测旧 host。
+
 ## 7. 通知转发（此前一版交接的延续）
 
 已实现 iPhone 配置 → 配对下发 → Android 直连 Webhook：
@@ -163,4 +170,5 @@ Android 侧同时出现：
 2. 连接 KernelSU 设备，确认 root bridge 不再因 Looper 崩溃。
 3. 用当前 iPhone 跑一次 VoWLAN 长轮询，确认 401 后重试是否成功。
 4. 处理飞书 Bot Not Enabled。
-5. 需要发布时再构建 Release/TestFlight；当前 main 还落后 VoBLE 9 个提交。
+5. 变更 Wi-Fi/DHCP 后确认旧 LAN host 不再被复用。
+6. 需要发布时再构建 Release/TestFlight；当前 main 还落后 VoBLE 11 个提交。
