@@ -56,7 +56,11 @@ function fileBlocks(label, value) {
   }));
 }
 
-function buildProperties(body) {
+function fileProperty(id) {
+  return id ? { files: [{ type: "file_upload", file_upload: { id } }] } : { files: [] };
+}
+
+function buildProperties(body, files = {}) {
   const pcm = body.pcm && typeof body.pcm === "object" ? body.pcm : {};
   const pcmMode = PCM_MODES.includes(String(pcm.mode)) ? String(pcm.mode) : "unknown";
   const platform = ["iOS", "Android", "Both"].includes(body.platform) ? body.platform : "Both";
@@ -93,10 +97,35 @@ function buildProperties(body) {
     "PCM 下行字节": number(pcm.down_bytes),
     "PCM 上行字节": number(pcm.up_bytes),
     "PCM 失败原因": rich(pcm.failure),
+    "iOS 日志": fileProperty(files.ios),
+    "Android 日志": fileProperty(files.android),
+    "结构化 JSON": fileProperty(files.json),
     "错误摘要": rich(body.error_summary),
     "用户描述": rich(body.description),
     "处理状态": select("新反馈", ["新反馈", "处理中", "已解决"]),
   };
+}
+
+async function uploadNotionFile(env, filename, content, contentType) {
+  const source = String(content ?? "");
+  if (!source.trim()) return "";
+  const created = await notionRequest(env, "file_uploads", "POST", {
+    filename,
+    content_type: contentType,
+  });
+  if (!created.id || !created.upload_url) throw new Error("notion file upload was not created");
+  const form = new FormData();
+  form.append("file", new Blob([source], { type: contentType }), filename);
+  const response = await fetch(created.upload_url, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + env.NOTION_TOKEN,
+      "notion-version": NOTION_VERSION,
+    },
+    body: form,
+  });
+  if (!response.ok) throw new Error("notion file send failed HTTP " + response.status);
+  return created.id;
 }
 
 async function notionRequest(env, path, method, body) {
@@ -137,9 +166,20 @@ export async function handleFeedback(request, env) {
   }
 
   try {
+    const files = {};
+    try {
+      files.ios = await uploadNotionFile(env, "airsim-ios-" + (body.feedback_id || "feedback") + ".txt",
+        body.ios_trace, "text/plain");
+      files.android = await uploadNotionFile(env, "airsim-android-" + (body.feedback_id || "feedback") + ".txt",
+        body.android_log, "text/plain");
+      files.json = await uploadNotionFile(env, "airsim-feedback-" + (body.feedback_id || "feedback") + ".json",
+        JSON.stringify(body, null, 2), "application/json");
+    } catch (error) {
+      console.error("notion feedback attachment failed", String(error && error.message ? error.message : error).slice(0, 300));
+    }
     const page = await notionRequest(env, "pages", "POST", {
       parent: { database_id: env.NOTION_DATABASE_ID },
-      properties: buildProperties(body),
+      properties: buildProperties(body, files),
       children: [
         ...fileBlocks("iOS Verbose", body.ios_trace),
         ...fileBlocks("Android BridgeLog", body.android_log),

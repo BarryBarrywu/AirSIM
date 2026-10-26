@@ -783,6 +783,7 @@ final class AppModel: ObservableObject {
 
     private func persistOwnedTerminal(_ key: DeviceCallKey, event: DeviceCallEvent, previous: CallRecord?) {
         guard ownedHistoryFinished.insert(key).inserted else { return }
+        let feedbackAPI = verifiedVoWLANAPI()
         var record = CallRecord(id: event.backendCallID ?? event.callID, index: 0, direction: event.direction,
             state: "ended", number: event.number, startedAt: previous?.startedAt ?? Date(), updatedAt: Date(),
             endedAt: Date(), missed: event.direction == "incoming" && previous?.state != "active" && previous?.state != "held",
@@ -791,7 +792,7 @@ final class AppModel: ObservableObject {
         _ = persistDeviceHistory([record], agentID: key.agentID)
         ownedRecords.removeValue(forKey: key)
         if ownedHistoryFinished.count > 256 { ownedHistoryFinished = [key] }
-        scheduleFeedbackUpload(trigger: "call_ended", eventID: "owned:\(key.callID)")
+        scheduleFeedbackUpload(trigger: "call_ended", eventID: "owned:\(key.callID)", api: feedbackAPI)
     }
 
     @discardableResult
@@ -2940,8 +2941,8 @@ final class AppModel: ObservableObject {
 #endif
     }
 
-    private func scheduleFeedbackUpload(trigger: String, eventID: String) {
-        let api = verboseDiagnosticsAPI
+    private func scheduleFeedbackUpload(trigger: String, eventID: String, api: AirSIMAPI? = nil) {
+        let api = api ?? verboseDiagnosticsAPI
         Task { @MainActor [weak self] in
             guard let self else { return }
             _ = await FeedbackUploader.shared.upload(
@@ -3524,6 +3525,7 @@ final class AppModel: ObservableObject {
             }
         }
         if event.state == .ending || event.state.isTerminal {
+            let feedbackAPI = verifiedVoWLANAPI()
             callPresentationSurface = nil
             pendingOutgoingCall = nil
             if event.state.isTerminal {
@@ -3531,7 +3533,7 @@ final class AppModel: ObservableObject {
                 // incoming call: callKitAnswer used to answer a cloud push over a
                 // stale VoBLE transport, showing a "Bluetooth link ended" status.
                 clearLockedTransport()
-                scheduleFeedbackUpload(trigger: "call_ended", eventID: "call:\(event.callUUID)")
+                scheduleFeedbackUpload(trigger: "call_ended", eventID: "call:\(event.callUUID)", api: feedbackAPI)
             }
             audio.stopCallTone()
             WatchCallCoordinator.shared.publish(

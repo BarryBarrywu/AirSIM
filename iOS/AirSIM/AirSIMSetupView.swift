@@ -1001,7 +1001,7 @@ final class FeedbackUploader {
         return [
             "mode": mode,
             "route": route,
-            "capture_source": value("pcm_route", in: log),
+            "capture_source": capture.isEmpty ? "" : "voice_downlink",
             "initialized": initialized,
             "route_verified": verified,
             "capture": capture.isEmpty ? "unverified" : capture,
