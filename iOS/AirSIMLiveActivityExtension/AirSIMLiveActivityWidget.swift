@@ -253,7 +253,7 @@ struct AirSIMLiveActivityWidget: Widget {
         let pages = LiveActivityAgentPaging.pageCount(for: count)
         if pages > 1 {
             let page = LiveActivityAgentPaging.pageIndex(state.agentPage, for: count)
-            return "第 \(page + 1)/\(pages) 页 · 点右上角翻页"
+            return "第 \(page + 1)/\(pages) 页 · 右上角翻页"
         }
         return count > 1 ? "轻点设备，切换下一通拨号" : "Android Agent 列表"
     }
@@ -283,7 +283,7 @@ struct AirSIMLiveActivityWidget: Widget {
         _ state: AirSIMCallActivityAttributes.ContentState
     ) -> [AirSIMCallActivityAttributes.ContentState.AgentSummary] {
         if let values = state.agents, !values.isEmpty {
-            // AppModel 已按“置顶固定 + 用户排序”排好序；这里只做 5 台分页。
+            // AppModel 已按“置顶固定 + 用户排序”排好序；每页最多 3 台。
             return LiveActivityAgentPaging.slice(values, requestedPage: state.agentPage)
         }
         guard let name = nonEmpty(state.agentDeviceName) else {
@@ -335,6 +335,8 @@ struct AirSIMLiveActivityWidget: Widget {
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.48))
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .allowsTightening(true)
                 .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 12)
@@ -375,6 +377,8 @@ struct AirSIMLiveActivityWidget: Widget {
                 .font(.system(size: 8.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.48))
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .allowsTightening(true)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 2)
         }

@@ -170,7 +170,7 @@ extension AirSIMCallActivityAttributes.ContentState {
 }
 
 enum LiveActivityAgentPaging {
-    static let pageSize = 5
+    static let pageSize = 3
 
     static func pageCount(for total: Int) -> Int {
         max(1, (max(0, total) + pageSize - 1) / pageSize)

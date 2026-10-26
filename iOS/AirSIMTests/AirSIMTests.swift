@@ -3208,14 +3208,16 @@ final class AirSIMTests: XCTestCase {
             callKitAudioActive: false))
     }
 
-    func testLiveActivityAgentPagingUsesFivePerPage() {
-        XCTAssertEqual(LiveActivityAgentPaging.pageSize, 5)
+    func testLiveActivityAgentPagingUsesThreePerPage() {
+        XCTAssertEqual(LiveActivityAgentPaging.pageSize, 3)
         XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 0), 1)
-        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 5), 1)
-        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 7), 2)
-        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 0), [0, 1, 2, 3, 4])
-        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 1), [5, 6])
-        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 9), [5, 6])
+        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 3), 1)
+        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 4), 2)
+        XCTAssertEqual(LiveActivityAgentPaging.pageCount(for: 7), 3)
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 0), [0, 1, 2])
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 1), [3, 4, 5])
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 2), [6])
+        XCTAssertEqual(LiveActivityAgentPaging.slice(Array(0..<7), requestedPage: 9), [6])
     }
 
     func testLiveActivityPinnedAgentsMoveToTop() {
