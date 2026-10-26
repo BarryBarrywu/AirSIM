@@ -95,14 +95,15 @@ public final class LocalOutputMuteControllerTests {
     }
 
     private static void unrelatedVendorsKeepExistingOutputBehavior() throws Exception {
-        for (String vendor : new String[]{null, "", "other", "UNISOC", "samsung"}) {
+        for (String vendor : new String[]{null, "", "other", "UNISOC", "samsung", "Xiaomi", "Redmi"}) {
             Platform audio = new Platform(); audio.minimum = 0;
             LocalOutputMuteController controller = new LocalOutputMuteController(audio,
                     LocalOutputMuteController.strategyForManufacturer(vendor));
             controller.setMuted(true);
-            if ("samsung".equals(vendor)) check(!audio.muted && audio.volume == 1,
-                    "Samsung must use the lowest NONZERO index: 0 silences VOICE_DOWNLINK capture");
-            else check(audio.muted && audio.volume == 4,
+            if ("samsung".equals(vendor) || "Xiaomi".equals(vendor) || "Redmi".equals(vendor)) {
+                check(!audio.muted && audio.volume == 1,
+                        vendor + " must use the lowest NONZERO index: 0 silences VOICE_DOWNLINK capture");
+            } else check(audio.muted && audio.volume == 4,
                     "one reported OEM must not change the mute policy of every chipset/vendor");
             controller.setMuted(false);
         }

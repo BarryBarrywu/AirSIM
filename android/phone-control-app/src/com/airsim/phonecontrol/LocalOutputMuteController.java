@@ -15,6 +15,15 @@ final class LocalOutputMuteController {
         // hears nothing until the user raises the volume (which then also makes the
         // handset audible). Keep the lowest NONZERO index instead; never use 0.
         if ("samsung".equalsIgnoreCase(name)) return Strategy.MINIMUM_NONZERO_VOLUME;
+        // Redmi Note 13 5G / Dimensity 6080 (Android 15) diagnostics: a real
+        // stream mute also turns VOICE_DOWNLINK into all-zero PCM. Raising the
+        // volume restores downlink immediately. Use the lowest NONZERO index
+        // for Xiaomi-family devices instead of setting mute=true or index 0.
+        if ("xiaomi".equalsIgnoreCase(name)
+                || "redmi".equalsIgnoreCase(name)
+                || "poco".equalsIgnoreCase(name)) {
+            return Strategy.MINIMUM_NONZERO_VOLUME;
+        }
         return Strategy.MUTE;
     }
 
