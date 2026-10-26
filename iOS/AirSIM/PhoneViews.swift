@@ -1253,6 +1253,32 @@ private struct MessageThreadView: View {
         }
         .navigationTitle(model.contacts.displayName(for: sender))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        if let latest = messages.last?.content {
+                            UIPasteboard.general.string = latest
+                        }
+                    } label: {
+                        Label("复制最新短信", systemImage: "doc.on.doc")
+                    }
+                    .disabled(messages.isEmpty)
+
+                    Button {
+                        UIPasteboard.general.string = messages
+                            .map(\.content)
+                            .joined(separator: "\n\n")
+                    } label: {
+                        Label("复制整段会话", systemImage: "doc.on.doc.fill")
+                    }
+                    .disabled(messages.isEmpty)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .accessibilityLabel("复制短信")
+            }
+        }
         .confirmationDialog("删除这条短信？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
             Button("删除", role: .destructive) {
                 if let id = pendingDeletion { model.deleteMessages(ids: [id]) }
