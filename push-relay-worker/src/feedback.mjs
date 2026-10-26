@@ -102,6 +102,7 @@ function buildProperties(body, files = {}) {
     "结构化 JSON": fileProperty(files.json),
     "错误摘要": rich(body.error_summary),
     "用户描述": rich(body.description),
+    "备注": rich(body.remark),
     "处理状态": select("新反馈", ["新反馈", "处理中", "已解决"]),
   };
 }

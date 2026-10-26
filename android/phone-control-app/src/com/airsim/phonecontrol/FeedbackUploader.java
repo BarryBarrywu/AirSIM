@@ -23,8 +23,27 @@ final class FeedbackUploader {
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
     private static final String PREFS = "feedback_upload";
     private static final String EVENTS = "events";
+    private static final String DESCRIPTION = "description";
+    private static final String REMARK = "remark";
 
     private FeedbackUploader() {}
+
+    static void setFields(Context context, String description, String remark) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(DESCRIPTION, description == null ? "" : description.trim())
+                .putString(REMARK, remark == null ? "" : remark.trim())
+                .apply();
+    }
+
+    static String description(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(DESCRIPTION, "");
+    }
+
+    static String remark(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(REMARK, "");
+    }
 
     static void submit(Context context, String trigger, String eventID) {
         if (context == null || trigger == null || trigger.isEmpty()) return;
@@ -44,7 +63,8 @@ final class FeedbackUploader {
                         .put("relay_status", "unknown")
                         .put("pcm", pcm(BridgeLog.read()))
                         .put("error_summary", "")
-                        .put("description", "")
+                        .put("description", description(app))
+                        .put("remark", remark(app))
                         .put("android_log", BridgeLog.read());
                 post(body.toString());
                 markUploaded(app, eventID);

@@ -876,6 +876,33 @@ public final class MainActivity extends Activity {
         releases.setOnClickListener(ignored -> openProjectURL(AppInformation.RELEASES_URL));
         aboutCard.addView(releases, matchWithTop(10));
         root.addView(aboutCard, matchWithTop(10));
+
+        root.addView(sectionTitle("自动反馈"), matchWithTop(22));
+        LinearLayout feedbackCard = card(SURFACE, 22);
+        feedbackCard.setOrientation(LinearLayout.VERTICAL);
+        feedbackCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        feedbackCard.addView(description("通话结束、短信收发时自动上传脱敏日志到 Notion；不上传短信内容或密钥。"));
+        EditText feedbackDescription = input("用户描述（可选）", InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        feedbackDescription.setSingleLine(false);
+        feedbackDescription.setMinLines(2);
+        feedbackDescription.setText(FeedbackUploader.description(this));
+        feedbackCard.addView(feedbackDescription, matchWithTop(10));
+        EditText feedbackRemark = input("备注（可选）", InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        feedbackRemark.setSingleLine(false);
+        feedbackRemark.setMinLines(2);
+        feedbackRemark.setText(FeedbackUploader.remark(this));
+        feedbackCard.addView(feedbackRemark, matchWithTop(8));
+        TextView uploadFeedback = secondaryButton("保存并立即上传反馈");
+        uploadFeedback.setOnClickListener(ignored -> {
+            FeedbackUploader.setFields(this, feedbackDescription.getText().toString(),
+                    feedbackRemark.getText().toString());
+            FeedbackUploader.submit(this, "manual", "manual:" + UUID.randomUUID());
+            toast("反馈已提交，正在上传");
+        });
+        feedbackCard.addView(uploadFeedback, matchWithTop(12));
+        root.addView(feedbackCard, matchWithTop(10));
         refreshShizukuStatus();
         return scroll(root);
     }

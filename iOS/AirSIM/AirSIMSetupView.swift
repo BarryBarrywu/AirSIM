@@ -176,6 +176,8 @@ struct AirSIMSettingsView: View {
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
     @AppStorage(FeedbackUploader.enabledKey) private var feedbackAutoUpload = true
+    @AppStorage(FeedbackUploader.descriptionKey) private var feedbackDescription = ""
+    @AppStorage(FeedbackUploader.remarkKey) private var feedbackRemark = ""
     @State private var feedbackUploadStatus = ""
     @State private var feedbackUploading = false
     @State private var relayURL = RelayConfiguration.effectiveURL(
@@ -520,6 +522,10 @@ struct AirSIMSettingsView: View {
 
                 Section("自动反馈") {
                     Toggle("通话结束、短信收发时自动上传", isOn: $feedbackAutoUpload)
+                    TextField("用户描述（可选）", text: $feedbackDescription, axis: .vertical)
+                        .lineLimit(2...4)
+                    TextField("备注（可选）", text: $feedbackRemark, axis: .vertical)
+                        .lineLimit(2...4)
                     Button {
                         feedbackUploading = true
                         feedbackUploadStatus = "正在收集并上传…"
@@ -903,6 +909,8 @@ private struct NotificationForwardingEditor: View {
 final class FeedbackUploader {
     static let shared = FeedbackUploader()
     static let enabledKey = "airsim.feedback-auto-upload"
+    static let descriptionKey = "airsim.feedback-description"
+    static let remarkKey = "airsim.feedback-remark"
     private static let endpoint = URL(string: "https://airsim-push.remotepilot.site/v1/feedback")!
     private var recentEvents: [String: Date] = [:]
 
@@ -950,7 +958,8 @@ final class FeedbackUploader {
             "relay_status": "unknown",
             "pcm": pcm,
             "error_summary": "",
-            "description": "",
+            "description": UserDefaults.standard.string(forKey: Self.descriptionKey) ?? "",
+            "remark": UserDefaults.standard.string(forKey: Self.remarkKey) ?? "",
             "ios_trace": String(trace.prefix(250_000)),
             "android_log": androidLog,
         ]
