@@ -66,6 +66,17 @@ final class StandaloneAgentGateway {
                 .put("log_available_in_app", true).toString();
     }
 
+    String feedbackSnapshot() throws Exception {
+        return new JSONObject()
+                .put("runtime_profile", "android-standalone")
+                .put("bridge_log", BridgeLog.read())
+                .put("manufacturer", android.os.Build.MANUFACTURER)
+                .put("model", android.os.Build.MODEL)
+                .put("sdk", android.os.Build.VERSION.SDK_INT)
+                .put("app_version", AppInformation.version(context))
+                .toString();
+    }
+
     String registerPairing(String registrationJSON) throws Exception {
         JSONObject registration = store.saveRegistration(registrationJSON);
         ForwardingConfigStore.saveFromRegistration(context, registration);
@@ -107,6 +118,7 @@ final class StandaloneAgentGateway {
                 case "/api/android/status", "/api/status" -> ok(status());
                 case "/api/push/status" -> ok(pushStatus());
                 case "/api/debug" -> ok(debugSnapshot());
+                case "/api/feedback" -> ok(feedbackSnapshot());
                 case "/api/calls/status" -> ok(callSnapshot().toString());
                 case "/api/calls/events" -> waitForCallEvent(pathAndQuery);
                 case "/api/events" -> waitForAgentEvent(pathAndQuery);

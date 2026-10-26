@@ -873,6 +873,22 @@ struct ESIMPhonebookProbe: Codable, Sendable {
 
 // MARK: - 诊断与语音运行时
 
+struct AgentFeedbackSnapshot: Codable, Sendable {
+    let bridgeLog: String?
+    let runtimeProfile: String?
+    let manufacturer: String?
+    let model: String?
+    let sdk: Int?
+    let appVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case bridgeLog = "bridge_log"
+        case runtimeProfile = "runtime_profile"
+        case manufacturer, model, sdk
+        case appVersion = "app_version"
+    }
+}
+
 struct ModuleDebugSnapshot: Codable, Sendable {
     let debug: ModuleDebugBufferStatus
     let agent: ModuleDebugAgentStatus

@@ -791,6 +791,7 @@ final class AppModel: ObservableObject {
         _ = persistDeviceHistory([record], agentID: key.agentID)
         ownedRecords.removeValue(forKey: key)
         if ownedHistoryFinished.count > 256 { ownedHistoryFinished = [key] }
+        scheduleFeedbackUpload(trigger: "call_ended", eventID: "owned:\(key.callID)")
     }
 
     @discardableResult
@@ -2939,6 +2940,15 @@ final class AppModel: ObservableObject {
 #endif
     }
 
+    private func scheduleFeedbackUpload(trigger: String, eventID: String) {
+        let api = verboseDiagnosticsAPI
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await FeedbackUploader.shared.upload(
+                trigger: trigger, eventID: eventID, api: api, model: self)
+        }
+    }
+
     func sendSMS(to phone: String, content: String) async -> Bool {
         let boundAtStart = boundAgentID
         let target = Self.validatedNumber(phone)
@@ -3023,6 +3033,7 @@ final class AppModel: ObservableObject {
             }
             if result.sent {
                 saveSentMessage(recipient: target, content: body)
+                scheduleFeedbackUpload(trigger: "sms_sent", eventID: "sms-sent:\(target):\(Date().timeIntervalSince1970)")
             }
             if localReachable { await refreshMessages(silently: true) }
             return result.sent
@@ -3086,6 +3097,10 @@ final class AppModel: ObservableObject {
                 .filter { !existingIDs.contains($0.id) }
                 .sorted { $0.timestamp < $1.timestamp }
             SMSVerificationCodeClipboard.handle(newlyReceived)
+            if let newest = newlyReceived.last {
+                scheduleFeedbackUpload(trigger: "sms_received",
+                    eventID: "sms-received:\(newest.deliveryID ?? newest.id)")
+            }
             let mergedMessages = await mergeMessages(remoteMessages, acknowledgingOn: fetched.agent)
             if messages != mergedMessages { messages = mergedMessages }
             if notifyIfBackground {
@@ -3516,6 +3531,7 @@ final class AppModel: ObservableObject {
                 // incoming call: callKitAnswer used to answer a cloud push over a
                 // stale VoBLE transport, showing a "Bluetooth link ended" status.
                 clearLockedTransport()
+                scheduleFeedbackUpload(trigger: "call_ended", eventID: "call:\(event.callUUID)")
             }
             audio.stopCallTone()
             WatchCallCoordinator.shared.publish(

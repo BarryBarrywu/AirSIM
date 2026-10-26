@@ -175,6 +175,9 @@ struct AirSIMSettingsView: View {
     @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
+    @AppStorage(FeedbackUploader.enabledKey) private var feedbackAutoUpload = true
+    @State private var feedbackUploadStatus = ""
+    @State private var feedbackUploading = false
     @State private var relayURL = RelayConfiguration.effectiveURL(
         stored: UserDefaults.standard.string(forKey: "airsim.push-relay-url"),
         buildSetting: Bundle.main.object(forInfoDictionaryKey: "AirSIMPushRelayURL") as? String,
@@ -513,6 +516,35 @@ struct AirSIMSettingsView: View {
                             Text(appearance.title).tag(appearance)
                         }
                     }
+                }
+
+                Section("自动反馈") {
+                    Toggle("通话结束、短信收发时自动上传", isOn: $feedbackAutoUpload)
+                    Button {
+                        feedbackUploading = true
+                        feedbackUploadStatus = "正在收集并上传…"
+                        Task {
+                            defer { feedbackUploading = false }
+                            let result = await FeedbackUploader.shared.upload(
+                                trigger: "manual",
+                                eventID: UUID().uuidString,
+                                api: model.verboseDiagnosticsAPI,
+                                model: model
+                            )
+                            feedbackUploadStatus = result
+                        }
+                    } label: {
+                        Label(feedbackUploading ? "正在上传…" : "立即上传反馈", systemImage: "paperplane")
+                    }
+                    .disabled(feedbackUploading)
+                    if !feedbackUploadStatus.isEmpty {
+                        Text(feedbackUploadStatus)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("仅上传脱敏后的连接状态、Verbose 日志和 Android 日志；不上传短信内容、号码或密钥。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .task { await model.refreshPairedDeviceInformation() }
@@ -866,3 +898,127 @@ private struct NotificationForwardingEditor: View {
         }
     }
 }
+
+@MainActor
+final class FeedbackUploader {
+    static let shared = FeedbackUploader()
+    static let enabledKey = "airsim.feedback-auto-upload"
+    private static let endpoint = URL(string: "https://airsim-push.remotepilot.site/v1/feedback")!
+    private var recentEvents: [String: Date] = [:]
+
+    private init() {}
+
+    func upload(trigger: String, eventID: String, api: AirSIMAPI?, model: AppModel?) async -> String {
+        let enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        if trigger != "manual" && !enabled { return "自动上传已关闭" }
+        if trigger != "manual" {
+            let now = Date()
+            recentEvents = recentEvents.filter { now.timeIntervalSince($0.value) < 30 }
+            if recentEvents[eventID] != nil { return "相同事件已上传" }
+            recentEvents[eventID] = now
+        }
+
+        let snapshot: AgentFeedbackSnapshot?
+        if let api {
+            snapshot = try? await api.feedbackSnapshot()
+        } else {
+            snapshot = nil
+        }
+        let trace = await AgentVerboseTraceRecorder.shared.exportText(agentEvents: [])
+        let androidLog = String((snapshot?.bridgeLog ?? "").prefix(400_000))
+        let pcm = Self.pcm(from: androidLog)
+        let mode = ConnectionModePreference.selected()
+        let modeValue: String
+        switch mode {
+        case .vowlan, .localDual: modeValue = "vowlan"
+        case .bluetooth: modeValue = "voble"
+        case .cloud: modeValue = "cloud"
+        case .automatic: modeValue = "auto"
+        }
+        let device = UIDevice.current
+        let body: [String: Any] = [
+            "feedback_id": UUID().uuidString,
+            "trigger": trigger,
+            "platform": snapshot == nil ? "iOS" : "Both",
+            "app_version": AppInformation.version,
+            "ios_version": device.systemVersion,
+            "iphone_model": device.model,
+            "android_model": snapshot?.model ?? "",
+            "android_sdk": snapshot?.sdk ?? 0,
+            "connection_mode": modeValue,
+            "route": mode.title,
+            "relay_status": "unknown",
+            "pcm": pcm,
+            "error_summary": "",
+            "description": "",
+            "ios_trace": String(trace.prefix(250_000)),
+            "android_log": androidLog,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else {
+            return "反馈数据生成失败"
+        }
+        var request = URLRequest(url: Self.endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 25
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        do {
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return "上传失败（HTTP \( (response as? HTTPURLResponse)?.statusCode ?? 0)）"
+            }
+            if let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+               let url = object["url"] as? String, !url.isEmpty {
+                return "已上传：\(url)"
+            }
+            return "已上传到 Notion"
+        } catch {
+            return "上传失败：\(error.localizedDescription)"
+        }
+    }
+
+    private static func pcm(from log: String) -> [String: Any] {
+        let route = value("pcm_route", in: log)
+        let capture = value("pcm_capture", in: log)
+        let initialized = value("pcm_initialized", in: log) == "true"
+        let verified = route == "verified"
+        let down = Int(value("pcm_down_peak", in: log)) ?? 0
+        let up = Int(value("pcm_up_peak", in: log)) ?? 0
+        let downBytes = Int(value("pcm_down_bytes", in: log)) ?? 0
+        let upBytes = Int(value("pcm_up_bytes", in: log)) ?? 0
+        let mode: String
+        if !initialized || route.isEmpty {
+            mode = "not_connected"
+        } else if route == "verified" && down > 0 && up > 0 {
+            mode = "vowlan_direct_full_duplex"
+        } else if route == "verified" && down > 0 {
+            mode = "vowlan_direct_downlink_only"
+        } else if route == "verified" && up > 0 {
+            mode = "vowlan_direct_uplink_only"
+        } else {
+            mode = "vowlan_direct_silent"
+        }
+        return [
+            "mode": mode,
+            "route": route,
+            "capture_source": value("pcm_route", in: log),
+            "initialized": initialized,
+            "route_verified": verified,
+            "capture": capture.isEmpty ? "unverified" : capture,
+            "down_peak": down,
+            "up_peak": up,
+            "down_bytes": downBytes,
+            "up_bytes": upBytes,
+            "failure": value("pcm_failure", in: log),
+        ]
+    }
+
+    private static func value(_ key: String, in log: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: "\\b" + NSRegularExpression.escapedPattern(for: key) + "=([^\\s]+)") else { return "" }
+        let range = NSRange(log.startIndex..<log.endIndex, in: log)
+        guard let match = expression.firstMatch(in: log, range: range),
+              let valueRange = Range(match.range(at: 1), in: log) else { return "" }
+        return String(log[valueRange])
+    }
+}
+

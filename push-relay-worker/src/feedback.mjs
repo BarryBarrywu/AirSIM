@@ -60,7 +60,8 @@ function buildProperties(body) {
   const pcm = body.pcm && typeof body.pcm === "object" ? body.pcm : {};
   const pcmMode = PCM_MODES.includes(String(pcm.mode)) ? String(pcm.mode) : "unknown";
   const platform = ["iOS", "Android", "Both"].includes(body.platform) ? body.platform : "Both";
-  const trigger = ["periodic", "manual", "error"].includes(body.trigger) ? body.trigger : "manual";
+  const triggers = ["periodic", "manual", "error", "call_ended", "sms_sent", "sms_received"];
+  const trigger = triggers.includes(body.trigger) ? body.trigger : "manual";
   const mode = ["auto", "vowlan", "voble", "cloud", "offline"].includes(body.connection_mode)
     ? body.connection_mode : "offline";
   const relay = ["online", "offline", "unknown"].includes(body.relay_status)
@@ -71,7 +72,7 @@ function buildProperties(body) {
     "名称": { title: [{ text: { content: text(body.feedback_id || "AirSIM " + new Date().toISOString(), 120) } }] },
     "反馈 ID": rich(body.feedback_id),
     "提交时间": { date: { start: new Date().toISOString() } },
-    "触发方式": select(trigger, ["periodic", "manual", "error"]),
+    "触发方式": select(trigger, triggers),
     "平台": select(platform, ["iOS", "Android", "Both"]),
     "App 版本": rich(body.app_version),
     "iOS 版本": rich(body.ios_version),
@@ -120,12 +121,6 @@ export async function handleFeedback(request, env) {
   if (!env.NOTION_TOKEN || !env.NOTION_DATABASE_ID) {
     return json(503, { error: "notion feedback is not configured" });
   }
-  if (!env.FEEDBACK_TOKEN) {
-    return json(503, { error: "feedback authentication is not configured" });
-  }
-  const supplied = request.headers.get("x-airsim-feedback-key") || "";
-  if (supplied !== env.FEEDBACK_TOKEN) return json(401, { error: "unauthorized" });
-
   const declared = Number(request.headers.get("content-length") || "0");
   if (declared > MAX_FEEDBACK_BYTES) return json(413, { error: "feedback too large" });
   let body;

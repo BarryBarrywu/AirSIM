@@ -51,7 +51,7 @@ WEBRTC_ROLLOUT_PERCENT = "0"
 #   APNS_P8="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 #   DASHBOARD_TOKEN="replace-with-a-password-manager-generated-random-token"
 [secrets]
-required = ["APNS_P8", "DASHBOARD_TOKEN", "NOTION_TOKEN", "NOTION_DATABASE_ID", "FEEDBACK_TOKEN"]
+required = ["APNS_P8", "DASHBOARD_TOKEN", "NOTION_TOKEN", "NOTION_DATABASE_ID"]
 
 [[kv_namespaces]]
 binding = "DEVICES"

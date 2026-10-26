@@ -229,6 +229,7 @@ struct AirSIMAPI: Sendable {
     // MARK: 状态、网络、定位与调试
 
     func modemStatus() async throws -> ModemStatus { try await get("api/status") }
+    func feedbackSnapshot() async throws -> AgentFeedbackSnapshot { try await get("api/feedback") }
     func moduleDebug(after sequence: UInt64 = 0, limit: Int = 400) async throws -> ModuleDebugSnapshot {
         var components = URLComponents(url: endpoint("api/debug"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
