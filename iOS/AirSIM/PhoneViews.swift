@@ -1,6 +1,39 @@
 import SwiftUI
 import UIKit
 
+enum DialPadPasteSanitizer {
+    static func sanitize(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "+*#0123456789")
+        var filtered = String(value.unicodeScalars.filter { allowed.contains($0) })
+        if filtered.dropFirst().contains("+") {
+            filtered = String(filtered.enumerated().compactMap { index, character in
+                character == "+" && index != 0 ? nil : character
+            })
+        }
+        return String(filtered.prefix(64))
+    }
+}
+
+enum SMSVerificationCodeExtractor {
+    static func extract(from text: String) -> String? {
+        let patterns = [
+            "(?:验证码|校验码|动态码|确认码|verification code|security code|code|otp)[^0-9]{0,24}([0-9]{4,8})",
+            "(?<![0-9])([0-9]{4,8})(?![0-9])",
+        ]
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(
+                pattern: pattern, options: [.caseInsensitive]
+            ) else { continue }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            if let match = expression.firstMatch(in: text, options: [], range: range),
+               let codeRange = Range(match.range(at: 1), in: text) {
+                return String(text[codeRange])
+            }
+        }
+        return nil
+    }
+}
+
 enum RecentCallTimeFormatter {
     static func string(
         for date: Date,
@@ -153,6 +186,7 @@ struct DialPadView: View {
     @State private var zeroWasLongPressed = false
     @State private var dialKeyFeedback = DialKeyFeedback()
     @State private var pairedAgentListPresentation: PairedAgentListPresentation?
+    @State private var clipboardFeedback: String?
 
     private let rows = [
         [("1", ""), ("2", "ABC"), ("3", "DEF")],
@@ -198,8 +232,50 @@ struct DialPadView: View {
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.green)
                             .frame(height: metrics.contactHeight)
+
+                        HStack(spacing: 22) {
+                            Button {
+                                UIPasteboard.general.string = model.numberInput
+                                clipboardFeedback = "已复制号码"
+                            } label: {
+                                Label("复制", systemImage: "doc.on.doc")
+                            }
+                            .disabled(model.numberInput.isEmpty)
+
+                            Button {
+                                guard let raw = UIPasteboard.general.string else { return }
+                                let value = DialPadPasteSanitizer.sanitize(raw)
+                                guard !value.isEmpty else { return }
+                                model.numberInput = value
+                                clipboardFeedback = "已粘贴号码"
+                            } label: {
+                                Label("粘贴", systemImage: "doc.on.clipboard")
+                            }
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+
+                        if let clipboardFeedback {
+                            Text(clipboardFeedback)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .transition(.opacity)
+                        }
                     }
                     .padding(.horizontal, 12)
+                    .contextMenu {
+                        Button {
+                            UIPasteboard.general.string = model.numberInput
+                            clipboardFeedback = "已复制号码"
+                        } label: { Label("复制号码", systemImage: "doc.on.doc") }
+                        .disabled(model.numberInput.isEmpty)
+                        Button {
+                            guard let raw = UIPasteboard.general.string else { return }
+                            model.numberInput = DialPadPasteSanitizer.sanitize(raw)
+                            clipboardFeedback = "已粘贴号码"
+                        } label: { Label("粘贴号码", systemImage: "doc.on.clipboard") }
+                    }
 
                     if agentSection == .current, let currentAgent {
                         DialPadCurrentAgentCard(
@@ -1077,6 +1153,7 @@ private struct MessageThreadView: View {
     @State private var reply = ""
     @State private var pendingDeletion: String?
     @State private var showingDeleteConfirmation = false
+    @State private var copiedVerificationCode: String?
 
     private var messages: [SMSMessage] {
         model.messages
@@ -1084,8 +1161,33 @@ private struct MessageThreadView: View {
             .sorted { $0.timestamp < $1.timestamp }
     }
 
+    private var latestVerificationCode: String? {
+        guard let message = messages.last(where: { !$0.isOutgoing }) else { return nil }
+        return SMSVerificationCodeExtractor.extract(from: message.content)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if let code = latestVerificationCode {
+                HStack(spacing: 10) {
+                    Image(systemName: "number.square.fill")
+                        .foregroundStyle(.blue)
+                    Text("验证码 (code)")
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                    Spacer()
+                    Button(copiedVerificationCode == code ? "已复制" : "复制验证码") {
+                        UIPasteboard.general.string = code
+                        copiedVerificationCode = code
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.thinMaterial)
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 9) {
@@ -1116,6 +1218,15 @@ private struct MessageThreadView: View {
                             }
                             .id(message.id)
                             .contextMenu {
+                                if !message.isOutgoing,
+                                   let code = SMSVerificationCodeExtractor.extract(from: message.content) {
+                                    Button {
+                                        UIPasteboard.general.string = code
+                                        copiedVerificationCode = code
+                                    } label: {
+                                        Label("复制验证码 \(code)", systemImage: "number.square")
+                                    }
+                                }
                                 Button("删除短信", role: .destructive) {
                                     pendingDeletion = message.id
                                     showingDeleteConfirmation = true

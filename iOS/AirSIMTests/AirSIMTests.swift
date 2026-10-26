@@ -2361,6 +2361,18 @@ final class AirSIMTests: XCTestCase {
         ))
     }
 
+    func testDialPasteSanitizerKeepsOnlyDialableCharacters() {
+        XCTAssertEqual(DialPadPasteSanitizer.sanitize(" +1 (555) 010-9999 "), "+15550109999")
+        XCTAssertEqual(DialPadPasteSanitizer.sanitize("1+2+3"), "123")
+        XCTAssertEqual(DialPadPasteSanitizer.sanitize("abc"), "")
+    }
+
+    func testSMSVerificationCodeExtractor() {
+        XCTAssertEqual(SMSVerificationCodeExtractor.extract(from: "验证码为 123456，5 分钟内有效"), "123456")
+        XCTAssertEqual(SMSVerificationCodeExtractor.extract(from: "Your verification code: 9876"), "9876")
+        XCTAssertEqual(SMSVerificationCodeExtractor.extract(from: "Your code is 4321"), "4321")
+    }
+
     func testVoWLANModeUsesCallKit() {
         XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .vowlan).usesCallKit)
         XCTAssertTrue(ConnectionModeRuntimePolicy(mode: .automatic).usesCallKit)
