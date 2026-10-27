@@ -413,19 +413,16 @@ enum LiveActivityNumberFormatter {
         "977", "992", "993", "994", "995", "996", "998",
     ]
 
-    /// Mask the middle but keep an international country code.
-    static func masked(_ raw: String?) -> String {
+    /// Show the full synced phone number. The Live Activity is the user's own
+    /// active-call surface, so a masked suffix is not useful and caused wrong
+    /// country-code/last-four displays.
+    static func display(_ raw: String?) -> String {
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return "未配置" }
         var digits = String(trimmed.filter(\.isNumber))
         guard digits.count >= 7 else { return trimmed }
-        let international = trimmed.hasPrefix("+") || trimmed.hasPrefix("00")
         if trimmed.hasPrefix("00"), digits.hasPrefix("00") { digits.removeFirst(2) }
-        if international {
-            return "+\(countryCode(digits))-XXXX-\(digits.suffix(4))"
-        }
-        if digits.count > 11 { digits = String(digits.suffix(11)) }
-        return "\(digits.prefix(3))-XXXX-\(digits.suffix(4))"
+        return trimmed.hasPrefix("+") || trimmed.hasPrefix("00") ? "+\(digits)" : digits
     }
 
     private static func countryCode(_ digits: String) -> String {

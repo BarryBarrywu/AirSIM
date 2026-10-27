@@ -3234,13 +3234,13 @@ final class AirSIMTests: XCTestCase {
             callKitAudioActive: false))
     }
 
-    func testLiveActivityNumberMaskKeepsInternationalCountryCode() {
-        XCTAssertEqual(LiveActivityNumberFormatter.masked("+447471840835"), "+44-XXXX-0835")
-        XCTAssertEqual(LiveActivityNumberFormatter.masked("+14155551234"), "+1-XXXX-1234")
-        XCTAssertEqual(LiveActivityNumberFormatter.masked("+8613800138000"), "+86-XXXX-8000")
-        XCTAssertEqual(LiveActivityNumberFormatter.masked("+85291234567"), "+852-XXXX-4567")
-        XCTAssertEqual(LiveActivityNumberFormatter.masked("13800138000"), "138-XXXX-8000")
-        XCTAssertEqual(LiveActivityNumberFormatter.masked(""), "未配置")
+    func testLiveActivityNumberShowsFullSyncedNumber() {
+        XCTAssertEqual(LiveActivityNumberFormatter.display("+447471840835"), "+447471840835")
+        XCTAssertEqual(LiveActivityNumberFormatter.display("+14155551234"), "+14155551234")
+        XCTAssertEqual(LiveActivityNumberFormatter.display("+8615502030017"), "+8615502030017")
+        XCTAssertEqual(LiveActivityNumberFormatter.display("+85291234567"), "+85291234567")
+        XCTAssertEqual(LiveActivityNumberFormatter.display("13800138000"), "13800138000")
+        XCTAssertEqual(LiveActivityNumberFormatter.display(""), "未配置")
     }
 
     func testLiveActivityAgentPagingUsesThreePerPage() {
