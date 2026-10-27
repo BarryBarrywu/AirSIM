@@ -23,7 +23,11 @@ import java.util.concurrent.Executors;
 /** AVF-free foreground Agent: Relay registration, heartbeat and command execution. */
 public final class StandaloneAgentService extends Service {
     private static final ConcurrentLinkedQueue<String> CALL_EVENTS = new ConcurrentLinkedQueue<>();
+    private static volatile StandaloneAgentService instance;
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
+    // CallKit latency must not wait behind heartbeat/registration/command I/O.
+    private final ExecutorService eventWorker = Executors.newSingleThreadExecutor();
+    private final Object callEventLock = new Object();
     private final Set<String> completedCommands = new LinkedHashSet<>();
     private final NotificationUpdateGate notificationGate = new NotificationUpdateGate();
     private volatile boolean running;
@@ -47,6 +51,8 @@ public final class StandaloneAgentService extends Service {
     static void enqueueCallEvent(Context context, String json) {
         CALL_EVENTS.add(json);
         start(context);
+        StandaloneAgentService active = instance;
+        if (active != null) active.eventWorker.execute(active::flushCallEvents);
     }
 
     @Override public void onCreate() {
@@ -57,6 +63,7 @@ public final class StandaloneAgentService extends Service {
                 BridgeNotification.status(this, "内置 Agent 正在启动"),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING);
         running = true;
+        instance = this;
         commandConfiguration = new RelayCommandConfiguration<>(store::registration, this::commandScope, commandRetry);
         getSharedPreferences("standalone_agent", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(commandPreferences);
         ShizukuBridgeManager.get(this).ensureStarted();
@@ -267,13 +274,33 @@ public final class StandaloneAgentService extends Service {
                 + " delay_ms=" + decision.delayMillis() + " fallback=false");
     }
 
-    private void flushEvents(JSONObject registration) throws Exception {
-        String encoded;
-        while ((encoded = CALL_EVENTS.peek()) != null) {
-            JSONObject event = new JSONObject(encoded);
-            StandaloneCloudMediaManager.get(this).handleCallEvent(registration, event, relay);
-            CALL_EVENTS.poll();
+    private void flushCallEvents() {
+        if (store == null || !store.cloudEnabled()) return;
+        JSONObject registration = store.registration();
+        if (registration == null) return;
+        synchronized (callEventLock) {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                String encoded = CALL_EVENTS.peek();
+                if (encoded == null) return;
+                try {
+                    StandaloneCloudMediaManager.get(this).handleCallEvent(
+                            registration, new JSONObject(encoded), relay);
+                    CALL_EVENTS.poll();
+                } catch (Exception error) {
+                    BridgeLog.info("standalone_call_event_retry failures=" + (attempt + 1)
+                            + " type=" + error.getClass().getSimpleName());
+                    try { Thread.sleep(500); } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    if (attempt == 2) return;
+                }
+            }
         }
+    }
+
+    private void flushEvents(JSONObject registration) throws Exception {
+        flushCallEvents();
         StandaloneSMSStore smsStore = new StandaloneSMSStore(this);
         JSONArray smsPending = smsStore.cloudPending();
         for (int index = 0; index < smsPending.length(); index++) {
@@ -310,6 +337,8 @@ public final class StandaloneAgentService extends Service {
 
     @Override public void onDestroy() {
         running = false;
+        if (instance == this) instance = null;
+        eventWorker.shutdownNow();
         getSharedPreferences("standalone_agent", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(commandPreferences);
         commandConfiguration.stop();
         StandaloneWebSocket socket = commandSocket;

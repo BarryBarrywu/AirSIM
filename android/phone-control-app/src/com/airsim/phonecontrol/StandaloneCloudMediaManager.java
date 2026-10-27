@@ -69,6 +69,12 @@ final class StandaloneCloudMediaManager implements Closeable {
             descriptor = active == null ? null : active.descriptor;
         }
         if ("incoming".equals(direction) && "incoming".equals(state) && descriptor == null) {
+            // A queued ringing event can survive a Relay time-out until after the
+            // carrier call has ended. Never wake CallKit with a stale ring.
+            if (CallRepository.state(androidID) < 0 && eventAgeMillis(event) > 3_000) {
+                BridgeLog.info("standalone_incoming_skipped_ended");
+                return;
+            }
             descriptor = Descriptor.incoming(registration, androidID);
             JSONObject payload = identity(registration).put("event", "incoming_call")
                     .put("call_id", descriptor.callID).put("call_uuid", descriptor.callUUID)
@@ -77,7 +83,9 @@ final class StandaloneCloudMediaManager implements Closeable {
                     .put("issued_at", Instant.now().toString())
                     .put("expires_at", Instant.now().plusSeconds(90).toString())
                     .put("media_transport", "legacy_pcm");
-            postRelay(registration, relay, "/v2/events/call", payload, 15_000);
+            // Keep ringing latency bounded; a failed call event stays queued for
+            // the priority retry path instead of blocking the agent loop for 15s.
+            postRelay(registration, relay, "/v2/events/call", payload, 5_000);
             start(descriptor);
         } else if (descriptor != null && descriptor.androidID.isEmpty()
                 && "outgoing".equals(direction)) {
@@ -131,6 +139,14 @@ final class StandaloneCloudMediaManager implements Closeable {
     private void postCallState(JSONObject registration, StandaloneRelayClient relay,
                                JSONObject lifecycle) throws Exception {
         postRelay(registration, relay, "/v2/events/call-state", lifecycle, 12_000);
+    }
+
+    private static long eventAgeMillis(JSONObject event) {
+        String eventID = event.optString("event_id", "");
+        int dash = eventID.indexOf('-');
+        if (dash <= 0) return 0;
+        try { return Math.max(0, System.currentTimeMillis() - Long.parseLong(eventID.substring(0, dash))); }
+        catch (NumberFormatException ignored) { return 0; }
     }
 
     private void postRelay(JSONObject registration, StandaloneRelayClient relay, String path,
