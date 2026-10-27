@@ -34,6 +34,7 @@
 		A1000000000000000000000E /* CallKitController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* CallKitController.swift */; };
 		A1000000000000000000000F /* WiredHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* WiredHTTPTransport.swift */; };
 		A10000000000000000000010 /* BackgroundStandbyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* BackgroundStandbyController.swift */; };
+		A10000000000000000000044 /* CrashDiagnosticsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000043 /* CrashDiagnosticsStore.swift */; };
 		A10000000000000000000011 /* AirSIMLiveActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* AirSIMLiveActivityShared.swift */; };
 		A10000000000000000000012 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* LiveActivityController.swift */; };
 		A10000000000000000000013 /* AirSIMLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* AirSIMLiveActivityWidget.swift */; };
@@ -159,6 +160,7 @@
 		B10000000000000000000011 /* WiredHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredHTTPTransport.swift; sourceTree = "<group>"; };
 		B10000000000000000000042 /* NetworkRoutePreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkRoutePreferences.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* BackgroundStandbyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundStandbyController.swift; sourceTree = "<group>"; };
+		B10000000000000000000043 /* CrashDiagnosticsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashDiagnosticsStore.swift; sourceTree = "<group>"; };
 		B10000000000000000000013 /* AirSIMLiveActivityShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirSIMLiveActivityShared.swift; sourceTree = "<group>"; };
 		B10000000000000000000014 /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		B10000000000000000000015 /* AirSIMLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirSIMLiveActivityWidget.swift; sourceTree = "<group>"; };
@@ -255,6 +257,7 @@
 				B10000000000000000000011 /* WiredHTTPTransport.swift */,
 				B10000000000000000000042 /* NetworkRoutePreferences.swift */,
 				B10000000000000000000012 /* BackgroundStandbyController.swift */,
+				B10000000000000000000043 /* CrashDiagnosticsStore.swift */,
 				B10000000000000000000014 /* LiveActivityController.swift */,
 				B10000000000000000000004 /* AppSettings.swift */,
                 B1A990000000000000000001,
@@ -522,6 +525,7 @@
 				A1000000000000000000000F /* WiredHTTPTransport.swift in Sources */,
 				A10000000000000000000042 /* NetworkRoutePreferences.swift in Sources */,
 				A10000000000000000000010 /* BackgroundStandbyController.swift in Sources */,
+				A10000000000000000000044 /* CrashDiagnosticsStore.swift in Sources */,
 				A10000000000000000000011 /* AirSIMLiveActivityShared.swift in Sources */,
 				A10000000000000000000012 /* LiveActivityController.swift in Sources */,
 				A10000000000000000000004 /* AppSettings.swift in Sources */,

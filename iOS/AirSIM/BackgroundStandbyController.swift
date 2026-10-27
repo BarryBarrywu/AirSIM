@@ -130,6 +130,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         IncomingCallNotification.registerCategory()
+        CrashDiagnosticsStore.shared.start()
         let policy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
         CallKitController.shared.setEnabled(policy.usesCallKit)
         if policy.usesCallKit, CallKitController.shared.handler == nil {

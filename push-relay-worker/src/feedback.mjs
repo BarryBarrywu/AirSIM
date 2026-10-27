@@ -24,7 +24,8 @@ function text(value, limit = 1900) {
 }
 
 function rich(value) {
-  const content = text(value);
+  // Notion rich_text has a 2000-character limit per text object.
+  const content = text(value).slice(0, 1900);
   return content ? { rich_text: [{ text: { content } }] } : { rich_text: [] };
 }
 
@@ -115,6 +116,7 @@ function buildProperties(body, files = {}) {
     "PCM 客户端关闭": { checkbox: audio.pcm_client_closed === true },
     "Telecom 状态": rich(audio.telecom_state),
     "音频诊断": rich(audio.summary),
+    "崩溃诊断": rich(body.crash),
     "iOS 日志": fileProperty(files.ios),
     "Android 日志": fileProperty(files.android),
     "结构化 JSON": fileProperty(files.json),

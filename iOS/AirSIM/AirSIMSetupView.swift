@@ -951,7 +951,9 @@ final class FeedbackUploader {
             snapshot = nil
         }
         let trace = await AgentVerboseTraceRecorder.shared.exportText(agentEvents: [])
-        let androidLog = String((snapshot?.bridgeLog ?? "").prefix(400_000))
+        // Keep the newest Android rows; a prefix loses the call/crash window that
+        // triggered this feedback.
+        let androidLog = String((snapshot?.bridgeLog ?? "").suffix(400_000))
         let pcm = Self.pcm(from: androidLog)
         let audio = Self.audioDiagnostics(trace: trace, snapshot: snapshot)
         let mode = ConnectionModePreference.selected()
@@ -977,6 +979,7 @@ final class FeedbackUploader {
             "relay_status": "unknown",
             "pcm": pcm,
             "audio": audio,
+            "crash": CrashDiagnosticsStore.shared.recent(),
             "error_summary": "",
             "description": UserDefaults.standard.string(forKey: Self.descriptionKey) ?? "",
             "remark": UserDefaults.standard.string(forKey: Self.remarkKey) ?? "",
