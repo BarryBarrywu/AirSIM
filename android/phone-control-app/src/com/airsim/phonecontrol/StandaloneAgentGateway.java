@@ -107,6 +107,7 @@ final class StandaloneAgentGateway {
     void sendSMSEvent(String json) throws Exception {
         JSONObject event = new JSONObject(json);
         NotificationForwarder.handle(context, event);
+        com.airsim.phonecontrol.voble.VoBLEGatewayService.publishSMS(context, event);
         FeedbackUploader.submit(context, "sms_received",
                 "sms:" + event.optString("delivery_id", event.optString("event_id")));
         if (smsStore.add(event, store.configured() && store.cloudEnabled())) {

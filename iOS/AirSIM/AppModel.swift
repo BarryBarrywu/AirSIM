@@ -1479,6 +1479,10 @@ final class AppModel: ObservableObject {
 
     private func configureVoBLESession(_ bundle: VoBLEDeviceSession) {
         let central = bundle.central
+        central.onSMS = { [weak self, weak central] sms in
+            guard let self, let central else { return }
+            self.receiveVoBLESMS(sms, agentID: central.authenticatedIdentity)
+        }
         central.$state
             .dropFirst()
             .removeDuplicates()
@@ -3055,6 +3059,46 @@ final class AppModel: ObservableObject {
             }
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func receiveVoBLESMS(_ sms: VoBLEAndroidSMS, agentID: String?) {
+        guard !sms.content.isEmpty else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = formatter.date(from: sms.timestamp)
+            ?? ISO8601DateFormatter().date(from: sms.timestamp)
+            ?? Date()
+        var message = SMSMessage(
+            sender: sms.sender.isEmpty ? "未知号码" : sms.sender,
+            content: sms.content,
+            code: nil,
+            timestamp: timestamp,
+            deliveryID: sms.deliveryID.isEmpty ? nil : sms.deliveryID,
+            direction: .incoming,
+            sourceAgentID: agentID,
+            simSlot: sms.simSlot.isEmpty ? nil : sms.simSlot
+        )
+        if let agentID, !agentID.isEmpty { message.sourceAgentID = agentID }
+        guard !messages.contains(where: { $0.id == message.id }) else { return }
+        var updated = messages
+        updated.append(message)
+        updated = normalizedMessages(historyStore.visibleMessages(updated))
+        messages = updated
+        _ = historyStore.saveMessages(updated)
+        SMSVerificationCodeClipboard.handle([message])
+        scheduleFeedbackUpload(trigger: "sms_received",
+            eventID: "sms-received:\(message.deliveryID ?? message.id)")
+        incomingSMSNotifier.notify(
+            message: message,
+            displayName: contacts.displayName(for: message.sender),
+            appIsActive: appIsActive)
+        Task {
+            await AgentVerboseTraceRecorder.shared.recordEvent(
+                source: "ios", category: "sms", phase: "received_voble",
+                title: "VoBLE 收到短信",
+                fields: ["slot": message.simSlot ?? "-"]
+            )
         }
     }
 

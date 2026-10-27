@@ -144,6 +144,15 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                         == PackageManager.PERMISSION_GRANTED);
     }
 
+    public static void publishSMS(Context context, org.json.JSONObject event) {
+        VoBLEGatewayService active = instance;
+        if (active == null) {
+            start(context);
+            return;
+        }
+        active.controlQueue.execute(() -> active.publishSMS(event));
+    }
+
     public static void publishCallState(
             Context context, String callId, String direction, String state, String number) {
         VoBLEGatewayService active = instance;
@@ -460,6 +469,18 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
         }
         if (terminal) callGenerations.remove(callId);
         if (terminal) stopMedia(callId, generation);
+    }
+
+    private void publishSMS(org.json.JSONObject event) {
+        SessionContext target = session;
+        if (target == null || !channel.isReady(target.deviceId)) return;
+        try {
+            sendControl(target.deviceId, target.sessionId, "", 0,
+                    "sms_event", new org.json.JSONObject(event.toString()));
+            BridgeLog.info("voble_sms_event_sent");
+        } catch (Exception error) {
+            BridgeLog.error("voble_sms_event_failed", error);
+        }
     }
 
     private VoBLECallController.Result startMedia(

@@ -114,6 +114,14 @@ struct VoBLEAndroidEvent: Equatable, Sendable {
     let number: String
 }
 
+struct VoBLEAndroidSMS: Equatable, Sendable {
+    let sender: String
+    let content: String
+    let timestamp: String
+    let deliveryID: String
+    let simSlot: String
+}
+
 enum VoBLECentralError: LocalizedError, Equatable {
     case notReady, invalidResponse, authenticationFailed, commandTimedOut, disconnected
     case bluetooth(String)
@@ -241,6 +249,7 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
     @Published private(set) var deviceInformation: AndroidAgentMetadata?
     var currentDeviceName: String? { peripheral?.name }
     var onEvent: ((VoBLEAndroidEvent) -> Void)?
+    var onSMS: ((VoBLEAndroidSMS) -> Void)?
     var onAudioDownlinkFragment: ((Data) -> Void)?
     var onReadyToSendAudio: (() -> Void)?
     var onDisconnected: (() -> Void)?
@@ -907,6 +916,13 @@ final class VoBLECentralController: NSObject, ObservableObject, VoBLECentralCont
                     callID: envelope.callID, generation: envelope.generation,
                     direction: body["direction"] as? String ?? "", state: body["state"] as? String ?? "",
                     number: body["number"] as? String ?? ""))
+            } else if envelope.command == "sms_event" {
+                onSMS?(VoBLEAndroidSMS(
+                    sender: body["sender"] as? String ?? "",
+                    content: body["content"] as? String ?? "",
+                    timestamp: body["timestamp"] as? String ?? "",
+                    deliveryID: body["delivery_id"] as? String ?? "",
+                    simSlot: body["sim_slot"] as? String ?? ""))
             }
         } catch { errorMessage = error.localizedDescription }
     }
