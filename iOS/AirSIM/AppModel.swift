@@ -3588,6 +3588,10 @@ final class AppModel: ObservableObject {
             audio.stopCallTone(deactivateSession: false)
             if previous.state != .active {
                 Task { await AgentVerboseTraceRecorder.shared.recordAudioStartup(phase: "answer_observed") }
+                // CallKit audio activation can arrive before the lifecycle store
+                // reaches .active. Retry here so local/cloud audio starts even when
+                // the earlier didActivate callback was too early.
+                Task { @MainActor [weak self] in await self?.startCallAudioIfReady() }
             }
         }
         if event.state == .ending || event.state.isTerminal {
