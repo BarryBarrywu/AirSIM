@@ -1013,7 +1013,8 @@ final class FeedbackUploader {
         var stages: [String] = []
         var startupMilliseconds = 0
         for line in relevant {
-            guard line.contains("[AUDIO") else { continue }
+            // Trace lines are formatted as "[APP] ... AUDIO 通话音频启动".
+            guard line.contains("AUDIO 通话音频启动") else { continue }
             if let phase = Self.value(after: "phase=", in: line), !phase.isEmpty,
                !stages.contains(phase) { stages.append(phase) }
             if let duration = Int(Self.value(after: "duration_ms=", in: line) ?? "") {
