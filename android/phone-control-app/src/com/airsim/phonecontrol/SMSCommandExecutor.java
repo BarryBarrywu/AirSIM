@@ -86,7 +86,6 @@ public final class SMSCommandExecutor {
                     SmsSendConfirmationGate.disarm();
                     int segments = segments(result);
                     BridgeLog.info("sms_send_root accepted segments=" + segments);
-                    FeedbackUploader.submit(context, "sms_sent", "sms-sent:" + UUID.randomUUID());
                     return AgentCommandDispatcher.Result.success(segments);
                 }
                 BridgeLog.info("sms_send_root_fallback result="
@@ -99,7 +98,6 @@ public final class SMSCommandExecutor {
                     SmsSendConfirmationGate.disarm();
                     int segments = segments(result);
                     BridgeLog.info("sms_send_shizuku accepted segments=" + segments);
-                    FeedbackUploader.submit(context, "sms_sent", "sms-sent:" + UUID.randomUUID());
                     return AgentCommandDispatcher.Result.success(segments);
                 }
                 BridgeLog.info("sms_send_shizuku_fallback result="
@@ -178,7 +176,6 @@ public final class SMSCommandExecutor {
                 }
                 SmsSendConfirmationGate.disarm();
                 BridgeLog.info("sms_send_confirmed trace=" + trace + " segments=" + parts.size());
-                FeedbackUploader.submit(context, "sms_sent", "sms-sent:" + UUID.randomUUID());
                 return AgentCommandDispatcher.Result.success(parts.size());
             } finally {
                 SmsSendConfirmationGate.disarm();
