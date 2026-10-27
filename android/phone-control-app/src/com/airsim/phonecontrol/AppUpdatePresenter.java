@@ -55,7 +55,8 @@ final class AppUpdatePresenter {
                 + "• VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧地址并重新验证。\n\n"
                 + "• 所有厂商统一使用最低非零音量，兼容小米等机型通话下行采集。\n\n"
                 + "• 改善 DTMF 按键音和挂断兜底；VoBLE 新增短信下行。\n\n"
-                + "• 来电事件优先 Relay，迟到来电不再拉起 CallKit；iPhone 被划掉后 Android 宽限自动挂断。";
+                + "• 来电事件优先 Relay，迟到来电不再拉起 CallKit；iPhone 被划掉后 Android 宽限自动挂断。\n\n"
+                + "• 优化云端弱网音频：短丢包隐藏、jitter 上限提高；iOS 接听后立即启动云端音频。";
         AlertDialog next = new AlertDialog.Builder(activity).setTitle("当前版本更新内容 · " + version + "（" + build + "）")
                 .setMessage(notes).setPositiveButton("知道了", (ignored, which) -> {
                     preferences.edit().putString(NOTES_SEEN, version + "#" + build).apply();

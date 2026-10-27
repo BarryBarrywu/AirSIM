@@ -24,9 +24,9 @@ assert_contains "$ROOT/../android/phone-control-app/src/com/airsim/phonecontrol/
 
 assert_contains "$MANIFEST" 'package="com.airsim.phonecontrol.standalone"' \
   'standalone package id is missing'
-assert_contains "$MANIFEST" 'android:versionCode="120"' \
+assert_contains "$MANIFEST" 'android:versionCode="121"' \
   'standalone version code does not match the current candidate build'
-assert_contains "$MANIFEST" 'android:versionName="0.9.8.15"' \
+assert_contains "$MANIFEST" 'android:versionName="0.9.8.16"' \
   'standalone version name does not match the current Android candidate'
 assert_contains "$MANIFEST" 'com.airsim.phonecontrol.STANDALONE_AGENT' \
   'standalone runtime flag is missing'

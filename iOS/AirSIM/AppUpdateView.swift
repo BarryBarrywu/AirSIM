@@ -20,7 +20,8 @@ enum AppReleaseNotes {
         "修复 OnePlus 等机型 DTMF 按键被立即取消、挂断无响应的问题；KernelSU root bridge 增加 Looper 初始化。",
         "CallKit 接听改为幂等，修复冷启动/通知打开时 active call id mismatch 与自动挂断；VoBLE 新增短信下行。",
         "来电事件优先走 Relay，已结束的来电不再迟到拉起 CallKit；挂断控制回执超时按本地结束处理。",
-        "新增崩溃诊断与最新 Android 日志采集；反馈输入框支持键盘“完成”收起。"
+        "云端接听后立即启动音频，不再等待迟到的 Agent active 帧；弱网短丢包隐藏并自适应扩大 jitter 缓冲。",
+        "新增崩溃诊断与最新 Android 日志采集；反馈输入框支持键盘“完成”收起；云端自检复用 HTTPS 连接。"
     ]
     static let limitations = "各机型双向声音、长时锁屏与多设备场景仍需分别真机验证；GitHub 发布不代表 TestFlight 已可更新。"
 }
