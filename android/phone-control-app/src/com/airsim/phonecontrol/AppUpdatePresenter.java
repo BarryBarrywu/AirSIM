@@ -54,7 +54,7 @@ final class AppUpdatePresenter {
                 + "• 通话结束、短信发送或接收时自动上传脱敏日志到 Notion。\n\n"
                 + "• VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧地址并重新验证。\n\n"
                 + "• 所有厂商统一使用最低非零音量，兼容小米等机型通话下行采集。\n\n"
-                + "• 改善 DTMF 按键音和挂断兜底；实际双向声音仍需按机型验证。";
+                + "• 改善 DTMF 按键音和挂断兜底；VoBLE 新增短信下行，实际双向声音仍需按机型验证。";
         AlertDialog next = new AlertDialog.Builder(activity).setTitle("当前版本更新内容 · " + version + "（" + build + "）")
                 .setMessage(notes).setPositiveButton("知道了", (ignored, which) -> {
                     preferences.edit().putString(NOTES_SEEN, version + "#" + build).apply();

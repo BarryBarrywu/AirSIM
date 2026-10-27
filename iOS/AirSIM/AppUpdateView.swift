@@ -17,7 +17,8 @@ enum AppReleaseNotes {
         "通话结束、短信发送或接收时自动上传脱敏日志到 Notion，支持用户描述与备注。",
         "VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧 LAN 地址并重新发现验证，减少离线卡住。",
         "灵动岛每页最多 3 台设备；国际号码保留国家码，修复英国等号码显示错误。",
-        "修复 OnePlus 等机型 DTMF 按键被立即取消、挂断无响应的问题；KernelSU root bridge 增加 Looper 初始化。"
+        "修复 OnePlus 等机型 DTMF 按键被立即取消、挂断无响应的问题；KernelSU root bridge 增加 Looper 初始化。",
+        "CallKit 接听改为幂等，修复冷启动/通知打开时 active call id mismatch 与自动挂断；VoBLE 新增短信下行。"
     ]
     static let limitations = "各机型双向声音、长时锁屏与多设备场景仍需分别真机验证；GitHub 发布不代表 TestFlight 已可更新。"
 }
