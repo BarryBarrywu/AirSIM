@@ -434,7 +434,8 @@ struct AirSIMLiveActivityWidget: Widget {
                     .font(.system(size: compact ? 8.5 : 9.5, weight: .regular))
                     .foregroundStyle(.white.opacity(0.48))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.55)
+                    .allowsTightening(true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -498,14 +499,7 @@ struct AirSIMLiveActivityWidget: Widget {
     }
 
     private func maskedAgentNumber(_ raw: String?) -> String {
-        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let digits = trimmed.filter(\.isNumber)
-        guard digits.count >= 7 else {
-            return trimmed.isEmpty ? "未配置" : trimmed
-        }
-        var visible = digits
-        if visible.count > 11 { visible = String(visible.suffix(11)) }
-        return "\(visible.prefix(3))-XXXX-\(visible.suffix(4))"
+        LiveActivityNumberFormatter.masked(raw)
     }
 
     @ViewBuilder
