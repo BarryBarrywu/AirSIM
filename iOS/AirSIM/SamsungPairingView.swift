@@ -152,9 +152,17 @@ struct SamsungPairingView: View {
                     registration: registration, endpoint: result.route.endpoint,
                     clockOffset: result.clockOffset)
                 try await model.vowlan.installManualRoute(result.route)
-                return model.vowlan.availability.isOnlineForDisplay
-                    ? "配对成功，直连网关已通过认证。选择 VoWLAN 或自动连接模式后可用于通话与短信。"
-                    : "配对成功，地址已保存，但直连网关暂不可达。请检查网络、Tailscale 访问规则与安卓 PCM 桥；不会回退写入 Relay。"
+                // Tailscale/5G can need a moment before the control port is
+                // reachable after the pairing window closes.
+                for attempt in 0..<3 {
+                    if model.vowlan.availability.isOnlineForDisplay {
+                        return "配对成功，直连网关已通过认证。选择 VoWLAN 或自动连接模式后可用于通话与短信。"
+                    }
+                    guard attempt < 2 else { break }
+                    try? await Task.sleep(for: .milliseconds(400))
+                    await model.vowlan.probeNow()
+                }
+                return "配对成功，地址已保存，但直连网关暂不可达。请检查网络、Tailscale 访问规则与安卓 PCM 桥；不会回退写入 Relay。"
             }
         } catch is CancellationError {
             message = "已取消连接"

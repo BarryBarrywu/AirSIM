@@ -176,7 +176,6 @@ struct AirSIMSettingsView: View {
     @AppStorage(BackgroundStandbyPreference.key) private var backgroundStandbyEnabled = false
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
-    @AppStorage(FeedbackUploader.enabledKey) private var feedbackAutoUpload = false
     @AppStorage(FeedbackUploader.descriptionKey) private var feedbackDescription = ""
     @AppStorage(FeedbackUploader.remarkKey) private var feedbackRemark = ""
     @State private var feedbackUploadStatus = ""
@@ -544,8 +543,7 @@ struct AirSIMSettingsView: View {
                     }
                 }
 
-                Section("自动反馈") {
-                    Toggle("通话结束、短信收发时自动上传", isOn: $feedbackAutoUpload)
+                Section("反馈") {
                     TextField("用户描述（可选）", text: $feedbackDescription, axis: .vertical)
                         .lineLimit(2...4)
                         .focused($feedbackFocusedField, equals: .description)
@@ -579,7 +577,7 @@ struct AirSIMSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    Text("仅上传脱敏后的连接状态、Verbose 日志和 Android 日志；不上传短信内容、号码或密钥。")
+                    Text("仅手动上传脱敏后的连接状态、Verbose 日志和 Android 日志；不上传短信内容、号码或密钥。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -946,23 +944,13 @@ private struct NotificationForwardingEditor: View {
 @MainActor
 final class FeedbackUploader {
     static let shared = FeedbackUploader()
-    static let enabledKey = "airsim.feedback-auto-upload"
     static let descriptionKey = "airsim.feedback-description"
     static let remarkKey = "airsim.feedback-remark"
     private static let endpoint = URL(string: "https://airsim-push.remotepilot.site/v1/feedback")!
-    private var recentEvents: [String: Date] = [:]
 
     private init() {}
 
     func upload(trigger: String, eventID: String, api: AirSIMAPI?, model: AppModel?) async -> String {
-        let enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? false
-        if trigger != "manual" && !enabled { return "自动上传已关闭" }
-        if trigger != "manual" {
-            let now = Date()
-            recentEvents = recentEvents.filter { now.timeIntervalSince($0.value) < 30 }
-            if recentEvents[eventID] != nil { return "相同事件已上传" }
-            recentEvents[eventID] = now
-        }
 
         let snapshot: AgentFeedbackSnapshot?
         if let api {
