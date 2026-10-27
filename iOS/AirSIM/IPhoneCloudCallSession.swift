@@ -267,7 +267,7 @@ struct CloudPCMAdaptiveJitterBuffer {
             let delta = arrivedAt.timeIntervalSince(previous)
             if delta >= 0 {
                 estimatedJitter += (abs(delta - 0.02) - estimatedJitter) / 16
-                targetFrameCount = max(targetFrameCount, min(10, 4 + Int(estimatedJitter / 0.02)))
+                targetFrameCount = max(targetFrameCount, min(12, 4 + Int(estimatedJitter / 0.02)))
                 stableFrames = (0.015...0.025).contains(delta) ? stableFrames + 1 : 0
                 if stableFrames >= 100 {
                     targetFrameCount = max(4, targetFrameCount - 1)
@@ -312,8 +312,26 @@ struct CloudPCMAdaptiveJitterBuffer {
                 ready.append(CloudPCMBufferedFrame(sequence: frame.sequence, pcm: pcm))
                 expectedSequence = expected &+ 1
             } else if let next = frames.keys.min(), next > expected {
-                droppedFrameCount &+= UInt64(next - expected)
-                expectedSequence = next
+                let gap = Int(next - expected)
+                guard gap <= 3, let lastGoodPCM else {
+                    // A long outage must resynchronise instead of replaying stale speech.
+                    droppedFrameCount &+= UInt64(gap)
+                    expectedSequence = next
+                    continue
+                }
+                // Short cellular packet loss: conceal each missing 20 ms frame
+                // instead of jumping the playout clock and producing a click.
+                var cursor = expected
+                for _ in 0..<gap where ready.count < maxFrames {
+                    missingFrames += 1
+                    concealedFrameCount &+= 1
+                    ready.append(CloudPCMBufferedFrame(
+                        sequence: cursor,
+                        pcm: Self.concealmentFrame(from: lastGoodPCM, missing: missingFrames)
+                    ))
+                    cursor &+= 1
+                }
+                expectedSequence = cursor > expected ? cursor : next
             } else { break }
         }
         if ready.isEmpty, frames.isEmpty {
@@ -321,14 +339,12 @@ struct CloudPCMAdaptiveJitterBuffer {
             missingFrames += 1
             stableFrames = 0
             if missingFrames <= 2, let lastGoodPCM, let expectedSequence {
-                var pcm = Data(repeating: 0, count: 320)
-                let gain = missingFrames == 1 ? 0.5 : 0.2
-                for i in 0..<160 {
-                    Self.put(&pcm, i, Int(Double(Self.sample(lastGoodPCM, i)) * gain * (1 - Double(i) / 320)))
-                }
                 concealedFrameCount &+= 1
                 // Arrival ordinals aren't wire sequence numbers: do not advance on concealment.
-                ready.append(CloudPCMBufferedFrame(sequence: expectedSequence, pcm: pcm))
+                ready.append(CloudPCMBufferedFrame(
+                    sequence: expectedSequence,
+                    pcm: Self.concealmentFrame(from: lastGoodPCM, missing: missingFrames)
+                ))
             } else {
                 notePlaybackUnderrun()
             }
@@ -336,8 +352,17 @@ struct CloudPCMAdaptiveJitterBuffer {
         return ready
     }
 
+    private static func concealmentFrame(from lastGoodPCM: Data, missing: Int) -> Data {
+        var pcm = Data(repeating: 0, count: 320)
+        let gain = missing <= 1 ? 0.5 : (missing == 2 ? 0.2 : 0.1)
+        for i in 0..<160 {
+            Self.put(&pcm, i, Int(Double(Self.sample(lastGoodPCM, i)) * gain * (1 - Double(i) / 320)))
+        }
+        return pcm
+    }
+
     mutating func notePlaybackUnderrun() {
-        targetFrameCount = min(10, targetFrameCount + 1)
+        targetFrameCount = min(12, targetFrameCount + 1)
         stableFrames = 0
         isPrimed = false
     }
