@@ -3050,6 +3050,30 @@ final class AirSIMTests: XCTestCase {
             ),
             "https://push.remotepilot.site/"
         )
+        XCTAssertEqual(
+            RelayConfiguration.effectiveURL(
+                stored: "http://airsim-push.remotepilot.site",
+                buildSetting: "",
+                bundleID: "com.eric3u.airsim"
+            ),
+            "https://airsim-push.remotepilot.site"
+        )
+        XCTAssertEqual(
+            RelayConfiguration.effectiveURL(
+                stored: "https:",
+                buildSetting: "",
+                bundleID: "com.eric3u.airsim"
+            ),
+            "https://airsim-push.remotepilot.site"
+        )
+        XCTAssertEqual(
+            RelayConfiguration.effectiveURL(
+                stored: nil,
+                buildSetting: "http:",
+                bundleID: "com.eric3u.airsim"
+            ),
+            "https://airsim-push.remotepilot.site"
+        )
     }
 
     func testRelayHealthRequiresAirSIMServiceIdentity() {

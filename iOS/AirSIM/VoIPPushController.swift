@@ -235,17 +235,31 @@ enum RelayConfiguration {
         buildSetting: String?,
         bundleID: String?
     ) -> String {
-        let stored = stored?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !stored.isEmpty {
-            let canonicalStored = stored.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            if bundleID == maintainerBundleID, canonicalStored == legacyDJOneHubRelayURL {
-                return maintainerRelayURL
-            }
-            return stored
+        let isMaintainer = bundleID == maintainerBundleID
+        for raw in [stored, buildSetting] {
+            guard let value = usableURL(raw, isMaintainer: isMaintainer) else { continue }
+            return value
         }
-        let buildSetting = buildSetting?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !buildSetting.isEmpty { return buildSetting }
-        return bundleID == maintainerBundleID ? maintainerRelayURL : ""
+        return isMaintainer ? maintainerRelayURL : ""
+    }
+
+    /// Reject truncated xcconfig values such as "https:" and upgrade the
+    /// maintainer's known relay host from http:// to https://.
+    private static func usableURL(_ raw: String?, isMaintainer: Bool) -> String? {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !value.isEmpty,
+              let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else { return nil }
+        if isMaintainer, host == "push.remotepilot.site" { return maintainerRelayURL }
+        let canonical = value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if isMaintainer, canonical == legacyDJOneHubRelayURL { return maintainerRelayURL }
+        if isMaintainer, scheme == "http",
+           host == "airsim-push.remotepilot.site" || host == "push.remotepilot.site" {
+            return "https://" + host + (components.path == "/" ? "" : components.path)
+        }
+        return value
     }
 }
 
@@ -1051,7 +1065,11 @@ final class VoIPPushController: NSObject {
     }
 
     func updateRelayURL(_ value: String) {
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = RelayConfiguration.effectiveURL(
+            stored: value,
+            buildSetting: nil,
+            bundleID: Bundle.main.bundleIdentifier
+        )
         if normalized.isEmpty {
             UserDefaults.standard.removeObject(forKey: Keys.relayURL)
         } else {
