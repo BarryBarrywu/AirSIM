@@ -936,7 +936,8 @@ final class IPhoneCloudCallSession {
                 )
                 let final = receipt.isFinal ? receipt : try await CloudCallControlClient.awaitFinalReceipt(
                     envelope: envelope,
-                    credentials: credentials
+                    credentials: credentials,
+                    timeout: envelope.action == "answer" ? 30 : 8
                 )
                 guard final.terminationConfirmed else {
                     throw CloudCallControlClientError.rejected(
@@ -961,12 +962,19 @@ final class IPhoneCloudCallSession {
                     detail: error.localizedDescription,
                     isFailure: true
                 )
-                emitLifecycle(
-                    from: envelope,
-                    state: .failed,
-                    source: .relay,
-                    failure: error.localizedDescription
-                )
+                // Hanging up is local-first. If the Android/Relay receipt is late
+                // or lost, do not surface a false "call failed" alert; the user
+                // already ended the call on iPhone.
+                if envelope.action == "end" || envelope.action == "reject" {
+                    emitLifecycle(from: envelope, state: .ended, source: .relay)
+                } else {
+                    emitLifecycle(
+                        from: envelope,
+                        state: .failed,
+                        source: .relay,
+                        failure: error.localizedDescription
+                    )
+                }
             }
         }
     }
