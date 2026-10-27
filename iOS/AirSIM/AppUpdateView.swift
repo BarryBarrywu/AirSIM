@@ -14,7 +14,7 @@ enum AppReleaseNotes {
     // Keep this summary in sync with the candidate's source and docs when publishing.
     static let items = [
         "新增全局“后台静音音频保活”开关，默认关闭，显著降低后台耗电；PushKit/CallKit 仍可唤醒。",
-        "通话结束、短信发送或接收时自动上传脱敏日志到 Notion，支持用户描述与备注。",
+        "反馈改为手动上传：在设置里填写描述与备注后点击上传，不会在通话或短信时自动提交。",
         "VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧 LAN 地址并重新发现验证，减少离线卡住。",
         "灵动岛每页最多 3 台设备；国际号码保留国家码，修复英国等号码显示错误。",
         "修复 OnePlus 等机型 DTMF 按键被立即取消、挂断无响应的问题；KernelSU root bridge 增加 Looper 初始化。",
@@ -109,9 +109,9 @@ private enum NewFeatureCatalog {
         ),
         NewFeaturePage(
             id: 1,
-            kicker: "自动反馈",
-            title: "问题自动留痕",
-            body: "通话结束、短信发送或接收时，自动把脱敏日志、设备信息和 PCM 状态写入 Notion。也可以在设置里填写用户描述与备注。",
+            kicker: "反馈",
+            title: "问题手动留痕",
+            body: "在设置里填写用户描述与备注，手动把脱敏日志、设备信息和 PCM 状态上传到 Notion。不会在通话或短信时自动上传。",
             symbol: "paperplane.fill",
             accent: .cyan,
             demo: .feedback
