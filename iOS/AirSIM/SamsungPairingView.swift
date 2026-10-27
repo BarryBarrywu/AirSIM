@@ -1,7 +1,10 @@
 import SwiftUI
 
 struct SamsungPairingView: View {
-    static var defaultLocalPairingOnly: Bool { !ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud }
+    /// Automatic/VoWLAN/VoBLE pairing is a local direct pairing. Only explicit
+    /// cloud mode requires Relay registration; otherwise a disabled Android
+    /// push/relay configuration blocks even Bonjour pairing.
+    static var defaultLocalPairingOnly: Bool { ConnectionModePreference.selected() != .cloud }
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var localPairingOnly = SamsungPairingView.defaultLocalPairingOnly
@@ -24,8 +27,8 @@ struct SamsungPairingView: View {
                 .disabled(pairingServiceID != nil)
                 .accessibilityIdentifier("localPairingOnly")
                 Text(localPairingOnly
-                     ? "本次配对只写入 VoWLAN 密钥，不检查或写入 Relay 和推送参数。不会改变全局通话模式。"
-                     : "本次配对写入 VoWLAN 密钥及 Relay／推送配置；需要云端凭据就绪。不会改变全局通话模式。")
+                     ? "本次配对只写入 VoWLAN 密钥，不检查或写入 Relay 和推送参数。自动、VoWLAN、VoBLE 模式推荐此项；不会改变全局通话模式。"
+                     : "本次配对写入 VoWLAN 密钥及 Relay／推送配置；只有显式云端模式需要此项，且云端凭据必须就绪。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
