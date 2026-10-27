@@ -3454,6 +3454,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func waitForLocalIncomingRoute() async -> (AirSIMAPI, PCMRoute)? {
+        // Cold launch from CallKit can answer before Bonjour/VoWLAN discovery has
+        // completed. Retry briefly instead of failing the call immediately.
+        for attempt in 0..<6 {
+            if let route = await readyVoWLANRoute() { return route }
+            if activeCall != nil || callKit.currentIncomingPush?.authenticatedMediaURL != nil {
+                return nil
+            }
+            if attempt < 5 { try? await Task.sleep(for: .milliseconds(400)) }
+        }
+        return nil
+    }
+
     func readyVoWLANRoute() async -> (AirSIMAPI, PCMRoute)? {
         if let api = selectedDirectoryAPI { return (api, Self.pcmRoute(for: api.route)) }
         vowlan.startBrowsing()
@@ -4134,8 +4147,12 @@ extension AppModel: CallKitActionHandling {
             let selectedMode = ConnectionModePreference.selected()
             // Do not probe VoWLAN from an explicit cloud answer. A local probe
             // timeout used to consume the answer path before any cloud request.
-            let vowlanRoute: (AirSIMAPI, PCMRoute)? =
+            var vowlanRoute: (AirSIMAPI, PCMRoute)? =
                 selectedMode == .cloud ? nil : await readyVoWLANRoute()
+            if vowlanRoute == nil, selectedMode != .cloud,
+               callKit.currentIncomingPush?.authenticatedMediaURL == nil {
+                vowlanRoute = await waitForLocalIncomingRoute()
+            }
             let transport = CallTransportPolicy.preferred(
                 mode: selectedMode,
                 vowlanReady: vowlanRoute != nil,
