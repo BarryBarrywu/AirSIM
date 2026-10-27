@@ -843,6 +843,16 @@ final class CloudAgentRoutingTests: XCTestCase {
         XCTAssertEqual(body["target_agent_id"],"A")
         XCTAssertEqual(body["command_id"],"synthetic-command")
     }
+    func testStaleCloudAgentCanStillBeUsedForDialTarget() throws {
+        let s = try status(#"[{"agent_id":"A","cloud_online":false,"command_routing_version":1}]"#)
+        XCTAssertThrowsError(try CloudAgentRouting.select(
+            boundAgentID: "A", agents: s.agents, relayRoutingVersion: 1))
+        let target = try CloudAgentRouting.select(
+            boundAgentID: "A", agents: s.agents, relayRoutingVersion: 1,
+            requireOnline: false)
+        XCTAssertEqual(target.agentID, "A")
+    }
+
     func testLegacyCapabilitiesCannotCreateNewActions() throws {
         let old = try status(#"[{"agent_id":"A","cloud_online":true}]"#,capabilities:"")
         XCTAssertNil(old.commandRoutingVersion)

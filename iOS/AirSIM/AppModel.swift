@@ -333,6 +333,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var connectionSummary: ModuleConnectionSummary = .offline
     @Published private(set) var cloudAgentStatus: CloudAgentStatus?
     @Published private(set) var cloudAgentDirectory: CloudAgentStatus?
+    @Published private(set) var cloudStatusError: String?
     @Published private(set) var remoteCall: CallRecord?
     @Published private(set) var pendingOutgoingCall: CallRecord?
     @Published private(set) var callPresentationSurface: CallPresentationSurface?
@@ -1156,6 +1157,7 @@ final class AppModel: ObservableObject {
     func bindAndroidAgent(_ agentID: String) {
         guard PairedAndroidDeviceStore.permits(agentID) else { return }
         AndroidAgentBindingPreference.set(agentID)
+        CloudAgentTargetStore.remember(agentID)
         liveActivityAgentPage = 0
         if let peer = PairedAndroidDeviceStore.peripheralID(for: agentID) { vobleHub.select(peripheralID: peer) }
         vobleHub.ensureConnected(agentID: agentID)
@@ -1241,9 +1243,24 @@ final class AppModel: ObservableObject {
         return AndroidAgentBindingPreference.permits(voble.authenticatedIdentity)
     }
 
-    private var boundCloudReady: Bool {
-        guard CloudModePreference.isEnabled(), let status = cloudAgentStatus else { return false }
-        return (try? cloudTarget(status: status, bound: boundAgentID)) != nil
+    /// Dialing needs a target, not a fresh heartbeat. The bound agent or the last
+    /// known agent remains valid while Relay status is stale/unavailable.
+    private var boundCloudReady: Bool { cloudDialTarget() != nil }
+
+    private func cloudDialTarget(bound: String? = nil) -> CloudCommandTarget? {
+        guard CloudModePreference.isEnabled() else { return nil }
+        for candidate in [bound ?? boundAgentID, CloudAgentTargetStore.last()] {
+            guard let candidate, CloudAgentRouting.validID(candidate),
+                  PairedAndroidDeviceStore.permits(candidate) else { continue }
+            let target = CloudCommandTarget(agentID: candidate, routingVersion: 1)
+            CloudAgentTargetStore.remember(candidate)
+            return target
+        }
+        guard let status = cloudAgentDirectory ?? cloudAgentStatus,
+              let target = try? cloudTarget(status: status, bound: bound, requireOnline: false)
+        else { return nil }
+        CloudAgentTargetStore.remember(target.agentID)
+        return target
     }
 
     private var cloudStatusForPresentation: CloudAgentStatus? {
@@ -1256,10 +1273,12 @@ final class AppModel: ObservableObject {
         return cloudAgentDirectory ?? cloudAgentStatus
     }
 
-    private func cloudTarget(status: CloudAgentStatus, bound: String?) throws -> CloudCommandTarget {
+    private func cloudTarget(status: CloudAgentStatus, bound: String?,
+                             requireOnline: Bool = true) throws -> CloudCommandTarget {
         try CloudAgentRouting.select(boundAgentID: bound,
             agents: status.agents.filter { PairedAndroidDeviceStore.permits($0.agentID) },
-            relayRoutingVersion: status.commandRoutingVersion)
+            relayRoutingVersion: status.commandRoutingVersion,
+            requireOnline: requireOnline)
     }
 
     private func startCloudStatusQueryIfNeeded(beforeBackgroundCall: Bool = false) {
@@ -1271,24 +1290,37 @@ final class AppModel: ObservableObject {
                 beforeLiveActivityCall: beforeBackgroundCall
               ) else { return }
         lastCloudStatusRefresh = cloudStatusNow()
-        // A previous foreground's online result must not become fresh again while this request is pending.
-        cloudAgentDirectory = nil
-        cloudAgentStatus = nil
+        // Keep the last known snapshot while refreshing. Clearing it here made a
+        // transient /devices/status failure disable cloud dialing entirely.
         let generation = cloudStatusRefreshGeneration
         cloudStatusRefreshTask = Task { [weak self] in
-            let status = try? await self?.cloudStatusFetcher()
-            guard let self, !Task.isCancelled,
-                  generation == self.cloudStatusRefreshGeneration else { return }
-            self.cloudAgentDirectory = status
-            self.cloudAgentStatus = status
-            self.lastCloudStatusReceivedAt = status == nil ? .distantPast : self.cloudStatusNow()
-            self.rememberVerifiedDevices()
-            if !self.isOnline && !self.vowlan.availability.isOnlineForDisplay {
-                self.connectionSummary = ModuleConnectionPolicy.summary(
-                    localControlReachable: false,
-                    cloudHeartbeatFresh: status?.cloudOnline == true,
-                    cellularState: status?.cellularState
-                )
+            guard let self else { return }
+            do {
+                let status = try await self.cloudStatusFetcher()
+                guard !Task.isCancelled,
+                      generation == self.cloudStatusRefreshGeneration else { return }
+                self.cloudAgentDirectory = status
+                self.cloudAgentStatus = status
+                self.cloudStatusError = nil
+                self.lastCloudStatusReceivedAt = self.cloudStatusNow()
+                if let target = try? self.cloudTarget(
+                    status: status, bound: self.boundAgentID, requireOnline: false) {
+                    CloudAgentTargetStore.remember(target.agentID)
+                }
+                self.rememberVerifiedDevices()
+                if !self.isOnline && !self.vowlan.availability.isOnlineForDisplay {
+                    self.connectionSummary = ModuleConnectionPolicy.summary(
+                        localControlReachable: false,
+                        cloudHeartbeatFresh: status.cloudOnline,
+                        cellularState: status.cellularState
+                    )
+                }
+            } catch {
+                guard !Task.isCancelled,
+                      generation == self.cloudStatusRefreshGeneration else { return }
+                self.cloudStatusError = error.localizedDescription
+                // Retain cloudAgentStatus / cloudAgentDirectory. A failed probe is
+                // not proof that the previously known Agent disappeared.
             }
         }
     }
@@ -1312,7 +1344,12 @@ final class AppModel: ObservableObject {
             let status = try await cloudStatusFetcher()
             cloudAgentStatus = status
             cloudAgentDirectory = status
+            cloudStatusError = nil
             lastCloudStatusReceivedAt = cloudStatusNow()
+            if let target = try? cloudTarget(status: status, bound: boundAgentID,
+                                             requireOnline: false) {
+                CloudAgentTargetStore.remember(target.agentID)
+            }
             rememberVerifiedDevices()
             lastCloudStatusRefresh = cloudStatusNow()
             if !vowlan.availability.isOnlineForDisplay {
@@ -1324,12 +1361,9 @@ final class AppModel: ObservableObject {
             }
             return status
         } catch {
-            cloudAgentStatus = nil
-            cloudAgentDirectory = nil
-            lastCloudStatusReceivedAt = .distantPast
-            if !vowlan.availability.isOnlineForDisplay {
-                connectionSummary = .offline
-            }
+            // Diagnostics must not destroy the last valid target. Keep the
+            // snapshot and let enqueue decide whether cloud dialing is possible.
+            cloudStatusError = error.localizedDescription
             return nil
         }
     }
@@ -3019,13 +3053,15 @@ final class AppModel: ObservableObject {
                 }
                 result = SMSSendResult(sent: true, segments: Int(response.detail) ?? 1)
             } else if CloudModePreference.isEnabled() {
-                let status: CloudAgentStatus
-                if let cloudAgentStatus {
-                    status = cloudAgentStatus
+                let route: CloudCommandTarget
+                if let cached = cloudDialTarget(bound: boundAtStart) {
+                    route = cached
                 } else {
-                    status = try await VoIPPushController.shared.fetchCloudAgentStatus()
+                    let status = try await VoIPPushController.shared.fetchCloudAgentStatus()
+                    route = try cloudTarget(status: status, bound: boundAtStart,
+                                            requireOnline: false)
+                    CloudAgentTargetStore.remember(route.agentID)
                 }
-                let route = try cloudTarget(status: status, bound: boundAtStart)
                 result = try await VoIPPushController.shared.sendCloudSMS(to: target, message: body, target: route)
             } else {
                 throw CloudCommandError.cloudModeDisabled
@@ -4056,29 +4092,37 @@ extension AppModel: CallKitActionHandling {
                     IPhoneCloudCallSession.shared.endUnadoptedOutgoing(outgoing)
                 }
             ) {
-                // Dialing is an explicit event: check once immediately before cloud routing.
+                // A bound/last-known Agent is enough to attempt dialing. Do not
+                // make the command wait for a fresh /devices/status observation.
+                if let target = self.cloudDialTarget(bound: boundAtStart) {
+                    return try await VoIPPushController.shared.startCloudOutgoingCall(
+                        number: number, target: target)
+                }
                 let queryGeneration = self.cloudStatusRefreshGeneration
                 let status: CloudAgentStatus
                 do {
                     status = try await self.cloudStatusFetcher()
                 } catch {
-                    // A failed fresh observation invalidates the old online snapshot,
-                    // but a cancelled/obsolete dial must not clear a newer mode's state.
                     if self.outgoingAttemptID == attempt, !Task.isCancelled,
                        queryGeneration == self.cloudStatusRefreshGeneration {
-                        self.cloudAgentStatus = nil
-                        self.cloudAgentDirectory = nil
-                        self.lastCloudStatusReceivedAt = .distantPast
-                        if !self.isOnline, self.verifiedVoWLANAPI() == nil { self.connectionSummary = .offline }
+                        self.cloudStatusError = error.localizedDescription
+                        // Keep the previous snapshot; only the attempt itself may
+                        // report that the selected target is unreachable.
                     }
                     throw error
                 }
                 guard self.outgoingAttemptID == attempt, !Task.isCancelled else { throw CancellationError() }
                 self.cloudAgentStatus = status
                 self.cloudAgentDirectory = status
+                self.cloudStatusError = nil
                 self.lastCloudStatusReceivedAt = self.cloudStatusNow()
                 self.lastCloudStatusRefresh = self.cloudStatusNow()
-                let target = try self.cloudTarget(status: status, bound: boundAtStart)
+                guard let target = self.cloudDialTarget(bound: boundAtStart)
+                    ?? (try? self.cloudTarget(status: status, bound: boundAtStart,
+                                             requireOnline: false)) else {
+                    throw CloudAgentRoutingError.unavailable
+                }
+                CloudAgentTargetStore.remember(target.agentID)
                 return try await VoIPPushController.shared.startCloudOutgoingCall(number: number, target: target)
             }
 
