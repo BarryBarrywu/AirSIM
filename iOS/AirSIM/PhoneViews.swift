@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import LinkPresentation
+import UniformTypeIdentifiers
 
 enum DialPadPasteSanitizer {
     static func sanitize(_ value: String) -> String {
@@ -949,6 +951,7 @@ struct RecentsView: View {
 struct MessagesView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var pendingRecipient: String?
+    let openConversation: (String) -> Void
     @State private var showingComposer = false
     @State private var showingClearConfirmation = false
     @State private var editMode: EditMode = .inactive
@@ -971,9 +974,23 @@ struct MessagesView: View {
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(conversations, id: \.sender) { conversation in
-                        NavigationLink(value: SMSConversationDestination(sender: conversation.sender)) {
-                            MessageConversationRow(sender: conversation.sender, messages: conversation.messages)
-                                .contentShape(Rectangle())
+                        Group {
+                            if editMode.isEditing {
+                                MessageConversationRow(sender: conversation.sender, messages: conversation.messages)
+                            } else {
+                                Button {
+                                    openConversation(conversation.sender)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        MessageConversationRow(sender: conversation.sender, messages: conversation.messages)
+                                        Image(systemName: "chevron.right")
+                                            .font(.footnote.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                         .listRowBackground(Color.clear)
                         .listRowInsets(.init(
@@ -1124,11 +1141,22 @@ struct MessagesView: View {
 
 struct MessageThreadView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var settings: AppSettings
     let sender: String
     @State private var reply = ""
-    @State private var pendingDeletion: String?
+    @State private var pendingDeletion: Set<String> = []
     @State private var showingDeleteConfirmation = false
     @State private var copiedVerificationCode: String?
+    @State private var selection = SMSMessageSelection()
+    @FocusState private var composerFocused: Bool
+
+    private var dateLocale: Locale {
+        let language = settings.language == .system ? L10n.effectiveLanguage : settings.language
+        var components = Locale.Components(locale: .autoupdatingCurrent)
+        components.languageComponents.languageCode = language == .zh ? "zh" : "en"
+        components.languageComponents.script = language == .zh ? "Hans" : nil
+        return Locale(components: components)
+    }
 
     private var messages: [SMSMessage] {
         model.messages
@@ -1148,6 +1176,7 @@ struct MessageThreadView: View {
     private var replyBar: some View {
         HStack(alignment: .bottom, spacing: 6) {
             TextField(L10n.t("短信"), text: $reply, axis: .vertical)
+                .focused($composerFocused)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .padding(.leading, 14)
@@ -1182,7 +1211,7 @@ struct MessageThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let code = latestVerificationCode {
+            if !selection.isSelecting, let code = latestVerificationCode {
                 HStack(spacing: 10) {
                     Image(systemName: "number.square.fill")
                         .foregroundStyle(.blue)
@@ -1202,106 +1231,186 @@ struct MessageThreadView: View {
                 .background(.thinMaterial)
             }
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 9) {
-                        ForEach(messages) { message in
-                            HStack {
-                                if message.isOutgoing { Spacer(minLength: 48) }
-                                VStack(
-                                    alignment: message.isOutgoing ? .trailing : .leading,
-                                    spacing: 3
-                                ) {
-                                    Text(message.content)
-                                        .textSelection(.enabled)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 9)
-                                        .background(
-                                            message.isOutgoing
-                                                ? Color.blue
-                                                : Color(uiColor: .secondarySystemBackground),
-                                            in: RoundedRectangle(cornerRadius: 18)
-                                        )
-                                        .foregroundStyle(message.isOutgoing ? .white : .primary)
-                                    if message.isOutgoing {
-                                        Text(L10n.t("已发送"))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    } else if let simSlot = message.simSlot, !simSlot.isEmpty {
-                                        Text(simSlot)
-                                            .font(.caption2.weight(.medium))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                if !message.isOutgoing { Spacer(minLength: 48) }
-                            }
-                            .id(message.id)
-                            .contextMenu {
-                                Button {
-                                    UIPasteboard.general.string = message.content
-                                } label: {
-                                    Label("复制短信内容", systemImage: "doc.on.doc")
-                                }
-                                if !message.isOutgoing,
-                                   let code = SMSVerificationCodeExtractor.extract(from: message.content) {
-                                    Button {
-                                        UIPasteboard.general.string = code
-                                        copiedVerificationCode = code
-                                    } label: {
-                                        Label("复制验证码 \(code)", systemImage: "number.square")
-                                    }
-                                }
-                                Button("删除短信", role: .destructive) {
-                                    pendingDeletion = message.id
-                                    showingDeleteConfirmation = true
-                                }
-                            }
-                        }
-                    }
-                    .padding()
-                }
-                .onAppear { if let id = messages.last?.id { proxy.scrollTo(id) } }
-                .scrollDismissesKeyboard(.interactively)
-            }
+            SMSConversationTimelineView(
+                messages: messages,
+                selection: selection,
+                locale: dateLocale,
+                onBeginSelection: { id in
+                    composerFocused = false
+                    selection.begin(with: id)
+                },
+                onToggleSelection: { selection.toggle($0) },
+                onBeginTextSelection: { composerFocused = false }
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PhoneBackdrop())
-        .safeAreaInset(edge: .bottom, spacing: 0) { replyBar }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selection.isSelecting { selectionBar } else { replyBar }
+        }
+        .onChange(of: messages) { selection.reconcile(with: $0) }
         .navigationTitle(model.contacts.displayName(for: sender))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
+                if selection.isSelecting {
                     Button {
-                        if let latest = messages.last?.content {
-                            UIPasteboard.general.string = latest
+                        selection.cancel()
+                        composerFocused = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel(L10n.t("取消选择"))
+                } else {
+                    Menu {
+                        Button {
+                            if let latest = messages.last?.content {
+                                UIPasteboard.general.string = latest
+                            }
+                        } label: {
+                            Label(L10n.t("复制最新短信"), systemImage: "doc.on.doc")
                         }
-                    } label: {
-                        Label("复制最新短信", systemImage: "doc.on.doc")
-                    }
-                    .disabled(messages.isEmpty)
+                        .disabled(messages.isEmpty)
 
-                    Button {
-                        UIPasteboard.general.string = messages
-                            .map(\.content)
-                            .joined(separator: "\n\n")
+                        Button {
+                            UIPasteboard.general.string = messages.map(\.content).joined(separator: "\n\n")
+                        } label: {
+                            Label(L10n.t("复制整段会话"), systemImage: "doc.on.doc.fill")
+                        }
+                        .disabled(messages.isEmpty)
                     } label: {
-                        Label("复制整段会话", systemImage: "doc.on.doc.fill")
+                        Image(systemName: "doc.on.doc")
                     }
-                    .disabled(messages.isEmpty)
-                } label: {
-                    Image(systemName: "doc.on.doc")
+                    .accessibilityLabel(L10n.t("复制短信"))
                 }
-                .accessibilityLabel("复制短信")
             }
         }
-        .confirmationDialog("删除这条短信？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
-                if let id = pendingDeletion { model.deleteMessages(ids: [id]) }
-                pendingDeletion = nil
+        .confirmationDialog(
+            String(format: L10n.t("删除所选 %d 条短信？"), pendingDeletion.count),
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.t("删除"), role: .destructive) {
+                let ids = pendingDeletion
+                model.deleteMessages(ids: ids)
+                // Persistence failure leaves the records and selection intact.
+                if !model.messages.contains(where: { ids.contains($0.id) }) {
+                    selection.cancel()
+                }
+                pendingDeletion = []
             }
-            Button("取消", role: .cancel) { pendingDeletion = nil }
-        } message: { Text("仅删除此 iPhone 上 AirSIM 内的记录，不删除安卓系统短信。") }
+            Button(L10n.t("取消"), role: .cancel) { pendingDeletion = [] }
+        } message: { Text(L10n.t("仅删除此 iPhone 上 AirSIM 内的记录，不删除安卓系统短信。")) }
+    }
+
+    private var selectionBar: some View {
+        HStack {
+            Button(role: .destructive) {
+                pendingDeletion = selection.selectedIDs
+                showingDeleteConfirmation = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 22))
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(L10n.t("删除所选短信"))
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .phoneGlassSurface(cornerRadius: 22, interactive: true)
+            .disabled(selection.selectedIDs.isEmpty)
+            Spacer()
+            Text(String(format: L10n.t("已选 %d 条"), selection.selectedIDs.count))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.updatesFrequently)
+            Spacer()
+            SMSMessageShareButton(texts: selection.selectedMessages(in: messages).map(\.content))
+                .frame(width: 44, height: 44)
+                .phoneGlassSurface(cornerRadius: 22, interactive: true)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}
+
+/// Anchor iPad's native activity popover to the tapped sharing button.
+private struct SMSMessageShareButton: UIViewRepresentable {
+    let texts: [String]
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: "square.and.arrow.up"), for: .normal)
+        button.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 22), forImageIn: .normal
+        )
+        button.tintColor = .label
+        button.addAction(UIAction { [weak button, weak coordinator = context.coordinator] _ in
+            guard let button else { return }
+            coordinator?.share(from: button)
+        }, for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        context.coordinator.texts = texts
+        button.isEnabled = !texts.isEmpty
+        button.accessibilityLabel = L10n.t("共享所选短信")
+    }
+
+    final class Coordinator {
+        var texts: [String] = []
+
+        func share(from button: UIButton) {
+            guard !texts.isEmpty else { return }
+            var responder: UIResponder? = button
+            while let current = responder {
+                if let presenter = current as? UIViewController {
+                    guard presenter.presentedViewController == nil else { return }
+                    let title = texts.count == 1 ? L10n.t("1 条短信")
+                        : String(format: L10n.t("%d 条短信"), texts.count)
+                    let activity = UIActivityViewController(
+                        activityItems: texts.map { SMSMessageShareItem(text: $0, title: title) },
+                        applicationActivities: nil
+                    )
+                    if let popover = activity.popoverPresentationController {
+                        popover.sourceView = button
+                        popover.sourceRect = button.bounds
+                    }
+                    presenter.present(activity, animated: true)
+                    return
+                }
+                responder = current.next
+            }
+        }
+    }
+}
+
+private final class SMSMessageShareItem: NSObject, UIActivityItemSource {
+    private let text: String
+    private let title: String
+
+    init(text: String, title: String) {
+        self.text = text
+        self.title = title
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any { text }
+
+    func activityViewController(_ activityViewController: UIActivityViewController,
+                                itemForActivityType activityType: UIActivity.ActivityType?) -> Any? { text }
+
+    func activityViewController(_ activityViewController: UIActivityViewController,
+                                dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
+        UTType.plainText.identifier
+    }
+
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.title = title
+        return metadata
     }
 }
 

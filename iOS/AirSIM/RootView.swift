@@ -84,7 +84,10 @@ struct RootView: View {
                         .tag(PhoneTab.recents)
                         .tabItem { Label(L10n.t(PhoneTab.recents.tabTitle), systemImage: PhoneTab.recents.icon) }
 
-                    MessagesView(pendingRecipient: $pendingSMSRecipient)
+                    MessagesView(
+                        pendingRecipient: $pendingSMSRecipient,
+                        openConversation: showSMSConversation
+                    )
                         .tag(PhoneTab.messages)
                         .tabItem { Label(L10n.t(PhoneTab.messages.tabTitle), systemImage: PhoneTab.messages.icon) }
 
@@ -99,9 +102,8 @@ struct RootView: View {
                 .phoneTabBarMinimizeOnScroll()
                 .phoneTabSelectionFeedback(selectedTabRawValue)
                 .tint(.blue)
-                .background {
-                    PhoneTabBarNavigationFade(navigationBarVisible: selectedTab == .messages)
-                }
+                .toolbar(selectedTab == .messages ? .visible : .hidden, for: .navigationBar)
+                .background { PhoneTabBarNavigationFade() }
                 .navigationDestination(for: SMSConversationDestination.self) { destination in
                     MessageThreadView(sender: destination.sender)
                         .toolbar(.visible, for: .navigationBar)
@@ -483,19 +485,11 @@ extension View {
 /// The entire TabView is the root of the outer navigation stack. Its native
 /// bar fades with that root, below the opaque conversation being pushed/popped.
 private struct PhoneTabBarNavigationFade: UIViewControllerRepresentable {
-    let navigationBarVisible: Bool
-
     func makeUIViewController(context: Context) -> Controller { Controller() }
-    func updateUIViewController(_ controller: Controller, context: Context) {
-        controller.navigationBarVisible = navigationBarVisible
-    }
+    func updateUIViewController(_ controller: Controller, context: Context) {}
 
     final class Controller: UIViewController {
         private weak var nativeTabBar: UITabBar?
-        private var rootVisible = false
-        var navigationBarVisible = false {
-            didSet { if rootVisible { updateNavigationBar() } }
-        }
 
         override func loadView() {
             view = UIView()
@@ -505,20 +499,16 @@ private struct PhoneTabBarNavigationFade: UIViewControllerRepresentable {
 
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
-            rootVisible = true
-            updateNavigationBar()
             transitionTabBar(visible: true, animated: animated)
         }
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            rootVisible = false
             transitionTabBar(visible: false, animated: animated)
         }
 
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
-            updateNavigationBar()
             if let bar = findTabBar() { Self.settle(bar, visible: true) }
         }
 
@@ -527,18 +517,6 @@ private struct PhoneTabBarNavigationFade: UIViewControllerRepresentable {
             if let bar = nativeTabBar { Self.settle(bar, visible: false) }
         }
 
-        private func updateNavigationBar() {
-            // Other tabs keep their own navigation stacks; only hide the outer bar.
-            var ancestor = parent
-            var outerNavigation: UINavigationController?
-            while let controller = ancestor {
-                if let navigation = controller as? UINavigationController {
-                    outerNavigation = navigation
-                }
-                ancestor = controller.parent
-            }
-            outerNavigation?.setNavigationBarHidden(!navigationBarVisible, animated: false)
-        }
 
         private func findTabBar() -> UITabBar? {
             if let nativeTabBar { return nativeTabBar }

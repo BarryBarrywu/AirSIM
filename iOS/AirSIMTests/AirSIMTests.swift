@@ -986,7 +986,7 @@ final class VoWLANNetworkRecoveryTests: XCTestCase {
 
 final class SMSDeletionTests: XCTestCase {
     @MainActor
-    func testConversationRowOpensThreadOutsideDeletionMode() async throws {
+    func testConversationRowCanReopenAfterReturning() async throws {
         let model = AppModel()
         defer { model.stop() }
         model.messages = [SMSMessage(sender: "sms-navigation-fixture", content: "test message",
@@ -1012,25 +1012,39 @@ final class SMSDeletionTests: XCTestCase {
         window.makeKeyAndVisible()
         defer { window.isHidden = true; previous?.makeKeyAndVisible() }
         try await Task.sleep(nanoseconds: 500_000_000)
-        func descendants(_ view: UIView) -> [UIView] {
-            [view] + view.subviews.flatMap(descendants)
+        func activateConversationRow() -> Bool {
+            var pending: [NSObject] = [window]
+            var visited: Set<ObjectIdentifier> = []
+            while let object = pending.popLast() {
+                guard visited.insert(ObjectIdentifier(object)).inserted else { continue }
+                if object.accessibilityTraits.contains(.button),
+                   object.accessibilityLabel?.contains("sms-navigation-fixture") == true,
+                   object.accessibilityActivate() { return true }
+                if let children = object.accessibilityElements as? [NSObject] {
+                    pending.append(contentsOf: children)
+                }
+                if let view = object as? UIView { pending.append(contentsOf: view.subviews) }
+            }
+            return false
         }
-        let list = try XCTUnwrap(descendants(window).compactMap { $0 as? UICollectionView }.first)
-        let index = IndexPath(item: 0, section: 0)
-        XCTAssertGreaterThan(list.numberOfItems(inSection: 0), 0)
-        list.selectItem(at: index, animated: false, scrollPosition: [])
-        list.delegate?.collectionView?(list, didSelectItemAt: index)
-        try await Task.sleep(nanoseconds: 600_000_000)
         func controllers(_ controller: UIViewController) -> [UIViewController] {
             [controller] + controller.children.flatMap(controllers)
         }
-        let all = controllers(try XCTUnwrap(window.rootViewController))
-        let tabs = try XCTUnwrap(all.compactMap { $0 as? UITabBarController }.first)
-        let navigation = try XCTUnwrap(all.compactMap { $0 as? UINavigationController }
-            .first { $0.topViewController?.navigationItem.title == "sms-navigation-fixture" })
-        let conversation = try XCTUnwrap(navigation.topViewController)
-        XCTAssertFalse(conversation.view.isDescendant(of: tabs.view),
-                       "The conversation must cover the tabs, not be rendered beneath them")
+        for _ in 0..<3 {
+            XCTAssertTrue(activateConversationRow(), "The actual row action must remain usable after returning")
+            try await Task.sleep(nanoseconds: 600_000_000)
+            let all = controllers(try XCTUnwrap(window.rootViewController))
+            let tabs = try XCTUnwrap(all.compactMap { $0 as? UITabBarController }.first)
+            let navigation = try XCTUnwrap(all.compactMap { $0 as? UINavigationController }
+                .first { $0.topViewController?.navigationItem.title == "sms-navigation-fixture" })
+            let conversation = try XCTUnwrap(navigation.topViewController)
+            XCTAssertFalse(conversation.view.isDescendant(of: tabs.view),
+                           "The conversation must cover the tabs, not be rendered beneath them")
+            XCTAssertTrue(navigation.navigationBar.topItem === conversation.navigationItem)
+            navigation.popViewController(animated: false)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            XCTAssertEqual(navigation.viewControllers.count, 1)
+        }
     }
 
     func testRepeatedFractionalLegacySaveAndUpgradeDoNotDuplicateMessages() throws {
