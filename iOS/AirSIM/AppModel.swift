@@ -1252,15 +1252,10 @@ final class AppModel: ObservableObject {
         for candidate in [bound ?? boundAgentID, CloudAgentTargetStore.last()] {
             guard let candidate, CloudAgentRouting.validID(candidate),
                   PairedAndroidDeviceStore.permits(candidate) else { continue }
-            let target = CloudCommandTarget(agentID: candidate, routingVersion: 1)
-            CloudAgentTargetStore.remember(candidate)
-            return target
+            return CloudCommandTarget(agentID: candidate, routingVersion: 1)
         }
-        guard let status = cloudAgentDirectory ?? cloudAgentStatus,
-              let target = try? cloudTarget(status: status, bound: bound, requireOnline: false)
-        else { return nil }
-        CloudAgentTargetStore.remember(target.agentID)
-        return target
+        guard let status = cloudAgentDirectory ?? cloudAgentStatus else { return nil }
+        return try? cloudTarget(status: status, bound: bound, requireOnline: false)
     }
 
     private var cloudStatusForPresentation: CloudAgentStatus? {
@@ -3056,6 +3051,7 @@ final class AppModel: ObservableObject {
                 let route: CloudCommandTarget
                 if let cached = cloudDialTarget(bound: boundAtStart) {
                     route = cached
+                    CloudAgentTargetStore.remember(route.agentID)
                 } else {
                     let status = try await VoIPPushController.shared.fetchCloudAgentStatus()
                     route = try cloudTarget(status: status, bound: boundAtStart,
@@ -4095,6 +4091,7 @@ extension AppModel: CallKitActionHandling {
                 // A bound/last-known Agent is enough to attempt dialing. Do not
                 // make the command wait for a fresh /devices/status observation.
                 if let target = self.cloudDialTarget(bound: boundAtStart) {
+                    CloudAgentTargetStore.remember(target.agentID)
                     return try await VoIPPushController.shared.startCloudOutgoingCall(
                         number: number, target: target)
                 }
