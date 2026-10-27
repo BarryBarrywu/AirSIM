@@ -412,6 +412,7 @@ final class AppModel: ObservableObject {
     }()
     private var presentedDeviceCall: DeviceCallKey?
     private var answerSnapshot: CallLifecycleSnapshot?
+    private var callAnswerInFlight = false
     /// A non-terminal local call is currently presented (ringing or owned).
     var ownsLocalCallPresentation: Bool {
         presentedDeviceCall.flatMap { deviceCallRouter.route(for: $0) } != nil
@@ -4113,6 +4114,19 @@ extension AppModel: CallKitActionHandling {
     }
 
     func callKitAnswer(origin: CallAnswerOrigin) async throws {
+        // CallKit can deliver an answer action while the cloud early-answer path
+        // is still completing. A second local answer races the successful cloud
+        // answer, gets HTTP 502, and makes CallKit finish the call.
+        guard !callAnswerInFlight else { return }
+        callAnswerInFlight = true
+        defer { callAnswerInFlight = false }
+        if IPhoneCloudCallSession.shared.answered || IPhoneCloudCallSession.shared.isPrepared
+            || currentCallTransport == .cloud {
+            currentCallTransport = .cloud
+            updateRemoteCallState("active")
+            callPresentationSurface = origin == .app ? .app : .system
+            return
+        }
         if let key = presentedDeviceCall, let route = deviceCallRouter.route(for: key),
            deviceCalls.latestEvent(for: key)?.state.isTerminal == false {
             try await callKitAnswer(uuid: route.systemUUID, origin: origin); return
