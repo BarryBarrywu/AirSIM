@@ -949,8 +949,6 @@ struct RecentsView: View {
 struct MessagesView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var pendingRecipient: String?
-    @Binding var pendingConversation: String?
-    @State private var conversationPath: [String] = []
     @State private var showingComposer = false
     @State private var showingClearConfirmation = false
     @State private var editMode: EditMode = .inactive
@@ -965,7 +963,7 @@ struct MessagesView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $conversationPath) {
+        Group {
             // Outside explicit deletion mode, row taps belong to navigation, not selection.
             List(selection: editMode.isEditing ? $selectedConversations : nil) {
                 if conversations.isEmpty {
@@ -973,7 +971,7 @@ struct MessagesView: View {
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(conversations, id: \.sender) { conversation in
-                        NavigationLink(value: conversation.sender) {
+                        NavigationLink(value: SMSConversationDestination(sender: conversation.sender)) {
                             MessageConversationRow(sender: conversation.sender, messages: conversation.messages)
                                 .contentShape(Rectangle())
                         }
@@ -1003,9 +1001,6 @@ struct MessagesView: View {
             .phoneReportsTabBarCompactState()
             .background(PhoneBackdrop())
             .navigationTitle(L10n.t("短信"))
-            .navigationDestination(for: String.self) { sender in
-                MessageThreadView(sender: sender)
-            }
             .toolbar {
                 phoneMorphingToolbarItem(placement: .topBarLeading, id: "top-action-leading-more") {
                     Menu {
@@ -1046,11 +1041,9 @@ struct MessagesView: View {
             .task {
                 await model.loadMessagesFromAgent(silently: true)
             }
-            .onAppear { showPendingConversation() }
             .onChange(of: pendingRecipient) { recipient in
                 if recipient != nil { showingComposer = true }
             }
-            .onChange(of: pendingConversation) { _ in showPendingConversation() }
             .sheet(isPresented: $showingComposer, onDismiss: { pendingRecipient = nil }) {
                 MessageComposer(initialRecipient: pendingRecipient ?? "")
                     .presentationDetents([.medium, .large])
@@ -1076,12 +1069,6 @@ struct MessagesView: View {
                 Text("仅删除此 iPhone 上的所选记录，不删除安卓系统短信。新收到的短信不受影响。")
             }
         }
-    }
-
-    private func showPendingConversation() {
-        guard let sender = pendingConversation else { return }
-        conversationPath = [sender]
-        pendingConversation = nil
     }
 
     private func requestDelete(_ ids: Set<String>) {
@@ -1135,7 +1122,7 @@ struct MessagesView: View {
     }
 }
 
-private struct MessageThreadView: View {
+struct MessageThreadView: View {
     @EnvironmentObject private var model: AppModel
     let sender: String
     @State private var reply = ""
@@ -1277,10 +1264,11 @@ private struct MessageThreadView: View {
                 .scrollDismissesKeyboard(.interactively)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(PhoneBackdrop())
         .safeAreaInset(edge: .bottom, spacing: 0) { replyBar }
         .navigationTitle(model.contacts.displayName(for: sender))
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

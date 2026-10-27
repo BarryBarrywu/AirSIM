@@ -988,10 +988,23 @@ final class SMSDeletionTests: XCTestCase {
     @MainActor
     func testConversationRowOpensThreadOutsideDeletionMode() async throws {
         let model = AppModel()
+        defer { model.stop() }
         model.messages = [SMSMessage(sender: "sms-navigation-fixture", content: "test message",
                                     code: nil, timestamp: Date(), deliveryID: "navigation-fixture")]
-        let view = MessagesView(pendingRecipient: .constant(nil), pendingConversation: .constant(nil))
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "airsim.first-connection-complete")
+        defaults.set(PhoneTab.messages.rawValue, forKey: "airsim.selected-tab")
+        let updates = AppUpdateController(defaults: defaults, fetch: { [] })
+        updates.acknowledgeNotes()
+        let view = RootView()
             .environmentObject(model)
+            .environmentObject(model.contacts)
+            .environmentObject(model.audio)
+            .environmentObject(AppSettings())
+            .environmentObject(updates)
+            .defaultAppStorage(defaults)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
@@ -1008,9 +1021,16 @@ final class SMSDeletionTests: XCTestCase {
         list.selectItem(at: index, animated: false, scrollPosition: [])
         list.delegate?.collectionView?(list, didSelectItemAt: index)
         try await Task.sleep(nanoseconds: 600_000_000)
-        let navigation = descendants(window).compactMap { $0 as? UINavigationBar }.first
-        XCTAssertEqual(navigation?.topItem?.title, "sms-navigation-fixture",
-                       "Reading a conversation must navigate, not select it for deletion")
+        func controllers(_ controller: UIViewController) -> [UIViewController] {
+            [controller] + controller.children.flatMap(controllers)
+        }
+        let all = controllers(try XCTUnwrap(window.rootViewController))
+        let tabs = try XCTUnwrap(all.compactMap { $0 as? UITabBarController }.first)
+        let navigation = try XCTUnwrap(all.compactMap { $0 as? UINavigationController }
+            .first { $0.topViewController?.navigationItem.title == "sms-navigation-fixture" })
+        let conversation = try XCTUnwrap(navigation.topViewController)
+        XCTAssertFalse(conversation.view.isDescendant(of: tabs.view),
+                       "The conversation must cover the tabs, not be rendered beneath them")
     }
 
     func testRepeatedFractionalLegacySaveAndUpgradeDoNotDuplicateMessages() throws {
