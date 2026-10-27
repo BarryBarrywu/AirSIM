@@ -1154,6 +1154,45 @@ private struct MessageThreadView: View {
         return SMSVerificationCodeExtractor.extract(from: message.content)
     }
 
+    private var trimmedReply: String {
+        reply.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var replyBar: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            TextField(L10n.t("短信"), text: $reply, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+                .padding(.leading, 14)
+                .padding(.trailing, trimmedReply.isEmpty ? 14 : 2)
+                .padding(.vertical, 8)
+            if !trimmedReply.isEmpty {
+                Button(action: sendReply) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(Color.accentColor))
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 5)
+                .padding(.bottom, 3)
+                .accessibilityLabel(L10n.t("发送"))
+            }
+        }
+        .smsComposerGlass()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .systemBackground))
+    }
+
+    private func sendReply() {
+        let body = trimmedReply
+        guard !body.isEmpty else { return }
+        reply = ""
+        Task { _ = await model.sendSMS(to: sender, content: body) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let code = latestVerificationCode {
@@ -1235,24 +1274,13 @@ private struct MessageThreadView: View {
                     .padding()
                 }
                 .onAppear { if let id = messages.last?.id { proxy.scrollTo(id) } }
+                .scrollDismissesKeyboard(.interactively)
             }
-            Divider()
-            HStack(spacing: 10) {
-                TextField(L10n.t("短信内容"), text: $reply, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                Button {
-                    let body = reply
-                    reply = ""
-                    Task { _ = await model.sendSMS(to: sender, content: body) }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
-                }
-                .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .padding()
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { replyBar }
         .navigationTitle(model.contacts.displayName(for: sender))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -1641,6 +1669,22 @@ struct ContactsView: View {
 }
 
 private extension View {
+    /// iOS 26 起短信输入框使用原生 Liquid Glass；旧系统回退为系统填充色。
+    @ViewBuilder
+    func smsComposerGlass() -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: Capsule(style: .continuous))
+        } else {
+            background(
+                Capsule(style: .continuous).fill(Color(uiColor: .secondarySystemBackground))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color(uiColor: .separator).opacity(0.45), lineWidth: 0.5)
+            )
+        }
+    }
+
     @ViewBuilder
     func dialKeySurface() -> some View {
         if #available(iOS 26.0, *) {
