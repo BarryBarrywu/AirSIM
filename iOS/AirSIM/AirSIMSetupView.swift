@@ -1017,7 +1017,9 @@ final class FeedbackUploader {
             guard line.contains("AUDIO 通话音频启动") else { continue }
             if let phase = Self.value(after: "phase=", in: line), !phase.isEmpty,
                !stages.contains(phase) { stages.append(phase) }
-            if let duration = Int(Self.value(after: "duration_ms=", in: line) ?? "") {
+            let phase = Self.value(after: "phase=", in: line) ?? ""
+            if phase != "stopped", phase != "failed",
+               let duration = Int(Self.value(after: "duration_ms=", in: line) ?? "") {
                 startupMilliseconds = max(startupMilliseconds, duration)
             }
         }
