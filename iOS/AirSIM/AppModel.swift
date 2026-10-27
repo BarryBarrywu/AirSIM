@@ -831,7 +831,7 @@ final class AppModel: ObservableObject {
     private var cloudStatusRefreshGeneration = 0
     private var audioWarmupCallID: String?
     private var lowPowerModeEnabled = true
-    private let backgroundStandbyKey = "airsim.background-standby-enabled"
+    private let backgroundStandbyKey = BackgroundStandbyPreference.key
     private let lowPowerModeKey = "airsim.low-power-mode-enabled"
     private let maxCallHistoryCount = 500
     private let maxMessageCount = 2_000
@@ -1723,7 +1723,7 @@ final class AppModel: ObservableObject {
         let storedLowPowerValue = UserDefaults.standard.object(forKey: lowPowerModeKey) as? Bool
         lowPowerModeEnabled = storedLowPowerValue ?? true
         liveActivity.setEnabled(LiveActivityVisibilityPreference.isEnabled())
-        backgroundStandby.setEnabled(storedValue ?? true)
+        backgroundStandby.setEnabled(storedValue ?? false)
         // 先加载手机副本，再启动轮询，避免模块暂时离线时界面显示为空。
         restoreLocalHistory()
         Task { await contacts.loadIfAuthorized() }

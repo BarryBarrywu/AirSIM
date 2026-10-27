@@ -469,6 +469,15 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
     func callKitDidFail(_ message: String) {}
 }
 
+enum BackgroundStandbyPreference {
+    static let key = "airsim.background-standby-enabled"
+
+    /// Off by default: silent audio keeps the process alive but is expensive.
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? false
+    }
+}
+
 /// 个人侧载模式下维持静音播放，让 iOS 在熄屏后继续执行模块来电轮询。
 @MainActor
 final class BackgroundStandbyController {
@@ -550,7 +559,8 @@ final class BackgroundStandbyController {
 
     /// 回到前台或后台音频被系统中断后重新确认静音播放仍在运行。
     func ensureRunning() {
-        guard enabled, appIsBackground, !suspendedForCall,
+        guard enabled, BackgroundStandbyPreference.isEnabled(),
+              appIsBackground, !suspendedForCall,
               BackgroundStandbySuspensionPolicy.shouldRunStandby(
                   callKitAudioActive: CallKitController.shared.audioSessionIsActive) else { return }
         retryTask?.cancel()

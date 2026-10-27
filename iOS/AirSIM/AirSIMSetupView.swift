@@ -173,6 +173,7 @@ struct AirSIMSettingsView: View {
     @State private var appUpdateInbox = AppUpdateResultInbox()
     @State private var updateViewVisible = false
     @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
+    @AppStorage(BackgroundStandbyPreference.key) private var backgroundStandbyEnabled = false
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
     @AppStorage(FeedbackUploader.enabledKey) private var feedbackAutoUpload = true
@@ -225,6 +226,23 @@ struct AirSIMSettingsView: View {
                     Text("运行模式")
                 } footer: {
                     Text(selectedMode.detail + "\n仅本地模式与连接模式同步；关闭表示允许云端，安卓仍需完成云端配对。")
+                }
+
+                Section {
+                    Toggle("后台静音音频保活", isOn: $backgroundStandbyEnabled)
+                        .onChange(of: backgroundStandbyEnabled) { enabled in
+                            model.setBackgroundStandbyEnabled(enabled)
+                        }
+                        .accessibilityIdentifier("backgroundStandby")
+                    Text(backgroundStandbyEnabled
+                         ? "已开启：App 退到后台时播放静音音频，尽量维持轮询、CallKit 与 Push 处理；会明显增加耗电。"
+                         : "已关闭：不播放后台静音音频，降低耗电；iOS 仍可通过 PushKit 唤醒，但后台轮询可能被挂起。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("后台保活")
+                } footer: {
+                    Text("这是全局开关，关闭后所有后台静音音频保活路径都会停止；不会关闭 VoWLAN、蓝牙或云端 Push 功能。")
                 }
 
                 Section("当前连接") {
