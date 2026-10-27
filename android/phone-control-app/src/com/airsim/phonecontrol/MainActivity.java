@@ -882,6 +882,13 @@ public final class MainActivity extends Activity {
         feedbackCard.setOrientation(LinearLayout.VERTICAL);
         feedbackCard.setPadding(dp(16), dp(16), dp(16), dp(16));
         feedbackCard.addView(description("通话结束、短信收发时自动上传脱敏日志到 Notion；不上传短信内容或密钥。"));
+        CheckBox feedbackAuto = new CheckBox(this);
+        feedbackAuto.setText("自动上传反馈");
+        feedbackAuto.setTextColor(TEXT);
+        feedbackAuto.setButtonTintList(ColorStateList.valueOf(PRIMARY));
+        feedbackAuto.setChecked(FeedbackUploader.isEnabled(this));
+        feedbackAuto.setOnCheckedChangeListener((ignored, enabled) -> FeedbackUploader.setEnabled(this, enabled));
+        feedbackCard.addView(feedbackAuto, matchWithTop(8));
         EditText feedbackDescription = input("用户描述（可选）", InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         feedbackDescription.setSingleLine(false);

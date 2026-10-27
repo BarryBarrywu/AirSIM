@@ -891,7 +891,8 @@ final class VoWLANController: ObservableObject {
         let probe = probeGeneration.begin()
         do {
             let (data, status, nonce) = try await VoWLANProbeRecovery.run {
-                let signed = try VoWLANRequestSigner(credential: credential).sign(
+                let signer = VoWLANRequestSigner(credential: credential)
+                var signed = try signer.sign(
                     method: "GET", path: "/v1/health", body: Data()
                 )
                 var request = URLRequest(url: endpoint.controlBaseURL.appendingPathComponent("v1/health"))
@@ -903,7 +904,20 @@ final class VoWLANController: ObservableObject {
                 Self.apply(signed, to: &request)
                 // NWConnection-based transport: ATS does not apply to the
                 // 100.64/10 tailnet address, and the system route is used.
-                let response = try await WiredHTTPTransport().send(request)
+                var response = try await WiredHTTPTransport().send(request)
+                if response.statusCode == 401 {
+                    // First probe after a Tailscale/route wake can be signed just
+                    // outside Android's 30s window. Re-sign once before declaring
+                    // the pairing/recovery failed.
+                    signed = try signer.sign(
+                        method: "GET", path: "/v1/health", body: Data()
+                    )
+                    request = URLRequest(url: endpoint.controlBaseURL.appendingPathComponent("v1/health"))
+                    request.timeoutInterval = 6
+                    request.cachePolicy = .reloadIgnoringLocalCacheData
+                    Self.apply(signed, to: &request)
+                    response = try await WiredHTTPTransport().send(request)
+                }
                 return (response.body, response.statusCode, signed.nonce)
             }
             guard status == 200,

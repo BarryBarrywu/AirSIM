@@ -23,10 +23,21 @@ final class FeedbackUploader {
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
     private static final String PREFS = "feedback_upload";
     private static final String EVENTS = "events";
+    private static final String ENABLED = "auto_enabled";
     private static final String DESCRIPTION = "description";
     private static final String REMARK = "remark";
 
     private FeedbackUploader() {}
+
+    static boolean isEnabled(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(ENABLED, false);
+    }
+
+    static void setEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(ENABLED, enabled).apply();
+    }
 
     static void setFields(Context context, String description, String remark) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -47,6 +58,7 @@ final class FeedbackUploader {
 
     static void submit(Context context, String trigger, String eventID) {
         if (context == null || trigger == null || trigger.isEmpty()) return;
+        if (!"manual".equals(trigger) && !isEnabled(context)) return;
         Context app = context.getApplicationContext();
         WORKER.execute(() -> {
             try {

@@ -176,7 +176,7 @@ struct AirSIMSettingsView: View {
     @AppStorage(BackgroundStandbyPreference.key) private var backgroundStandbyEnabled = false
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
-    @AppStorage(FeedbackUploader.enabledKey) private var feedbackAutoUpload = true
+    @AppStorage(FeedbackUploader.enabledKey) private var feedbackAutoUpload = false
     @AppStorage(FeedbackUploader.descriptionKey) private var feedbackDescription = ""
     @AppStorage(FeedbackUploader.remarkKey) private var feedbackRemark = ""
     @State private var feedbackUploadStatus = ""
@@ -935,7 +935,7 @@ final class FeedbackUploader {
     private init() {}
 
     func upload(trigger: String, eventID: String, api: AirSIMAPI?, model: AppModel?) async -> String {
-        let enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        let enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? false
         if trigger != "manual" && !enabled { return "自动上传已关闭" }
         if trigger != "manual" {
             let now = Date()
