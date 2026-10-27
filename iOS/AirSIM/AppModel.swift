@@ -2823,7 +2823,7 @@ final class AppModel: ObservableObject {
             return
         }
         if let localAPI = reachableLocalAPI {
-            _ = try await localAPI.rejectCall(callID: activeCall?.id)
+            _ = try await localAPI.rejectCall(callID: localAPICallID)
             return
         }
         if let pushedCall = callKit.currentIncomingPush,
@@ -2832,6 +2832,14 @@ final class AppModel: ObservableObject {
             return
         }
         throw CallKitBridgeError.noReachableTransport
+    }
+
+    /// Android snapshots use an iOS-only "android-…" id plus the real Telecom id.
+    /// CallKit must send the Telecom id; sending the snapshot id causes
+    /// "active call id mismatch" and an automatic hangup.
+    private var localAPICallID: String? {
+        guard let call = activeCall else { return nil }
+        return call.androidID?.isEmpty == false ? call.androidID : call.id
     }
 
     private func hangupUsingAvailableTransport() async throws {
@@ -2846,7 +2854,7 @@ final class AppModel: ObservableObject {
         guard let localAPI = reachableLocalAPI else {
             throw CallKitBridgeError.noReachableTransport
         }
-        try await localAPI.hangupCall(callID: activeCall?.id)
+        try await localAPI.hangupCall(callID: localAPICallID)
     }
 
     private func beginCallTransitionProtection() {
@@ -3501,7 +3509,7 @@ final class AppModel: ObservableObject {
         guard currentCallTransport == .vowlan else { return }
         let localAPI = currentLocalAPI
         audio.deactivate()
-        try? await localAPI?.hangupCall(callID: activeCall?.id)
+        try? await localAPI?.hangupCall(callID: localAPICallID)
         errorMessage = "VoWLAN 局域网已断开；当前通话已结束，下一通将自动选择云端"
         await AgentVerboseTraceRecorder.shared.recordEvent(
             source: "ios", category: "call_transport", phase: "ended",
@@ -4140,7 +4148,7 @@ extension AppModel: CallKitActionHandling {
                     throw CallKitBridgeError.noReachableTransport
                 }
                 try audio.prepareForCallKit()
-                try await vowlanAPI.answerCall(callID: activeCall?.id)
+                try await vowlanAPI.answerCall(callID: localAPICallID)
                 lockLocalTransport(.vowlan, api: vowlanAPI, pcmRoute: pcmRoute)
             case .bluetooth:
                 guard vobleCalls.currentIdentity != nil else {
@@ -4234,7 +4242,7 @@ extension AppModel: CallKitActionHandling {
                 guard let localAPI = localCallControlAPI else {
                     throw CallKitBridgeError.noReachableTransport
                 }
-                _ = try await localAPI.rejectCall(callID: activeCall?.id)
+                _ = try await localAPI.rejectCall(callID: localAPICallID)
             } catch {
                 guard let pushedCall else { throw error }
                 try await IPhoneCloudCallSession.shared.reject(pushedCall)
@@ -4243,7 +4251,7 @@ extension AppModel: CallKitActionHandling {
             guard let localAPI = localCallControlAPI else {
                 throw CallKitBridgeError.noReachableTransport
             }
-            try await localAPI.hangupCall(callID: activeCall?.id)
+            try await localAPI.hangupCall(callID: localAPICallID)
         }
     }
 
