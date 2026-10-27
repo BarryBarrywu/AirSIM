@@ -1291,9 +1291,17 @@ final class VoIPPushController: NSObject {
         onUpdate(report)
         let status: CloudAgentStatus
         do {
-            status = try await fetchCloudAgentStatusForDiagnostics()
+            do {
+                status = try await fetchCloudAgentStatusForDiagnostics()
+            } catch {
+                // One cold status-registry timeout must not turn this into a
+                // permanent cloud-offline verdict. Retry once before reporting.
+                try await Task.sleep(for: .milliseconds(500))
+                status = try await fetchCloudAgentStatusForDiagnostics()
+            }
         } catch {
-            report.fail(.agentDirectory, detail: "Relay 返回 Agent 记录失败：\(error.localizedDescription)")
+            report.fail(.agentDirectory,
+                detail: "Relay 状态查询超时：\(error.localizedDescription)\n云端拨号仍会按绑定/缓存的 Agent 尝试，以 enqueue 结果为准。")
             onUpdate(report)
             return report
         }
