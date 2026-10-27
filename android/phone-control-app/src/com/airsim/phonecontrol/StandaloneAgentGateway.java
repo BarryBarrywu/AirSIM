@@ -166,6 +166,25 @@ final class StandaloneAgentGateway {
             case "/api/calls/dtmf" -> command("dtmf", localCallTarget("dtmf", input), input.optString("digit", ""), "");
             case "/api/sms/send" -> command("send_sms", "", input.optString("phone", ""),
                     input.optString("message", ""), input.optString("sim_account", ""));
+            case "/api/calls/history/ack" -> {
+                JSONArray ids = input.optJSONArray("ids") == null ? new JSONArray() : input.getJSONArray("ids");
+                synchronized (callsLock) {
+                    for (int index = callHistory.length() - 1; index >= 0; index--) {
+                        JSONObject record = callHistory.optJSONObject(index);
+                        if (record == null) continue;
+                        for (int id = 0; id < ids.length(); id++) {
+                            String value = ids.optString(id, "");
+                            if (!value.isEmpty() && (value.equals(record.optString("id"))
+                                    || value.equals(record.optString("android_id"))
+                                    || value.equals(record.optString("backend_id")))) {
+                                callHistory.remove(index);
+                                break;
+                            }
+                        }
+                    }
+                }
+                yield ok("{\"accepted\":true}");
+            }
             case "/api/calls/audio/host/warmup" -> ok("{\"warming\":true}");
             case "/api/calls/audio/host/register" -> ok(new JSONObject()
                     .put("enabled", input.optBoolean("enabled", false)).toString());

@@ -3730,28 +3730,39 @@ enum CallAudioRegistrationCoordinator {
         service: any CallAudioRegistrationServicing,
         retryDelay: Duration = .milliseconds(250)
     ) async throws -> CallAudioRegistrationOutcome {
-        do {
-            try await service.setAudioHostEnabled(true)
-            return .registered
-        } catch APIError.http(409, _) {
-            // 通话事件与媒体注册是两个请求。旧 Agent 在其间完成 CLCC 刷新时，
-            // 重新读取状态，避免把短暂竞争当成致命拨号错误。
-            let latest = try await service.callStatus()
-            guard latest.active?.state == "active" else {
-                return .callNoLongerActive
-            }
-            if retryDelay > .zero {
-                try await Task.sleep(for: retryDelay)
-            }
+        // Enabling the audio host is idempotent. A locked/backgrounded iPhone can
+        // report "wiredPathUnavailable" while Wi-Fi is waking up; retrying avoids
+        // a false audio-start failure and the subsequent automatic hangup.
+        for attempt in 0..<4 {
             do {
                 try await service.setAudioHostEnabled(true)
                 return .registered
             } catch APIError.http(409, _) {
-                // 0.3.39 的 DSCI 与 CLCC 会在接通瞬间短暂交错。此时保持
-                // CallKit 通话并交给下一轮事件重试，不能把媒体尚未就绪显示成拨号失败。
-                return .temporarilyUnavailable
+                // 通话事件与媒体注册是两个请求。旧 Agent 在其间完成 CLCC 刷新时，
+                // 重新读取状态，避免把短暂竞争当成致命拨号错误。
+                let latest = try await service.callStatus()
+                guard latest.active?.state == "active" else {
+                    return .callNoLongerActive
+                }
+                if retryDelay > .zero {
+                    try await Task.sleep(for: retryDelay)
+                }
+                do {
+                    try await service.setAudioHostEnabled(true)
+                    return .registered
+                } catch APIError.http(409, _) {
+                    // 0.3.39 的 DSCI 与 CLCC 会在接通瞬间短暂交错。此时保持
+                    // CallKit 通话并交给下一轮事件重试，不能把媒体尚未就绪显示成拨号失败。
+                    return .temporarilyUnavailable
+                }
+            } catch {
+                guard attempt < 3, WiredHTTPTransport.isRetryableTransportFailure(error) else {
+                    throw error
+                }
+                try await Task.sleep(for: .milliseconds(400))
             }
         }
+        return .temporarilyUnavailable
     }
 }
 

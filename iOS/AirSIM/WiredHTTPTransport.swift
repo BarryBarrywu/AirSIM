@@ -107,6 +107,19 @@ final class WiredHTTPTransport: @unchecked Sendable {
 
     init() {}
 
+    /// Safe to retry only for callers whose request is idempotent (for example
+    /// enabling the audio host). Do not use this for dial/SMS/answer POSTs.
+    static func isRetryableTransportFailure(_ error: Error) -> Bool {
+        guard let error = error as? WiredHTTPError else { return false }
+        switch error {
+        case .wiredPathUnavailable, .connectionFailed, .connectionClosed, .timedOut:
+            return true
+        case .invalidRequest, .sendFailed, .receiveFailed, .responseTooLarge,
+             .invalidResponse, .incompleteResponse, .unreadableUpload:
+            return false
+        }
+    }
+
     static func allowsInterfaceFallback(httpMethod: String?) -> Bool {
         switch httpMethod?.uppercased() ?? "GET" {
         case "GET", "HEAD": return true
