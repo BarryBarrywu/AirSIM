@@ -40,7 +40,10 @@ enum CloudCallAudioStartupPolicy {
         callKitAudioSessionActive: Bool
     ) -> Bool {
         guard answered, mediaPrepared else { return false }
-        guard lifecycleState == .active || (isOutgoing && lifecycleState == .connecting) else {
+        // Incoming answer already means the user accepted the call. Waiting for a
+        // separate Agent "active" control can leave the call silent forever when
+        // that frame is delayed or lost; start audio once CallKit is active.
+        guard lifecycleState == .active || lifecycleState == .connecting else {
             return false
         }
         return !managedByCallKit || callKitAudioSessionActive
@@ -1068,7 +1071,9 @@ final class IPhoneCloudCallSession {
 
     func startAudio() throws {
         guard isPrepared else { throw IPhoneCloudCallError.connectionClosed }
+        Task { await AgentVerboseTraceRecorder.shared.recordAudioStartup(phase: "phone_start") }
         try media.startAudio()
+        Task { await AgentVerboseTraceRecorder.shared.recordAudioStartup(phase: "engine_ready") }
         mediaHealthTracker?.recordRoute(media.audioRouteDescription)
         publishMediaHealth()
         startMediaHealthMonitoring()
