@@ -1403,10 +1403,7 @@ final class VoIPPushController: NSObject {
             deviceSecret: registration.deviceSecret
         ))
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 5
-        configuration.timeoutIntervalForResource = 6
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await Self.selfTestSession.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw CloudAgentStatusError.invalidResponse
         }
@@ -1602,15 +1599,20 @@ final class VoIPPushController: NSObject {
         throw lastError ?? CloudAgentStatusError.invalidResponse
     }
 
+    private static let selfTestSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 12
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
     private func fetchRelayHealthVersionOnce(url: URL) async throws -> String {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 6
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 6
-        configuration.timeoutIntervalForResource = 8
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await Self.selfTestSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw CloudAgentStatusError.invalidResponse
         }
@@ -1638,10 +1640,7 @@ final class VoIPPushController: NSObject {
         var relayRegistration = registration
         relayRegistration.notificationForwarding = nil
         request.httpBody = try JSONEncoder().encode(relayRegistration)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 8
-        configuration.timeoutIntervalForResource = 10
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await Self.selfTestSession.data(for: request)
 #if DEBUG
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data.prefix(1_024), encoding: .utf8) ?? "<非文本响应>"
