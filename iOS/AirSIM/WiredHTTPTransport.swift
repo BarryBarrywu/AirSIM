@@ -41,6 +41,31 @@ enum LocalWiFiSubnet {
               let mask = NetworkRoutePreferences.parseIPv4(netmask) else { return false }
         return matches(target: target, local: ip, netmask: mask)
     }
+
+    /// Local IPv4 addresses are part of the WiFi identity. DHCP can change the
+    /// address while the interface/gateway tuple stays identical; without this,
+    /// NWPathMonitor would not invalidate a cached VoWLAN LAN host.
+    static func localIPv4Addresses() -> [String] {
+        var result: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return result }
+        defer { freeifaddrs(ifaddr) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            defer { cursor = entry.pointee.ifa_next }
+            let flags = Int32(entry.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            guard String(cString: entry.pointee.ifa_name).hasPrefix("en") else { continue }
+            guard let address = entry.pointee.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let length = socklen_t(address.pointee.sa_len)
+            if getnameinfo(address, length, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                result.append(String(cString: host))
+            }
+        }
+        return result.sorted()
+    }
 }
 
 /// Shared by the app and its extension; no AppModel/controller dependency.

@@ -121,8 +121,11 @@ enum VoWLANNetworkChangePolicy {
     /// a Wi-Fi path change, keep probing Tailscale/manual routes but never keep
     /// using the old local LAN address just because it is still cached.
     static func discardsLocalRoute(host: String, isLocalSubnet: Bool, callInProgress: Bool) -> Bool {
-        !callInProgress && !VoWLANNetworkRoutePolicy.usesSystemRouting(
-            host: host, isLocalSubnet: isLocalSubnet)
+        // After DHCP changes subnet, the old 192.168/10 address is no longer in
+        // the current local subnet; usesSystemRouting would call it a "system"
+        // route and preserve a dead LAN IP. Only 100.64/10 overlay routes are
+        // stable across a Wi-Fi/DHCP change; all other direct routes are stale.
+        !callInProgress && !VoWLANNetworkRoutePolicy.isOverlayHost(host)
     }
 }
 
@@ -446,6 +449,7 @@ final class VoWLANController: ObservableObject {
     private var networkRecoveryPlan = VoWLANNetworkRecoveryPlan()
     private var networkPathGate = VoWLANNetworkPathGate()
     private var samePathProbeTask: Task<Void, Never>?
+    private var suppressLANManualRoutes = false
     private var verificationWatchdogTask: Task<Void, Never>?
     private var verificationWatchdogAttempts = 0
     private var watchdogEndpoint: VoWLANEndpoint?
@@ -639,11 +643,13 @@ final class VoWLANController: ObservableObject {
     }
 
     func refreshAfterPairing() async {
+        suppressLANManualRoutes = false
         restartBrowsing()
         await probeNow()
     }
 
     func installManualRoute(_ route: VoWLANManualRoute) async throws {
+        suppressLANManualRoutes = false
         try VoWLANManualRouteStore.save(route)
         // An explicit pairing is an explicit target selection. Without this,
         // a previous binding makes selected() keep probing the old address and
@@ -664,8 +670,14 @@ final class VoWLANController: ObservableObject {
     }
 
     private func mergingManualRoutes(with discovered: [VoWLANDiscoveredAgent]) -> [VoWLANDiscoveredAgent] {
-        VoWLANRouteCandidates.merge(discovered: discovered,
-            manual: VoWLANManualRouteStore.routes().filter { PairedAndroidDeviceStore.permits($0.agentID) },
+        let manual = VoWLANManualRouteStore.routes().filter { route in
+            guard PairedAndroidDeviceStore.permits(route.agentID),
+                  let endpoint = route.endpoint else { return false }
+            return !suppressLANManualRoutes
+                || VoWLANNetworkRoutePolicy.isOverlayHost(endpoint.host)
+        }
+        return VoWLANRouteCandidates.merge(discovered: discovered,
+            manual: manual,
             live: discoveredAgents,
             // A cached pairing-time IP is not a healthy route. Let fresh Bonjour
             // for the same paired agent replace it until it actually verifies.
@@ -677,9 +689,10 @@ final class VoWLANController: ObservableObject {
         let routes = VoWLANManualRouteStore.routes().filter { route in
             guard PairedAndroidDeviceStore.permits(route.agentID),
                   let endpoint = route.endpoint else { return false }
-            return preservingLANManualRoutes
-                || VoWLANNetworkRoutePolicy.usesSystemRouting(
-                    host: endpoint.host, isLocalSubnet: LocalWiFiSubnet.contains(endpoint.host))
+            if suppressLANManualRoutes || !preservingLANManualRoutes {
+                return VoWLANNetworkRoutePolicy.isOverlayHost(endpoint.host)
+            }
+            return true
         }
         discoveredAgents = VoWLANRouteCandidates.merge(
             discovered: [], manual: routes, live: discoveredAgents, preferred: nil)
@@ -723,6 +736,7 @@ final class VoWLANController: ObservableObject {
             // Equal status can still describe a different local gateway/interface.
             let route = path.availableInterfaces.map { "\($0.index):\($0.name)" }.sorted().joined(separator: ",")
                 + "|" + path.gateways.map { String(describing: $0) }.sorted().joined(separator: ",")
+                + "|local:" + LocalWiFiSubnet.localIPv4Addresses().joined(separator: ",")
             Task { @MainActor [weak self, weak monitor] in
                 guard let self, let monitor, self.networkMonitor === monitor else { return }
                 self.networkChanged(wifiAvailable: available, route: route)
@@ -744,6 +758,9 @@ final class VoWLANController: ObservableObject {
         samePathProbeTask = nil
         // Reject probes begun on the previous network, including an old successful response.
         identityEpoch &+= 1
+        // Keep the active call route stable, but suppress cached LAN manual
+        // routes for the recovery that follows the call.
+        suppressLANManualRoutes = true
         // A DHCP/Wi-Fi change invalidates the cached local LAN address. Do not
         // probe or restore that old IP; wait for fresh Bonjour/health instead.
         if let endpoint = discoveredEndpoint,
@@ -930,6 +947,7 @@ final class VoWLANController: ObservableObject {
                 discoveredAgents[index] = previous.refreshed(with: identity)
             }
             availability = .verified(endpoint, at: Date())
+            suppressLANManualRoutes = false
             await AgentVerboseTraceRecorder.shared.recordEvent(
                 source: "ios", category: "vowlan", phase: "verified",
                 title: "VoWLAN 签名健康检查通过",

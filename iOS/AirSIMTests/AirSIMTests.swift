@@ -1323,8 +1323,10 @@ final class AirSIMTests: XCTestCase {
         XCTAssertFalse(VoWLANNetworkRoutePolicy.usesSystemRouting(host: "8.8.8.8"))
         XCTAssertTrue(VoWLANNetworkChangePolicy.discardsLocalRoute(
             host: "192.168.1.5", isLocalSubnet: true, callInProgress: false))
-        XCTAssertFalse(VoWLANNetworkChangePolicy.discardsLocalRoute(
+        XCTAssertTrue(VoWLANNetworkChangePolicy.discardsLocalRoute(
             host: "192.168.1.5", isLocalSubnet: false, callInProgress: false))
+        XCTAssertFalse(VoWLANNetworkChangePolicy.discardsLocalRoute(
+            host: "100.64.1.2", isLocalSubnet: false, callInProgress: false))
         XCTAssertFalse(VoWLANNetworkChangePolicy.discardsLocalRoute(
             host: "192.168.1.5", isLocalSubnet: true, callInProgress: true))
         let api = AirSIMAPI(route: .vowlan(endpoint: endpoint, credential: credential))
