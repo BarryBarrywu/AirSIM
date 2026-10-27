@@ -67,14 +67,27 @@ final class StandaloneAgentGateway {
     }
 
     String feedbackSnapshot() throws Exception {
+        String log = BridgeLog.read();
         return new JSONObject()
                 .put("runtime_profile", "android-standalone")
-                .put("bridge_log", BridgeLog.read())
+                .put("bridge_log", log)
                 .put("manufacturer", android.os.Build.MANUFACTURER)
                 .put("model", android.os.Build.MODEL)
                 .put("sdk", android.os.Build.VERSION.SDK_INT)
                 .put("app_version", AppInformation.version(context))
+                .put("audio", new JSONObject()
+                        .put("telecom_state", CallRepository.diagnosticState())
+                        .put("pcm_client_closed", log.contains("pcm_event=client_closed"))
+                        .put("pcm_health", latestPcmHealth(log)))
                 .toString();
+    }
+
+    private static String latestPcmHealth(String log) {
+        String latest = "";
+        for (String line : log.split("\n")) {
+            if (line.contains("pcm_health")) latest = line;
+        }
+        return latest.length() > 1200 ? latest.substring(0, 1200) : latest;
     }
 
     String registerPairing(String registrationJSON) throws Exception {

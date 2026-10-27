@@ -33,6 +33,15 @@ function select(value, allowed) {
   return { select: allowed.includes(name) ? { name } : null };
 }
 
+function multiSelect(values, allowed) {
+  const names = Array.isArray(values) ? values : [];
+  return {
+    multi_select: [...new Set(names)]
+      .filter((name) => allowed.includes(String(name)))
+      .map((name) => ({ name: String(name) })),
+  };
+}
+
 function number(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? { number: parsed } : { number: null };
@@ -62,6 +71,9 @@ function fileProperty(id) {
 
 function buildProperties(body, files = {}) {
   const pcm = body.pcm && typeof body.pcm === "object" ? body.pcm : {};
+  const audio = body.audio && typeof body.audio === "object" ? body.audio : {};
+  const audioStages = ["answer_observed", "phone_start", "engine_ready", "agent_register",
+    "pcm_ready", "first_downlink", "agent_ready", "stopped", "failed"];
   const pcmMode = PCM_MODES.includes(String(pcm.mode)) ? String(pcm.mode) : "unknown";
   const platform = ["iOS", "Android", "Both"].includes(body.platform) ? body.platform : "Both";
   const triggers = ["periodic", "manual", "error", "call_ended", "sms_sent", "sms_received"];
@@ -97,6 +109,12 @@ function buildProperties(body, files = {}) {
     "PCM 下行字节": number(pcm.down_bytes),
     "PCM 上行字节": number(pcm.up_bytes),
     "PCM 失败原因": rich(pcm.failure),
+    "音频启动阶段": multiSelect(audio.stages, audioStages),
+    "音频启动耗时": number(audio.startup_ms),
+    "音频启动缺失": multiSelect(audio.missing, audioStages),
+    "PCM 客户端关闭": { checkbox: audio.pcm_client_closed === true },
+    "Telecom 状态": rich(audio.telecom_state),
+    "音频诊断": rich(audio.summary),
     "iOS 日志": fileProperty(files.ios),
     "Android 日志": fileProperty(files.android),
     "结构化 JSON": fileProperty(files.json),

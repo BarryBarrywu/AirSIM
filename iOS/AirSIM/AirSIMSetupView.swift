@@ -953,6 +953,7 @@ final class FeedbackUploader {
         let trace = await AgentVerboseTraceRecorder.shared.exportText(agentEvents: [])
         let androidLog = String((snapshot?.bridgeLog ?? "").prefix(400_000))
         let pcm = Self.pcm(from: androidLog)
+        let audio = Self.audioDiagnostics(trace: trace, snapshot: snapshot)
         let mode = ConnectionModePreference.selected()
         let modeValue: String
         switch mode {
@@ -975,6 +976,7 @@ final class FeedbackUploader {
             "route": mode.title,
             "relay_status": "unknown",
             "pcm": pcm,
+            "audio": audio,
             "error_summary": "",
             "description": UserDefaults.standard.string(forKey: Self.descriptionKey) ?? "",
             "remark": UserDefaults.standard.string(forKey: Self.remarkKey) ?? "",
@@ -1002,6 +1004,43 @@ final class FeedbackUploader {
         } catch {
             return "上传失败：\(error.localizedDescription)"
         }
+    }
+
+    private static func audioDiagnostics(trace: String, snapshot: AgentFeedbackSnapshot?) -> [String: Any] {
+        let lines = trace.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let start = lines.lastIndex { $0.contains("phase=answer_observed") } ?? 0
+        let relevant = lines[start...]
+        var stages: [String] = []
+        var startupMilliseconds = 0
+        for line in relevant {
+            guard line.contains("[AUDIO") else { continue }
+            if let phase = Self.value(after: "phase=", in: line), !phase.isEmpty,
+               !stages.contains(phase) { stages.append(phase) }
+            if let duration = Int(Self.value(after: "duration_ms=", in: line) ?? "") {
+                startupMilliseconds = max(startupMilliseconds, duration)
+            }
+        }
+        let expected = ["answer_observed", "phone_start", "engine_ready", "agent_register",
+                        "pcm_ready", "first_downlink", "agent_ready", "stopped"]
+        let missing = expected.filter { !stages.contains($0) }
+        let telecom = snapshot?.audio?.telecomState ?? ""
+        let clientClosed = snapshot?.audio?.pcmClientClosed ?? false
+        let pcmHealth = String((snapshot?.audio?.pcmHealth ?? "").prefix(500))
+        let summary = "stages=\(stages.joined(separator: ",")); missing=\(missing.joined(separator: ",")); "
+            + "telecom=\(telecom); pcm_client_closed=\(clientClosed); pcm=\(pcmHealth)"
+        return [
+            "stages": stages,
+            "missing": missing,
+            "startup_ms": startupMilliseconds,
+            "pcm_client_closed": clientClosed,
+            "telecom_state": telecom,
+            "summary": summary,
+        ]
+    }
+
+    private static func value(after marker: String, in line: String) -> String? {
+        guard let range = line.range(of: marker) else { return nil }
+        return line[range.upperBound...].split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init)
     }
 
     private static func pcm(from log: String) -> [String: Any] {

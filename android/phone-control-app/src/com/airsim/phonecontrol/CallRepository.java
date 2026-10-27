@@ -74,6 +74,17 @@ public final class CallRepository {
         return call == null ? -1 : call.getState();
     }
 
+    /** Privacy-safe Telecom state for feedback diagnostics; never includes numbers or IDs. */
+    public static String diagnosticState() {
+        for (Call call : CALLS.values()) {
+            if (call.getState() == Call.STATE_ACTIVE) return "active";
+            if (call.getState() == Call.STATE_RINGING) return "ringing";
+            if (call.getState() == Call.STATE_DIALING) return "dialing";
+            if (call.getState() == Call.STATE_HOLDING) return "holding";
+        }
+        return CALLS.isEmpty() ? "idle" : "disconnecting";
+    }
+
     public static String number(String callId) {
         Call call = CALLS.get(callId);
         if (call == null || call.getDetails() == null || call.getDetails().getHandle() == null) return "";

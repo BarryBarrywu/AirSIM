@@ -880,12 +880,26 @@ struct AgentFeedbackSnapshot: Codable, Sendable {
     let model: String?
     let sdk: Int?
     let appVersion: String?
+    let audio: AgentFeedbackAudio?
 
     enum CodingKeys: String, CodingKey {
         case bridgeLog = "bridge_log"
         case runtimeProfile = "runtime_profile"
         case manufacturer, model, sdk
         case appVersion = "app_version"
+        case audio
+    }
+}
+
+struct AgentFeedbackAudio: Codable, Sendable {
+    let telecomState: String?
+    let pcmClientClosed: Bool?
+    let pcmHealth: String?
+
+    enum CodingKeys: String, CodingKey {
+        case telecomState = "telecom_state"
+        case pcmClientClosed = "pcm_client_closed"
+        case pcmHealth = "pcm_health"
     }
 }
 
