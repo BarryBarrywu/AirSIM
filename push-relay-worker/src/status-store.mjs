@@ -122,6 +122,14 @@ export class AgentStatusRegistry {
           ? Response.json(record)
           : Response.json({ error: "not found" }, { status: 404 });
       }
+      if (request.method === "DELETE") {
+        await this.storage.delete(key);
+        const heartbeats = await this.storage.list({
+          prefix: `heartbeat:${decodeURIComponent(deviceMatch[1])}`,
+        });
+        for (const heartbeatKey of heartbeats.keys()) await this.storage.delete(heartbeatKey);
+        return new Response(null, { status: 204 });
+      }
       return new Response("method not allowed", { status: 405 });
     }
 
@@ -343,6 +351,23 @@ export async function readDeviceRecord(env, deviceID) {
     }
   }
   return readKVRecord(env.DEVICES, `${DEVICE_PREFIX}${deviceID}`);
+}
+
+export async function deleteDeviceRecord(env, deviceID) {
+  const id = String(deviceID || "").trim();
+  if (!id) return false;
+  const stub = registryStub(env);
+  if (stub) {
+    await stub.fetch("https://status.internal/device/" + encodeURIComponent(id), { method: "DELETE" });
+  }
+  if (env.DEVICES) {
+    await env.DEVICES.delete(DEVICE_PREFIX + id);
+    if (typeof env.DEVICES.list === "function") {
+      const keys = await env.DEVICES.list({ prefix: "heartbeat:" + id, limit: 500 });
+      for (const item of keys?.keys || []) await env.DEVICES.delete(item.name);
+    }
+  }
+  return true;
 }
 
 export async function listDeviceRecords(env) {

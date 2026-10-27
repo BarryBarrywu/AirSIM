@@ -3,6 +3,7 @@ import {
   dashboardHTMLResponse,
   dashboardSummary,
   dashboardVirtualCall,
+  deleteDashboardDevice,
   recordDashboardEvent,
 } from "./dashboard.mjs";
 import { constantTimeEqual, sha256Hex } from "./auth-crypto.mjs";
@@ -77,6 +78,18 @@ async function routeRequest(request, env) {
   }
   if (request.method === "POST" && url.pathname === "/v1/feedback") {
     return handleFeedback(request, env);
+  }
+  const dashboardDevice = url.pathname.match(/^\/dashboard\/api\/devices\/([0-9a-f]{32})$/);
+  if (request.method === "DELETE" && dashboardDevice) {
+    const auth = dashboardAuthorized(request, env);
+    if (!auth.configured) return jsonResponse(503, { error: "dashboard is not configured" });
+    if (!auth.authorized) return jsonResponse(401, { error: "unauthorized" });
+    try {
+      const deleted = await deleteDashboardDevice(env, dashboardDevice[1]);
+      return deleted ? jsonResponse(200, { deleted: true }) : jsonResponse(404, { error: "device not found" });
+    } catch {
+      return jsonResponse(500, { error: "device delete failed" });
+    }
   }
   if (request.method === "GET" && url.pathname === "/dashboard/api/summary") {
     const auth = dashboardAuthorized(request, env);
