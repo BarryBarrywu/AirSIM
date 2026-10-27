@@ -50,11 +50,11 @@ final class AppUpdatePresenter {
     void showNotes(Runnable after) {
         Activity activity = liveOwner();
         if (activity == null || dialog != null) return;
-        String notes = "• 首次安装／升级后显示版本说明，设置中可重看并检查应用更新。\n\n"
-                + "• 本地双通道、多安卓设备归属，改进短信会话、配对与 Verbose 诊断。\n\n"
-                + "• 臻情设备采用最低非零音量兼容策略；其他机型保持现有策略。\n\n"
-                + "• PCM 启动失败及时释放资源，TXT 保留启动阶段、错误码和异常类别。\n\n"
-                + "华为等 OEM 实际音频能力及双向声音仍待真机验证；最低音量不等于完全静音。";
+        String notes = "• 新增全局后台静音音频保活开关，默认关闭以降低耗电。\n\n"
+                + "• 通话结束、短信发送或接收时自动上传脱敏日志到 Notion。\n\n"
+                + "• VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧地址并重新验证。\n\n"
+                + "• 所有厂商统一使用最低非零音量，兼容小米等机型通话下行采集。\n\n"
+                + "• 改善 DTMF 按键音和挂断兜底；实际双向声音仍需按机型验证。";
         AlertDialog next = new AlertDialog.Builder(activity).setTitle("当前版本更新内容 · " + version + "（" + build + "）")
                 .setMessage(notes).setPositiveButton("知道了", (ignored, which) -> {
                     preferences.edit().putString(NOTES_SEEN, version + "#" + build).apply();

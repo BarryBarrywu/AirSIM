@@ -13,10 +13,11 @@ enum AppReleaseNotes {
     // Bundled: showing installed-version notes never needs GitHub, Relay or pairing.
     // Keep this summary in sync with the candidate's source and docs when publishing.
     static let items = [
-        "首次安装／升级后显示版本说明；设置中可随时重看，并手动检查应用更新。",
-        "本地双通道：拨号前优先 VoWLAN、其次 VoBLE；通话中不自动切换音频链路。",
-        "多安卓设备与通话来源绑定，改进短信会话、设备配对及详细日志。",
-        "优化蓝牙音频启动顺序与云端挂断状态；云端后台待机保留最近确认结果，不增加 Relay 定时查询。"
+        "新增全局“后台静音音频保活”开关，默认关闭，显著降低后台耗电；PushKit/CallKit 仍可唤醒。",
+        "通话结束、短信发送或接收时自动上传脱敏日志到 Notion，支持用户描述与备注。",
+        "VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧 LAN 地址并重新发现验证，减少离线卡住。",
+        "灵动岛每页最多 3 台设备；国际号码保留国家码，修复英国等号码显示错误。",
+        "修复 OnePlus 等机型 DTMF 按键被立即取消、挂断无响应的问题；KernelSU root bridge 增加 Looper 初始化。"
     ]
     static let limitations = "各机型双向声音、长时锁屏与多设备场景仍需分别真机验证；GitHub 发布不代表 TestFlight 已可更新。"
 }
