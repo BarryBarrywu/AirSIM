@@ -91,7 +91,9 @@ public final class StandaloneAgentService extends Service {
                 }
                 syncRegistration(registration);
                 long now = System.currentTimeMillis();
-                if (now - lastHeartbeat >= 30_000) sendHeartbeat(registration);
+                // 60s remains inside the 90s cloud-online window and halves
+                // Relay heartbeat/observability churn on weak cellular links.
+                if (now - lastHeartbeat >= 60_000) sendHeartbeat(registration);
                 flushEvents(registration);
                 if (commandConfiguration.isCurrent(snapshot) && CommandPollingPolicy.shouldPoll(commandChannelConnected, lastCommandPoll, now,
                         commandRetry.remainingMillis(android.os.SystemClock.elapsedRealtime()))) {

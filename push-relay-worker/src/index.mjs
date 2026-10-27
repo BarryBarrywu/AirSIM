@@ -1508,10 +1508,16 @@ async function receiveAgentHeartbeat(request, env) {
 
 async function receiveDeviceStatus(request, env) {
   const query = await readJSON(request);
-  const directResponse = await authenticateAndReadAgentHeartbeats(env, query);
-  if (directResponse && !directResponse.ok) return directResponse;
+  let directResponse = null;
+  try {
+    directResponse = await authenticateAndReadAgentHeartbeats(env, query);
+  } catch {
+    // The status Durable Object can time out while the rest of Relay stays
+    // healthy. Fall through to authenticated KV data below.
+  }
+  if (directResponse?.status === 401) return directResponse;
   let heartbeats;
-  if (directResponse) {
+  if (directResponse?.ok) {
     heartbeats = await directResponse.json();
     if (heartbeats.length === 0) {
       heartbeats = await readAgentHeartbeatsFromKV(env, query.device_id.trim());
@@ -1519,7 +1525,7 @@ async function receiveDeviceStatus(request, env) {
   } else {
     const authenticated = await authenticate(query, env);
     if (authenticated.response) return authenticated.response;
-    heartbeats = await readAgentHeartbeats(env, authenticated.device.device_id);
+    heartbeats = await readAgentHeartbeatsFromKV(env, authenticated.device.device_id);
   }
   const now = Date.now();
   const agents = heartbeats

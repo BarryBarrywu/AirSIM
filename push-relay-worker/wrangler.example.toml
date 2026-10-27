@@ -11,6 +11,7 @@ workers_dev = true
 
 [observability]
 enabled = true
+head_sampling_rate = 0.1
 
 [vars]
 APNS_TEAM_ID = "REPLACE_WITH_APPLE_TEAM_ID"
