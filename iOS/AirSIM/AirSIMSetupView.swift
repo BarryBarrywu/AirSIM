@@ -195,6 +195,12 @@ struct AirSIMSettingsView: View {
     @State private var networkPrefixesText = NetworkRoutePreferences.storedText()
     @State private var networkPrefixError: String?
     @FocusState private var networkPrefixesFocused: Bool
+    @FocusState private var feedbackFocusedField: FeedbackFocusedField?
+
+    private enum FeedbackFocusedField: Hashable {
+        case description
+        case remark
+    }
 
     var body: some View {
         NavigationStack {
@@ -542,9 +548,16 @@ struct AirSIMSettingsView: View {
                     Toggle("通话结束、短信收发时自动上传", isOn: $feedbackAutoUpload)
                     TextField("用户描述（可选）", text: $feedbackDescription, axis: .vertical)
                         .lineLimit(2...4)
+                        .focused($feedbackFocusedField, equals: .description)
+                        .submitLabel(.done)
+                        .onSubmit { feedbackFocusedField = nil }
                     TextField("备注（可选）", text: $feedbackRemark, axis: .vertical)
                         .lineLimit(2...4)
+                        .focused($feedbackFocusedField, equals: .remark)
+                        .submitLabel(.done)
+                        .onSubmit { feedbackFocusedField = nil }
                     Button {
+                        feedbackFocusedField = nil
                         feedbackUploading = true
                         feedbackUploadStatus = "正在收集并上传…"
                         Task {
@@ -569,6 +582,13 @@ struct AirSIMSettingsView: View {
                     Text("仅上传脱敏后的连接状态、Verbose 日志和 Android 日志；不上传短信内容、号码或密钥。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { feedbackFocusedField = nil }
                 }
             }
             .task { await model.refreshPairedDeviceInformation() }
