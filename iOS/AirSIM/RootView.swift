@@ -131,7 +131,7 @@ struct RootView: View {
                 .environmentObject(model)
         }
         .onOpenURL(perform: handleSystemCommunicationURL)
-        .sheet(item: $appUpdatePresentation, onDismiss: presentAppUpdateIfIdle) { presentation in
+        .fullScreenCover(item: $appUpdatePresentation, onDismiss: presentAppUpdateIfIdle) { presentation in
             AppUpdateSheet(presentation: presentation, updates: appUpdates)
         }
         .task(id: scenePhase) {

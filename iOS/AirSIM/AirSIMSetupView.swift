@@ -572,7 +572,7 @@ struct AirSIMSettingsView: View {
                 }
             }
             .task { await model.refreshPairedDeviceInformation() }
-            .sheet(item: $appUpdatePresentation, onDismiss: presentManualAppUpdateIfIdle) { presentation in
+            .fullScreenCover(item: $appUpdatePresentation, onDismiss: presentManualAppUpdateIfIdle) { presentation in
                 AppUpdateSheet(presentation: presentation, updates: appUpdates)
             }
             .onAppear { updateViewVisible = true; presentManualAppUpdateIfIdle() }
