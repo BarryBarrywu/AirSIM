@@ -187,6 +187,7 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/VoWLANNetworkPolicy.java \
     "$ROOT"/src/com/airsim/phonecontrol/DirectGatewayRoutes.java \
     "$ROOT"/src/com/airsim/phonecontrol/DirectCallOwnership.java \
+    "$ROOT"/test/com/airsim/phonecontrol/RemoteCallHangupGuard.java \
     "$ROOT"/src/com/airsim/phonecontrol/RemoteCallAudioScope.java \
 	"$ROOT"/src/com/airsim/phonecontrol/StandaloneLongPoll.java \
 	"$ROOT"/src/com/airsim/phonecontrol/MainScreenPresentation.java \
