@@ -13,7 +13,6 @@ import { RoutingError, parseAgentID, agentSocketKey, matchesTarget, resolveTarge
 import {
   authenticateAndReadAgentHeartbeats,
   authenticateAndWriteAgentHeartbeat,
-  authenticateAndWriteHeartbeatKV,
   deleteRelayState,
   readAgentHeartbeat,
   readAgentHeartbeats,
@@ -1519,10 +1518,9 @@ async function receiveAgentHeartbeat(request, env) {
     ecm_carrier: stringValue(heartbeat.ecm_carrier),
     ...(Number.isFinite(heartbeat.signal_dbm) ? { signal_dbm: heartbeat.signal_dbm } : {}),
   };
-  // Heartbeat is hot-path telemetry. Prefer KV so every heartbeat does not
-  // invoke the Durable Object and generate an extra Observability event.
-  const kvResponse = await authenticateAndWriteHeartbeatKV(env, heartbeat, agentID, record);
-  if (kvResponse) return kvResponse;
+  // Heartbeat must stay on the Durable Object path. KV has a free daily
+  // put() limit; writing every heartbeat there exhausts it and breaks online
+  // status for all devices. KV remains a read-only fallback.
   const directResponse = await authenticateAndWriteAgentHeartbeat(env, heartbeat, agentID, record);
   if (directResponse) return directResponse;
   const authenticated = await authenticate(heartbeat, env);
@@ -1561,14 +1559,9 @@ async function receiveDeviceStatus(request, env) {
   const query = await readJSON(request);
   const kvDeviceID = String(query.device_id || "").trim();
   const kvDevice = await readDeviceRecordFromKV(env, kvDeviceID);
-  if (kvDevice) {
-    if (!constantTimeEqual(kvDevice.secret_hash,
-        await sha256Hex(String(query.device_secret || "")))) {
-      return jsonResponse(401, { error: "unauthorized" });
-    }
-    const kvHeartbeats = await readAgentHeartbeatsFromKV(env, kvDeviceID);
-    if (kvHeartbeats.length > 0) return deviceStatusResponse(kvHeartbeats);
-    // Pre-roster/legacy registrations may still have only a DO heartbeat.
+  if (kvDevice && !constantTimeEqual(kvDevice.secret_hash,
+      await sha256Hex(String(query.device_secret || "")))) {
+    return jsonResponse(401, { error: "unauthorized" });
   }
   let directResponse = null;
   try {

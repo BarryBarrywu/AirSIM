@@ -322,10 +322,8 @@ async function readKVAgentRoster(env, deviceID) {
 }
 
 export async function readAgentHeartbeat(env, deviceID) {
-  const kv = await readKVRecord(env.DEVICES, `${HEARTBEAT_PREFIX}${deviceID}`);
-  if (kv) return kv;
   const stub = registryStub(env);
-  if (!stub) return null;
+  if (!stub) return readKVRecord(env.DEVICES, `${HEARTBEAT_PREFIX}${deviceID}`);
   try {
     const response = await withTimeout(stub.fetch(
       `https://status.internal/heartbeat/${encodeURIComponent(deviceID)}`,
@@ -378,37 +376,6 @@ export async function readDeviceRecord(env, deviceID) {
 
 export async function readDeviceRecordFromKV(env, deviceID) {
   return readKVRecord(env.DEVICES, DEVICE_PREFIX + deviceID);
-}
-
-export async function writeHeartbeatKV(env, deviceID, agentID, record) {
-  const id = String(deviceID || "").trim();
-  if (!id) return false;
-  const agent = String(agentID || "legacy");
-  await env.DEVICES.put("heartbeat:" + id + ":agent:" + agent, JSON.stringify(record), {
-    expirationTtl: 30 * 24 * 60 * 60,
-  });
-  await env.DEVICES.put("heartbeat:" + id, JSON.stringify(record), { expirationTtl: 300 });
-  return true;
-}
-
-export async function authenticateAndWriteHeartbeatKV(env, heartbeat, agentID, record) {
-  const deviceID = String(heartbeat.device_id || "").trim();
-  if (!deviceID || typeof heartbeat.device_secret !== "string") return null;
-  const device = await readDeviceRecordFromKV(env, deviceID);
-  // Missing KV record (old registration or exhausted KV) must fall back to the
-  // Durable Object rather than falsely rejecting the device.
-  if (!device) return null;
-  if (!constantTimeEqual(device.secret_hash, await sha256Hex(heartbeat.device_secret))) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
-  }
-  await writeHeartbeatKV(env, deviceID, agentID, record);
-  return new Response(JSON.stringify({ received: true }), {
-    status: 202,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
 }
 
 export async function deleteDeviceRecord(env, deviceID) {

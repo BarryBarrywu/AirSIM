@@ -317,9 +317,9 @@ test("heartbeat authenticates and writes with one durable request", async () => 
   }), env);
 
   assert.equal(response.status, 202);
-  assert.equal(env.STATUS.fetchCount, 0);
-  const latest = JSON.parse(await env.DEVICES.get("heartbeat:iphone-air"));
-  const agent = JSON.parse(await env.DEVICES.get("heartbeat:iphone-air:agent:samsung-standalone"));
+  assert.equal(env.STATUS.fetchCount, 1);
+  const latest = await env.STATUS.storage.get("heartbeat:iphone-air");
+  const agent = await env.STATUS.storage.get("heartbeat:iphone-air:agent:samsung-standalone");
   assert.equal(latest.agent_id, "samsung-standalone");
   assert.deepEqual(agent, latest);
   assert.equal(latest.device_secret, undefined);
@@ -334,8 +334,8 @@ test("heartbeat authenticates and writes with one durable request", async () => 
     cellular_state: "registered",
   }), env);
   assert.equal(denied.status, 401);
-  assert.equal(env.STATUS.fetchCount, 0);
-  assert.equal(await env.DEVICES.get("heartbeat:iphone-air:agent:attacker"), null);
+  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(await env.STATUS.storage.get("heartbeat:iphone-air:agent:attacker"), undefined);
 });
 
 test("device status authenticates and reads agents with one durable request", async () => {
@@ -354,7 +354,7 @@ test("device status authenticates and reads agents with one durable request", as
   }), env);
   const status = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(env.STATUS.fetchCount, 0);
+  assert.equal(env.STATUS.fetchCount, 1);
   assert.equal(status.cloud_online, true);
   assert.equal(status.active_agent_id, "samsung-standalone");
   assert.equal(status.agents.length, 1);
@@ -403,7 +403,7 @@ test("one-request status falls back to a KV heartbeat during registry migration"
   }), env);
   const status = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(env.STATUS.fetchCount, 0);
+  assert.equal(env.STATUS.fetchCount, 1);
   assert.equal(status.cloud_online, true);
   assert.equal(status.active_agent_id, "legacy");
 });
