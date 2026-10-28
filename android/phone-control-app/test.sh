@@ -106,6 +106,11 @@ mkdir -p "$OUT"
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.RelayCommandRetryTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.WebSocketPeerCloseTests
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.StandaloneCommandLifecycleTests
+"$JAVAC" --release 17 -d "$OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/RelayHTTPException.java \
+  "$ROOT"/src/com/airsim/phonecontrol/RelayRegistrationRecovery.java \
+  "$ROOT"/test/com/airsim/phonecontrol/RelayRegistrationRecoveryTests.java
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.RelayRegistrationRecoveryTests
 "$JAVAC" --release 17 -cp "$CRYPTO_JAR" -d "$OUT" \
   "$ROOT"/test/android/Manifest.java \
   "$ROOT"/test/android/provider/Settings.java \
