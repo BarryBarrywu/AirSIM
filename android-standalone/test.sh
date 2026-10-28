@@ -27,8 +27,10 @@ assert_contains "$S" 'registrationRecovery.takeResync(' \
   'registration sync must honour relay 401 recovery'
 assert_contains "$S" 'registrationRecovery.onFailure(heartbeatError' \
   'heartbeat 401 must request re-registration'
-assert_contains "$S" 'registrationRecovery.onFailure(error' \
-  'cycle and command-channel 401 must request re-registration'
+assert_contains "$S" 'registrationRecovery.onFailure(error, android.os.SystemClock.elapsedRealtime());' \
+  'agent cycle 401 must request re-registration'
+assert_contains "$S" 'registrationRecovery.onFailure(error, now);' \
+  'command-channel 401 (HTTP poll or WebSocket handshake) must request re-registration'
 assert_contains "$S" 'registrationRecovery.onAuthenticated()' \
   'successful heartbeat must reset recovery backoff'
 assert_contains "$S" '"simulate-unauthorized"' \

@@ -8,6 +8,8 @@ public final class RelayRegistrationRecoveryTests {
         check(!r.takeResync(0), "nothing pending initially");
         r.onFailure(new RelayHTTPException(500, ""), 0);
         r.onFailure(new RelayHTTPException(429, ""), 0);
+        r.onFailure(new RelayHTTPException(403, ""), 0);
+        r.onFailure(new RelayHTTPException(404, ""), 0);
         r.onFailure(new java.io.IOException("offline"), 0);
         r.onFailure(null, 0);
         check(!r.takeResync(0), "only 401 schedules a resync");
@@ -27,6 +29,28 @@ public final class RelayRegistrationRecoveryTests {
         r.onFailure(new RelayHTTPException(401, ""), t + 1);
         check(r.takeResync(t + 1), "authentication resets backoff");
         check(r.describe(t + 1).contains("resyncs=10"), "describe reports the resync count");
+        r.onFailure(new RelayHTTPException(401, ""), t + 1 + 59_999);
+        check(!r.takeResync(t + 1 + 59_999), "reset restores the 60 s first window, not the capped one");
+        r.onFailure(new RelayHTTPException(401, ""), t + 1 + 60_000);
+        check(r.takeResync(t + 1 + 60_000), "first window after reset opens at 60 s");
+
+        // Relay authenticates heartbeats and other endpoints along different paths: heartbeats can
+        // succeed while command polls, completions, SMS posts or the command socket stay 401.
+        var d = new RelayRegistrationRecovery();
+        d.onFailure(new RelayHTTPException(401, ""), 0);
+        check(d.takeResync(0), "first 401 resyncs");
+        d.onFailure(new RelayHTTPException(401, ""), 1_000);
+        d.onAuthenticated();
+        d.onFailure(new RelayHTTPException(401, ""), 2_000);
+        check(!d.takeResync(2_000), "heartbeat success does not reset back-off while other channels stay 401");
+        d.onFailure(new RelayHTTPException(401, ""), 60_000);
+        check(d.takeResync(60_000), "back-off window still opens on schedule");
+        d.onFailure(new RelayHTTPException(401, ""), 61_000);
+        d.onAuthenticated();
+        d.onFailure(new RelayHTTPException(401, ""), 179_999);
+        check(!d.takeResync(179_999), "window keeps growing to 120 s despite heartbeat success");
+        d.onFailure(new RelayHTTPException(401, ""), 180_000);
+        check(d.takeResync(180_000), "second window opens after 120 s");
         System.out.println("RelayRegistrationRecoveryTests passed");
     }
 }
