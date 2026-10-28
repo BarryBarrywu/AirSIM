@@ -2653,6 +2653,12 @@ final class AppModel: ObservableObject {
     }
 
     func answer() async {
+        // CallKit may have already fulfilled the system answer while the app was
+        // coming to foreground. Do not send a second answer transaction.
+        if callKit.currentCallIsAnswered || IPhoneCloudCallSession.shared.answered {
+            presentCurrentCallInApp()
+            return
+        }
         beginCallTransitionProtection()
         audio.stopCallTone()
         callPresentationSurface = .app
@@ -3488,12 +3494,13 @@ final class AppModel: ObservableObject {
     private func waitForLocalIncomingRoute() async -> (AirSIMAPI, PCMRoute)? {
         // Cold launch from CallKit can answer before Bonjour/VoWLAN discovery has
         // completed. Retry briefly instead of failing the call immediately.
-        for attempt in 0..<6 {
+        for attempt in 0..<8 {
             if let route = await readyVoWLANRoute() { return route }
-            if activeCall != nil || callKit.currentIncomingPush?.authenticatedMediaURL != nil {
-                return nil
-            }
-            if attempt < 5 { try? await Task.sleep(for: .milliseconds(400)) }
+            // A cloud media URL in the APNs payload does not mean the local
+            // route is ready. Keep waiting unless another call already owns
+            // the local presentation.
+            if activeCall != nil { return nil }
+            if attempt < 7 { try? await Task.sleep(for: .milliseconds(400)) }
         }
         return nil
     }
@@ -4215,8 +4222,12 @@ extension AppModel: CallKitActionHandling {
             // timeout used to consume the answer path before any cloud request.
             var vowlanRoute: (AirSIMAPI, PCMRoute)? =
                 selectedMode == .cloud ? nil : await readyVoWLANRoute()
-            if vowlanRoute == nil, selectedMode != .cloud,
-               callKit.currentIncomingPush?.authenticatedMediaURL == nil {
+            // APNs normally carries a cloud media URL. That must not make the
+            // CallKit answer skip VoWLAN discovery: answering from the system
+            // UI can happen before Bonjour/Tailscale has restored the route,
+            // while the in-app answer button is pressed later. Wait for the
+            // local route in every non-cloud mode before choosing media.
+            if vowlanRoute == nil, selectedMode != .cloud {
                 vowlanRoute = await waitForLocalIncomingRoute()
             }
             let transport = CallTransportPolicy.preferred(
