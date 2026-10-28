@@ -3584,6 +3584,34 @@ final class AppModel: ObservableObject {
             startedAt: remoteCall?.startedAt ?? Date()
         )
     }
+    private func publishWatchLifecycle(
+        _ event: CallLifecycleEvent, phase: WatchCallPhase,
+        previous: CallLifecycleSnapshot
+    ) {
+        if let incoming = callKit.currentIncomingPush {
+            let continuesPushedCall = incoming.uuid == event.callUUID
+                || incoming.callID == event.callID
+                || (previous.callID == incoming.callID
+                    && previous.callUUID == incoming.uuid
+                    && previous.generation == event.generation)
+            if continuesPushedCall {
+                let aliases = event.callID == incoming.callID ? [] : [event.callID]
+                WatchCallCoordinator.shared.publish(
+                    callID: incoming.callID, callUUID: incoming.uuid, aliases: aliases, phase: phase,
+                    number: incoming.number, callerName: incoming.callerName,
+                    transport: currentCallTransport == .bluetooth ? "bluetooth" : "vowlan"
+                )
+                return
+            }
+        }
+        let record = activeCall ?? remoteCall
+        WatchCallCoordinator.shared.publish(
+            callID: event.callID, callUUID: event.callUUID, phase: phase,
+            number: record?.number, callerName: record.map { contacts.displayName(for: $0.number) },
+            transport: currentCallTransport == .bluetooth ? "bluetooth" : "vowlan"
+        )
+    }
+
 
     @discardableResult
     private func applyCallLifecycle(_ event: CallLifecycleEvent,
@@ -3597,8 +3625,8 @@ final class AppModel: ObservableObject {
             callUpdateWork.cancel()
         }
         if event.state == .active {
-            // Do this synchronously with the authoritative answer event, not after
-            // registration/Live Activity or AVAudioEngine's first-start awaits.
+            // Publish the authoritative answer state before any audio or UI await.
+            publishWatchLifecycle(event, phase: .active, previous: previous)
             audio.stopCallTone(deactivateSession: false)
             if previous.state != .active {
                 Task { await AgentVerboseTraceRecorder.shared.recordAudioStartup(phase: "answer_observed") }
@@ -3617,10 +3645,7 @@ final class AppModel: ObservableObject {
                 // stale VoBLE transport, showing a "Bluetooth link ended" status.
                 clearLockedTransport()
             }
-            audio.stopCallTone()
-            WatchCallCoordinator.shared.publish(
-                call: nil, previous: activeCall ?? remoteCall, callerName: nil
-            )
+            publishWatchLifecycle(event, phase: .ended, previous: previous)
             // Return to the persistent standby activity (the island must remain visible
             // in the background); force the update so a stale call timer cannot linger.
             Task { @MainActor [weak self] in

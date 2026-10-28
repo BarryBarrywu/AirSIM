@@ -11,6 +11,7 @@ enum WatchCallPhase: String, Codable, Sendable {
 struct WatchCallPayload: Equatable, Sendable {
     let callID: String
     let callUUID: UUID?
+    let aliases: [String]
     let phase: WatchCallPhase
     let number: String?
     let callerName: String?
@@ -25,6 +26,7 @@ struct WatchCallPayload: Equatable, Sendable {
             "phase": phase.rawValue,
             "updated_at": updatedAt.timeIntervalSince1970,
         ]
+        if !aliases.isEmpty { value["call_aliases"] = aliases }
         if let number, !number.isEmpty { value["number"] = number }
         if let callerName, !callerName.isEmpty { value["caller_name"] = callerName }
         if let transport, !transport.isEmpty { value["transport"] = transport }
@@ -34,6 +36,7 @@ struct WatchCallPayload: Equatable, Sendable {
     init(
         callID: String,
         callUUID: UUID?,
+        aliases: [String] = [],
         phase: WatchCallPhase,
         number: String?,
         callerName: String?,
@@ -42,11 +45,20 @@ struct WatchCallPayload: Equatable, Sendable {
     ) {
         self.callID = callID
         self.callUUID = callUUID
+        self.aliases = aliases.filter { !$0.isEmpty && $0 != callID }
         self.phase = phase
         self.number = number
         self.callerName = callerName
         self.transport = transport
         self.updatedAt = updatedAt
+    }
+
+    func matches(callID: String?, callUUID: UUID?) -> Bool {
+        let idMatches = callID.map { $0 == self.callID || aliases.contains($0) } ?? false
+        if let expectedUUID = self.callUUID, let candidateUUID = callUUID {
+            return expectedUUID == candidateUUID
+        }
+        return idMatches || callUUID != nil && callUUID == self.callUUID
     }
 
     init?(dictionary: [String: Any]) {
@@ -55,16 +67,40 @@ struct WatchCallPayload: Equatable, Sendable {
               let phase = WatchCallPhase(rawValue: phaseValue),
               let updatedAt = dictionary["updated_at"] as? TimeInterval else { return nil }
         let callID = dictionary["call_id"] as? String ?? ""
+        let aliases = dictionary["call_aliases"] as? [String] ?? []
         let uuidValue = dictionary["call_uuid"] as? String
         self.init(
             callID: callID,
             callUUID: uuidValue.flatMap(UUID.init(uuidString:)),
+            aliases: aliases,
             phase: phase,
             number: dictionary["number"] as? String,
             callerName: dictionary["caller_name"] as? String,
             transport: dictionary["transport"] as? String,
             updatedAt: Date(timeIntervalSince1970: updatedAt)
         )
+    }
+}
+enum WatchCallMirrorPolicy {
+    static func identityKeys(for payload: WatchCallPayload) -> Set<String> {
+        var keys = Set(payload.aliases.filter { !$0.isEmpty })
+        if !payload.callID.isEmpty { keys.insert(payload.callID) }
+        if let callUUID = payload.callUUID {
+            keys.insert("uuid:\(callUUID.uuidString.lowercased())")
+        }
+        return keys
+    }
+
+    static func isTombstoned(
+        _ payload: WatchCallPayload, endedCallIDs: Set<String>, endedCallUUIDs: Set<UUID>
+    ) -> Bool {
+        !endedCallIDs.isDisjoint(with: Set([payload.callID] + payload.aliases))
+            || payload.callUUID.map(endedCallUUIDs.contains) == true
+    }
+
+    static func isNewer(_ payload: WatchCallPayload, than timestamp: Date?) -> Bool {
+        guard let timestamp else { return true }
+        return payload.updatedAt >= timestamp
     }
 }
 
