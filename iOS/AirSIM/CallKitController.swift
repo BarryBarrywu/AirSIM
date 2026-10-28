@@ -136,7 +136,7 @@ final class CallKitController: NSObject {
         let configuration = CXProviderConfiguration()
         configuration.maximumCallGroups = 1
         configuration.maximumCallsPerCallGroup = 1
-        configuration.supportedHandleTypes = [.phoneNumber]
+        configuration.supportedHandleTypes = [.phoneNumber, .generic]
         configuration.supportsVideo = false
         configuration.includesCallsInRecents = true
         provider = CXProvider(configuration: configuration)
@@ -248,7 +248,8 @@ final class CallKitController: NSObject {
                 return
             }
             incomingReportCompletions.append(completion)
-            reportIncomingIfNeeded(number: currentNumber, callerName: call.callerName, source: "PushKit 重投")
+            reportIncomingIfNeeded(number: currentNumber, callerName: call.callerName,
+                                   source: "PushKit 重投", genericHandle: call.isVirtual)
             handler?.callKitDidReceiveIncoming(call)
             return
         }
@@ -263,7 +264,8 @@ final class CallKitController: NSObject {
         missingCallPolls = 0
         endActionFulfilled = false
         incomingReportCompletions.append(completion)
-        reportIncomingIfNeeded(number: call.number, callerName: call.callerName, source: "PushKit")
+        reportIncomingIfNeeded(number: call.number, callerName: call.callerName,
+                               source: "PushKit", genericHandle: call.isVirtual)
         handler?.callKitDidReceiveIncoming(call)
     }
 
@@ -292,7 +294,8 @@ final class CallKitController: NSObject {
         let end = systemEnd ?? { [provider] uuid in
             provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
         }
-        report(call.uuid, update(number: call.number, callerName: call.callerName)) { error in
+        report(call.uuid, update(number: call.number, callerName: call.callerName,
+                                 genericHandle: call.isVirtual)) { error in
             Task { @MainActor in
                 if error == nil { end(call.uuid) }
                 completion(error)
@@ -436,14 +439,15 @@ final class CallKitController: NSObject {
         currentState = call.state
     }
 
-    private func reportIncomingIfNeeded(number: String?, callerName: String?, source: String) {
+    private func reportIncomingIfNeeded(number: String?, callerName: String?, source: String,
+                                        genericHandle: Bool = false) {
         guard !incomingReportRequested, !systemCallReported, let uuid = currentUUID else { return }
         incomingReportRequested = true
         debugLog("请求系统来电界面；来源=\(source)")
         let report: RequiredSystemReporter = incomingSystemReporter ?? { [provider] uuid, update, done in
             provider.reportNewIncomingCall(with: uuid, update: update, completion: done)
         }
-        report(uuid, update(number: number, callerName: callerName)) { [weak self] error in
+        report(uuid, update(number: number, callerName: callerName, genericHandle: genericHandle)) { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.currentUUID == uuid else { return }
@@ -513,12 +517,20 @@ final class CallKitController: NSObject {
         return call.state == "active" || call.state == "held" ? .remoteEnded : .unanswered
     }
 
-    private func update(number: String?, callerName: String?) -> CXCallUpdate {
+    private func update(number: String?, callerName: String?, genericHandle: Bool) -> CXCallUpdate {
         let update = CXCallUpdate()
         let value = number?.isEmpty == false ? number! : "未知号码"
-        update.remoteHandle = CXHandle(type: .phoneNumber, value: value)
-        if let callerName, !callerName.isEmpty, callerName != number {
-            update.localizedCallerName = callerName
+        if genericHandle {
+            // Dashboard virtual calls use a title, not a phone number. A
+            // .phoneNumber handle can be rejected/blank for non-numeric text.
+            let title = callerName?.isEmpty == false ? callerName! : value
+            update.remoteHandle = CXHandle(type: .generic, value: title)
+            update.localizedCallerName = title
+        } else {
+            update.remoteHandle = CXHandle(type: .phoneNumber, value: value)
+            if let callerName, !callerName.isEmpty, callerName != number {
+                update.localizedCallerName = callerName
+            }
         }
         update.supportsHolding = false
         update.supportsGrouping = false
