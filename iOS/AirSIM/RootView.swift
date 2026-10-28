@@ -55,9 +55,6 @@ enum PhoneTab: String, CaseIterable, Identifiable {
     }
 }
 
-struct SMSConversationDestination: Hashable {
-    let sender: String
-}
 
 /// 五个主要目的地使用系统 TabView；iOS 26 原生标签栏负责 Liquid Glass、
 /// 长按放大与选中态交互，避免分页手势和自绘按钮争抢横向滑动。
@@ -69,12 +66,14 @@ struct RootView: View {
     @State private var appUpdatePresentation: AppUpdatePresentation?
     @AppStorage("airsim.selected-tab") private var selectedTabRawValue = PhoneTab.dial.rawValue
     @State private var pendingSMSRecipient: String?
-    @State private var conversationPath: [SMSConversationDestination] = []
+    @State private var messageListState = SMSConversationListState()
+    @State private var conversationSender: String?
+    @State private var showingConversation = false
     @AppStorage("airsim.first-connection-complete") private var firstConnectionComplete = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            NavigationStack(path: $conversationPath) {
+            NavigationStack {
                 TabView(selection: selectedTabBinding) {
                     DialPadView()
                         .tag(PhoneTab.dial)
@@ -86,6 +85,7 @@ struct RootView: View {
 
                     MessagesView(
                         pendingRecipient: $pendingSMSRecipient,
+                        state: $messageListState,
                         openConversation: showSMSConversation
                     )
                         .tag(PhoneTab.messages)
@@ -102,11 +102,21 @@ struct RootView: View {
                 .phoneTabBarMinimizeOnScroll()
                 .phoneTabSelectionFeedback(selectedTabRawValue)
                 .tint(.blue)
+                .navigationTitle(selectedTab == .messages ? L10n.t("短信") : "")
+                .navigationBarTitleDisplayMode(.large)
+                .toolbar {
+                    if selectedTab == .messages {
+                        SMSConversationListToolbar(state: $messageListState)
+                    }
+                }
                 .toolbar(selectedTab == .messages ? .visible : .hidden, for: .navigationBar)
                 .background { PhoneTabBarNavigationFade() }
-                .navigationDestination(for: SMSConversationDestination.self) { destination in
-                    MessageThreadView(sender: destination.sender)
-                        .toolbar(.visible, for: .navigationBar)
+                .navigationDestination(isPresented: $showingConversation) {
+                    if let sender = conversationSender {
+                        MessageThreadView(sender: sender)
+                            .id(sender)
+                            .toolbar(.visible, for: .navigationBar)
+                    }
                 }
             }
 
@@ -245,14 +255,14 @@ struct RootView: View {
     }
 
     private func dial(_ number: String) {
-        conversationPath = []
+        showingConversation = false
         model.numberInput = number
         selectedTab = .dial
         Task { await model.dial() }
     }
 
     private func composeMessage(_ number: String) {
-        conversationPath = []
+        showingConversation = false
         pendingSMSRecipient = number
         selectedTab = .messages
     }
@@ -263,8 +273,9 @@ struct RootView: View {
     }
 
     private func showSMSConversation(_ sender: String) {
-        conversationPath = [SMSConversationDestination(sender: sender)]
         selectedTab = .messages
+        conversationSender = sender
+        showingConversation = true
     }
 
     private func handleSystemCommunicationURL(_ url: URL) {

@@ -948,16 +948,73 @@ struct RecentsView: View {
 
 // MARK: - 短信
 
+struct SMSConversationListState {
+    var showingComposer = false
+    var showingClearConfirmation = false
+    var editMode: EditMode = .inactive
+    var selectedConversations: Set<String> = []
+    var pendingDeletion: Set<String> = []
+    var showingDeleteConfirmation = false
+
+    mutating func requestDelete(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        pendingDeletion = ids
+        showingDeleteConfirmation = true
+    }
+}
+
+/// The TabView root owns the navigation bar; the list and toolbar share only
+/// presentation state so the title/actions cannot be swallowed by the tab.
+struct SMSConversationListToolbar: ToolbarContent {
+    @EnvironmentObject private var model: AppModel
+    @Binding var state: SMSConversationListState
+
+    var body: some ToolbarContent {
+        phoneMorphingToolbarItem(placement: .topBarLeading, id: "top-action-leading-more") {
+            Menu {
+                Button(L10n.t(state.editMode.isEditing ? "完成选择" : "选择会话")) {
+                    state.editMode = state.editMode.isEditing ? .inactive : .active
+                    state.selectedConversations = []
+                }
+                if state.editMode.isEditing {
+                    Button(L10n.t("删除所选会话"), role: .destructive) {
+                        state.requestDelete(Set(model.messages.filter {
+                            state.selectedConversations.contains($0.sender)
+                        }.map(\.id)))
+                    }
+                    .disabled(state.selectedConversations.isEmpty)
+                }
+                Button { Task { await model.refreshMessages() } } label: {
+                    Label(L10n.t("刷新"), systemImage: "arrow.clockwise")
+                }
+                Button(role: .destructive) {
+                    state.pendingDeletion = Set(model.messages.map(\.id))
+                    state.showingClearConfirmation = true
+                } label: {
+                    Label(L10n.t("清空全部短信"), systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+            }
+            .accessibilityLabel(L10n.t("短信操作"))
+            .accessibilityIdentifier("sms-list-actions")
+        }
+        phoneMorphingToolbarItem(placement: .topBarTrailing, id: "top-action-trailing-primary") {
+            Button { state.showingComposer = true } label: {
+                Image(systemName: "square.and.pencil")
+            }
+            .accessibilityLabel(L10n.t("新信息"))
+            .accessibilityIdentifier("sms-compose")
+        }
+    }
+}
+
 struct MessagesView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var pendingRecipient: String?
+    @Binding var state: SMSConversationListState
     let openConversation: (String) -> Void
-    @State private var showingComposer = false
-    @State private var showingClearConfirmation = false
-    @State private var editMode: EditMode = .inactive
-    @State private var selectedConversations: Set<String> = []
-    @State private var pendingDeletion: Set<String> = []
-    @State private var showingDeleteConfirmation = false
 
     private var conversations: [(sender: String, messages: [SMSMessage])] {
         Dictionary(grouping: model.messages, by: \.sender)
@@ -968,14 +1025,14 @@ struct MessagesView: View {
     var body: some View {
         Group {
             // Outside explicit deletion mode, row taps belong to navigation, not selection.
-            List(selection: editMode.isEditing ? $selectedConversations : nil) {
+            List(selection: state.editMode.isEditing ? $state.selectedConversations : nil) {
                 if conversations.isEmpty {
                     EmptyStateView(title: L10n.t("暂无短信"), systemImage: "message")
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(conversations, id: \.sender) { conversation in
                         Group {
-                            if editMode.isEditing {
+                            if state.editMode.isEditing {
                                 MessageConversationRow(sender: conversation.sender, messages: conversation.messages)
                             } else {
                                 Button {
@@ -1005,93 +1062,49 @@ struct MessagesView: View {
                         .tag(conversation.sender)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
-                                requestDelete(Set(conversation.messages.map(\.id)))
+                                state.requestDelete(Set(conversation.messages.map(\.id)))
                             } label: { Label("删除会话", systemImage: "trash") }
                         }
                     }
                 }
             }
             .listStyle(.plain)
-            .environment(\.editMode, $editMode)
+            .environment(\.editMode, $state.editMode)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, PhoneListMetrics.rowHeight)
             .phoneReportsTabBarCompactState()
             .background(PhoneBackdrop())
-            .navigationTitle(L10n.t("短信"))
-            .toolbar {
-                phoneMorphingToolbarItem(placement: .topBarLeading, id: "top-action-leading-more") {
-                    Menu {
-                        Button(editMode.isEditing ? "完成选择" : "选择会话") {
-                            editMode = editMode.isEditing ? .inactive : .active
-                            selectedConversations = []
-                        }
-                        if editMode.isEditing {
-                            Button("删除所选会话", role: .destructive) {
-                                requestDelete(Set(model.messages.filter {
-                                    selectedConversations.contains($0.sender)
-                                }.map(\.id)))
-                            }
-                            .disabled(selectedConversations.isEmpty)
-                        }
-                        Button { Task { await model.refreshMessages() } } label: {
-                            Label(L10n.t("刷新"), systemImage: "arrow.clockwise")
-                        }
-                        Button(role: .destructive) {
-                            pendingDeletion = Set(model.messages.map(\.id))
-                            showingClearConfirmation = true
-                        } label: {
-                            Label(L10n.t("清空全部短信"), systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.body.weight(.semibold))
-                    }
-                    .accessibilityLabel("短信操作")
-                }
-                phoneMorphingToolbarItem(placement: .topBarTrailing, id: "top-action-trailing-primary") {
-                    Button { showingComposer = true } label: {
-                        Image(systemName: "square.and.pencil")
-                    }
-                    .accessibilityLabel(L10n.t("新信息"))
-                }
-            }
             .task {
                 await model.loadMessagesFromAgent(silently: true)
             }
             .onChange(of: pendingRecipient) { recipient in
-                if recipient != nil { showingComposer = true }
+                if recipient != nil { state.showingComposer = true }
             }
-            .sheet(isPresented: $showingComposer, onDismiss: { pendingRecipient = nil }) {
+            .sheet(isPresented: $state.showingComposer, onDismiss: { pendingRecipient = nil }) {
                 MessageComposer(initialRecipient: pendingRecipient ?? "")
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-            .confirmationDialog(L10n.t("清空全部短信"), isPresented: $showingClearConfirmation, titleVisibility: .visible) {
+            .confirmationDialog(L10n.t("清空全部短信"), isPresented: $state.showingClearConfirmation, titleVisibility: .visible) {
                 Button(L10n.t("删除"), role: .destructive) {
-                    model.deleteMessages(ids: pendingDeletion)
-                    pendingDeletion = []
+                    model.deleteMessages(ids: state.pendingDeletion)
+                    state.pendingDeletion = []
                 }
                 Button(L10n.t("取消"), role: .cancel) {}
             } message: {
                 Text("仅删除此 iPhone 上 AirSIM 内的短信记录，不删除安卓系统短信，无法恢复。")
             }
-            .confirmationDialog("删除短信记录？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            .confirmationDialog("删除短信记录？", isPresented: $state.showingDeleteConfirmation, titleVisibility: .visible) {
                 Button("删除", role: .destructive) {
-                    model.deleteMessages(ids: pendingDeletion)
-                    selectedConversations = []
-                    pendingDeletion = []
+                    model.deleteMessages(ids: state.pendingDeletion)
+                    state.selectedConversations = []
+                    state.pendingDeletion = []
                 }
-                Button("取消", role: .cancel) { pendingDeletion = [] }
+                Button("取消", role: .cancel) { state.pendingDeletion = [] }
             } message: {
                 Text("仅删除此 iPhone 上的所选记录，不删除安卓系统短信。新收到的短信不受影响。")
             }
         }
-    }
-
-    private func requestDelete(_ ids: Set<String>) {
-        guard !ids.isEmpty else { return }
-        pendingDeletion = ids
-        showingDeleteConfirmation = true
     }
 
     private struct MessageConversationRow: View {

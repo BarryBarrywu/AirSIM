@@ -117,6 +117,8 @@ enum L10n {
         "已选 %d 条": "%d Selected", "删除所选 %d 条短信？": "Delete %d Messages?",
         "复制最新短信": "Copy Latest Message", "复制整段会话": "Copy Conversation",
         "复制短信": "Copy Messages",
+        "短信操作": "Message Actions", "选择会话": "Select Conversations",
+        "完成选择": "Done", "删除所选会话": "Delete Selected Conversations",
         "1 条短信": "1 Message", "%d 条短信": "%d Messages",
         "仅删除此 iPhone 上 AirSIM 内的记录，不删除安卓系统短信。": "Only deletes records in AirSIM on this iPhone, not SMS on Android."
     ]
