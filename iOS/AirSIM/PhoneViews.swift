@@ -1347,7 +1347,7 @@ private struct MessageComposer: View {
                         .disabled(!canSend)
                 }
             }
-            .task { await model.contacts.loadIfAuthorized() }
+            .task { await model.contacts.loadIfAuthorized(force: true) }
             .sheet(isPresented: $showingContacts) {
                 MessageContactPicker { phone in
                     recipient = phone
@@ -1541,7 +1541,23 @@ private struct MessageContactPicker: View {
                     Button(L10n.t("取消")) { dismiss() }
                 }
             }
-            .task { await model.contacts.loadIfAuthorized() }
+            .task { await model.contacts.loadIfAuthorized(force: true) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if model.contacts.isLimitedAccess {
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("通讯录为受限访问，只显示已授权联系人；点此选择更多联系人", systemImage: "person.crop.circle.badge.exclamationmark")
+                            .font(.footnote)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(.thinMaterial)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
@@ -1635,7 +1651,23 @@ struct ContactsView: View {
                 prompt: L10n.t("搜索姓名或号码")
             )
             .refreshable { await model.contacts.requestAccessAndLoad() }
-            .task { await model.contacts.loadIfAuthorized() }
+            .task { await model.contacts.loadIfAuthorized(force: true) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if model.contacts.isLimitedAccess {
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("通讯录为受限访问，只显示已授权联系人；点此选择更多联系人", systemImage: "person.crop.circle.badge.exclamationmark")
+                            .font(.footnote)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(.thinMaterial)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 }
