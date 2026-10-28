@@ -35,14 +35,13 @@ export function dashboardAuthorized(request, env) {
 }
 
 export async function dashboardSummary(env, now = Date.now()) {
-  const devices = [];
-  for (const device of await listDeviceRecords(env)) {
-    if (!device?.device_id) continue;
+  const devices = (await Promise.all((await listDeviceRecords(env)).map(async (device) => {
+    if (!device?.device_id) return null;
     const controlID = await dashboardControlID(env, device.device_id);
     const heartbeat = await readAgentHeartbeat(env, device.device_id);
     const heartbeatAt = Number(heartbeat?.received_at_ms || 0);
     const ageSeconds = heartbeatAt > 0 ? Math.max(0, Math.floor((now - heartbeatAt) / 1000)) : null;
-    devices.push({
+    return {
       id: maskDeviceID(device.device_id),
       control_id: controlID,
       environment: device.environment === "production" ? "production" : "sandbox",
@@ -60,8 +59,8 @@ export async function dashboardSummary(env, now = Date.now()) {
         watch: Boolean(device.watch_voip_token),
         live_activity: Boolean(device.live_activity_push_to_start_token),
       },
-    });
-  }
+    };
+  }))).filter(Boolean);
   devices.sort((left, right) => Number(right.online) - Number(left.online) || left.id.localeCompare(right.id));
 
   const events = [];
@@ -228,6 +227,27 @@ async function dashboardControlID(env, deviceID) {
     "HMAC", key, new TextEncoder().encode(deviceID),
   ));
   return [...signature.slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function pruneDashboardDevices(env, { keepControlIDs = [], before = null, limit = 500 } = {}) {
+  const keep = new Set(Array.isArray(keepControlIDs) ? keepControlIDs : []);
+  const cutoff = before ? Date.parse(before) : NaN;
+  const maximum = Math.max(1, Math.min(500, Number(limit) || 500));
+  let deleted = 0;
+  let kept = 0;
+  for (const device of await listDeviceRecords(env)) {
+    if (!device?.device_id) continue;
+    const controlID = await dashboardControlID(env, device.device_id);
+    const registered = Date.parse(device.registered_at || "");
+    if (keep.has(controlID) || (Number.isFinite(cutoff) && Number.isFinite(registered) && registered >= cutoff)) {
+      kept++;
+      continue;
+    }
+    if (deleted >= maximum) { kept++; continue; }
+    await deleteDeviceRecord(env, device.device_id);
+    deleted++;
+  }
+  return { deleted, kept, remaining: keep.size };
 }
 
 export async function deleteDashboardDevice(env, controlID) {

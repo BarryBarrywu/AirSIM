@@ -4,6 +4,7 @@ import {
   dashboardSummary,
   dashboardVirtualCall,
   deleteDashboardDevice,
+  pruneDashboardDevices,
   recordDashboardEvent,
 } from "./dashboard.mjs";
 import { constantTimeEqual, sha256Hex } from "./auth-crypto.mjs";
@@ -90,6 +91,18 @@ async function routeRequest(request, env) {
     } catch {
       return jsonResponse(500, { error: "device delete failed" });
     }
+  }
+  if (request.method === "POST" && url.pathname === "/dashboard/api/devices/prune") {
+    const auth = dashboardAuthorized(request, env);
+    if (!auth.configured) return jsonResponse(503, { error: "dashboard is not configured" });
+    if (!auth.authorized) return jsonResponse(401, { error: "unauthorized" });
+    const value = await readJSON(request);
+    const result = await pruneDashboardDevices(env, {
+      keepControlIDs: Array.isArray(value.keep_control_ids) ? value.keep_control_ids : [],
+      before: typeof value.before === "string" ? value.before : null,
+      limit: Number(value.limit) || 500,
+    });
+    return jsonResponse(200, { ok: true, ...result });
   }
   if (request.method === "GET" && url.pathname === "/dashboard/api/summary") {
     const auth = dashboardAuthorized(request, env);

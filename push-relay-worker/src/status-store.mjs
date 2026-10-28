@@ -325,9 +325,9 @@ export async function readAgentHeartbeat(env, deviceID) {
   const stub = registryStub(env);
   if (!stub) return readKVRecord(env.DEVICES, `${HEARTBEAT_PREFIX}${deviceID}`);
   try {
-    const response = await stub.fetch(
+    const response = await withTimeout(stub.fetch(
       `https://status.internal/heartbeat/${encodeURIComponent(deviceID)}`,
-    );
+    ), 1_500);
     if (response.ok) return response.json();
     if (response.status !== 404) {
       warnDegraded("status-http", `status registry returned HTTP ${response.status}; using KV heartbeat mirror`);
