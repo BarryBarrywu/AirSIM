@@ -9,11 +9,14 @@ import android.os.IBinder;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 import java.net.URI;
 import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -34,6 +37,7 @@ public final class StandaloneAgentService extends Service {
     private StandaloneAgentStore store;
     private StandaloneRelayClient relay;
     private int syncedRegistrationHash;
+    private final RelayRegistrationRecovery registrationRecovery = new RelayRegistrationRecovery();
     private long lastHeartbeat;
     private long nextHeartbeatAttempt;
     private long lastCommandPoll;
@@ -78,6 +82,19 @@ public final class StandaloneAgentService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_STICKY; }
     @Override public IBinder onBind(Intent intent) { return null; }
 
+    /**
+     * {@code adb shell dumpsys activity service <this component> [simulate-unauthorized]} prints the
+     * Relay re-registration state; the optional argument feeds one simulated Relay 401 for on-device
+     * verification. Callers need the DUMP permission, so only adb/shell can reach it.
+     */
+    @Override protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (args != null && Arrays.asList(args).contains("simulate-unauthorized")) {
+            registrationRecovery.onFailure(new RelayHTTPException(401, "simulated by dumpsys"), now);
+        }
+        writer.println("relay_recovery " + registrationRecovery.describe(now));
+    }
+
     private void loop() {
         int failures = 0;
         while (running) {
@@ -98,9 +115,11 @@ public final class StandaloneAgentService extends Service {
                     try {
                         sendHeartbeat(registration);
                         nextHeartbeatAttempt = 0;
+                        registrationRecovery.onAuthenticated();
                     } catch (Exception heartbeatError) {
                         // Do not spin the whole agent loop on a failed heartbeat.
                         nextHeartbeatAttempt = now + 30_000;
+                        registrationRecovery.onFailure(heartbeatError, android.os.SystemClock.elapsedRealtime());
                         BridgeLog.error("standalone_heartbeat_failed", heartbeatError);
                     }
                 }
@@ -119,6 +138,7 @@ public final class StandaloneAgentService extends Service {
                 return;
             } catch (Exception error) {
                 failures++;
+                registrationRecovery.onFailure(error, android.os.SystemClock.elapsedRealtime());
                 store.recordError(error.getClass().getSimpleName() + ": " + error.getMessage());
                 BridgeLog.error("standalone_agent_cycle_failed failures=" + failures, error);
                 update("内置 Agent 正在重连 · " + failures);
@@ -130,7 +150,14 @@ public final class StandaloneAgentService extends Service {
 
     private void syncRegistration(JSONObject registration) throws Exception {
         int hash = registration.toString().hashCode();
-        if (hash == syncedRegistrationHash) return;
+        // A Relay 401 means the device record is gone; re-post the unchanged registration. The
+        // signal is one-shot, so a failed re-post waits for the next back-off window instead of
+        // retrying every cycle.
+        if (registrationRecovery.takeResync(android.os.SystemClock.elapsedRealtime())) {
+            BridgeLog.info("standalone_relay_reregister reason=unauthorized");
+        } else if (hash == syncedRegistrationHash) {
+            return;
+        }
         relay.postJSON(registration, "/v1/devices/register", new JSONObject(registration.toString()), 15_000);
         syncedRegistrationHash = hash;
         store.recordSuccess();
@@ -279,6 +306,7 @@ public final class StandaloneAgentService extends Service {
 
     private void commandFailure(long epoch, long connectedAt, Throwable error) {
         long now = android.os.SystemClock.elapsedRealtime();
+        registrationRecovery.onFailure(error, now);
         RetryDecision decision = commandRetry.failedFor(epoch, now, connectedAt < 0 ? 0 : Math.max(0, now - connectedAt),
                 error, java.util.concurrent.ThreadLocalRandom.current().nextDouble());
         if (decision == null) return;

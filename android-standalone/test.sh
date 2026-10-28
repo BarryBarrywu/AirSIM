@@ -22,6 +22,18 @@ assert_contains "$ROOT/../android/phone-control-app/src/com/airsim/phonecontrol/
   'case "/api/calls/dtmf" -> command("dtmf", localCallTarget("dtmf", input)' \
   'standalone DTMF must preserve the explicitly requested published call identity'
 
+S="$ROOT/../android/phone-control-app/src/com/airsim/phonecontrol/StandaloneAgentService.java"
+assert_contains "$S" 'registrationRecovery.takeResync(' \
+  'registration sync must honour relay 401 recovery'
+assert_contains "$S" 'registrationRecovery.onFailure(heartbeatError' \
+  'heartbeat 401 must request re-registration'
+assert_contains "$S" 'registrationRecovery.onFailure(error' \
+  'cycle and command-channel 401 must request re-registration'
+assert_contains "$S" 'registrationRecovery.onAuthenticated()' \
+  'successful heartbeat must reset recovery backoff'
+assert_contains "$S" '"simulate-unauthorized"' \
+  'dumpsys hook for live verification is missing'
+
 assert_contains "$MANIFEST" 'package="com.airsim.phonecontrol.standalone"' \
   'standalone package id is missing'
 assert_contains "$MANIFEST" 'android:versionCode="122"' \
