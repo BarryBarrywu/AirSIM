@@ -275,7 +275,7 @@ test("incoming call delivery remains available when KV daily writes are exhauste
   }
 });
 
-test("healthy status registry keeps heartbeat and dashboard refresh off KV", async () => {
+test("heartbeat and dashboard use KV without a Durable Object subrequest", async () => {
   const env = testEnvironment();
   env.DEVICES = new CountingKV();
   env.STATUS = new MemoryStatusNamespace();
@@ -297,7 +297,6 @@ test("healthy status registry keeps heartbeat and dashboard refresh off KV", asy
 
   assert.equal(response.status, 200);
   assert.equal((await response.json()).metrics.online, 1);
-  assert.deepEqual(env.DEVICES.operations, { get: 0, put: 0, delete: 0, list: 0 });
 });
 
 test("heartbeat authenticates and writes with one durable request", async () => {
@@ -318,9 +317,9 @@ test("heartbeat authenticates and writes with one durable request", async () => 
   }), env);
 
   assert.equal(response.status, 202);
-  assert.equal(env.STATUS.fetchCount, 1);
-  const latest = await env.STATUS.storage.get("heartbeat:iphone-air");
-  const agent = await env.STATUS.storage.get("heartbeat:iphone-air:agent:samsung-standalone");
+  assert.equal(env.STATUS.fetchCount, 0);
+  const latest = JSON.parse(await env.DEVICES.get("heartbeat:iphone-air"));
+  const agent = JSON.parse(await env.DEVICES.get("heartbeat:iphone-air:agent:samsung-standalone"));
   assert.equal(latest.agent_id, "samsung-standalone");
   assert.deepEqual(agent, latest);
   assert.equal(latest.device_secret, undefined);
@@ -335,8 +334,8 @@ test("heartbeat authenticates and writes with one durable request", async () => 
     cellular_state: "registered",
   }), env);
   assert.equal(denied.status, 401);
-  assert.equal(env.STATUS.fetchCount, 1);
-  assert.equal(await env.STATUS.storage.get("heartbeat:iphone-air:agent:attacker"), undefined);
+  assert.equal(env.STATUS.fetchCount, 0);
+  assert.equal(await env.DEVICES.get("heartbeat:iphone-air:agent:attacker"), null);
 });
 
 test("device status authenticates and reads agents with one durable request", async () => {
@@ -355,7 +354,7 @@ test("device status authenticates and reads agents with one durable request", as
   }), env);
   const status = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(env.STATUS.fetchCount, 0);
   assert.equal(status.cloud_online, true);
   assert.equal(status.active_agent_id, "samsung-standalone");
   assert.equal(status.agents.length, 1);
@@ -365,7 +364,7 @@ test("device status authenticates and reads agents with one durable request", as
     device_id: registration.device_id, device_secret: "wrong-secret",
   }), env);
   assert.equal(denied.status, 401);
-  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(env.STATUS.fetchCount, 0);
 });
 
 test("one-request status still reads a pre-roster legacy heartbeat", async () => {
@@ -404,7 +403,7 @@ test("one-request status falls back to a KV heartbeat during registry migration"
   }), env);
   const status = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(env.STATUS.fetchCount, 1);
+  assert.equal(env.STATUS.fetchCount, 0);
   assert.equal(status.cloud_online, true);
   assert.equal(status.active_agent_id, "legacy");
 });

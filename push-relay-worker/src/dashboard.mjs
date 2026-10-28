@@ -46,7 +46,7 @@ export async function dashboardSummary(env, now = Date.now()) {
       control_id: controlID,
       environment: device.environment === "production" ? "production" : "sandbox",
       registered_at: safeISODate(device.registered_at),
-      online: ageSeconds !== null && ageSeconds <= 90,
+      online: ageSeconds !== null && ageSeconds <= 150,
       heartbeat_age_seconds: ageSeconds,
       agent_version: stringValue(heartbeat?.agent_version),
       cellular_state: allowedCellularState(heartbeat?.cellular_state),

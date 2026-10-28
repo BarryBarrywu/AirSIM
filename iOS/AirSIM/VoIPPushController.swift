@@ -406,7 +406,7 @@ struct CloudSelfTestReport: Equatable, Sendable {
             CloudSelfTestStep(id: .relayIdentity, title: "Relay 身份", state: .pending, detail: "等待检查"),
             CloudSelfTestStep(id: .deviceRegistration, title: "设备注册", state: .pending, detail: "等待检查"),
             CloudSelfTestStep(id: .agentDirectory, title: "Agent 记录", state: .pending, detail: "查询 Relay 已登记的 Android Agent"),
-            CloudSelfTestStep(id: .agentHeartbeat, title: "Agent 心跳", state: .pending, detail: "检查最近 90 秒心跳"),
+            CloudSelfTestStep(id: .agentHeartbeat, title: "Agent 心跳", state: .pending, detail: "检查最近 150 秒心跳"),
             CloudSelfTestStep(id: .commandRouting, title: "命令路由", state: .pending, detail: "检查 Agent 是否支持定向接听/挂断"),
         ],
         completedAt: nil
@@ -1326,7 +1326,7 @@ final class VoIPPushController: NSObject {
             detail: "已登记 \(status.agents.count) 台\n\(directory)\nactive=\(status.activeAgentID ?? "none")")
         onUpdate(report)
 
-        report.update(.agentHeartbeat, state: .running, detail: "检查最近 90 秒心跳与版本")
+        report.update(.agentHeartbeat, state: .running, detail: "检查最近 150 秒心跳与版本")
         onUpdate(report)
         guard status.cloudOnline else {
             let known = status.agents.map {

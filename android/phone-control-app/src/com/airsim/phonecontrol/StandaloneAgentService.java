@@ -35,6 +35,7 @@ public final class StandaloneAgentService extends Service {
     private StandaloneRelayClient relay;
     private int syncedRegistrationHash;
     private long lastHeartbeat;
+    private long nextHeartbeatAttempt;
     private long lastCommandPoll;
     private volatile StandaloneWebSocket commandSocket;
     private volatile boolean commandChannelConnected;
@@ -91,9 +92,18 @@ public final class StandaloneAgentService extends Service {
                 }
                 syncRegistration(registration);
                 long now = System.currentTimeMillis();
-                // 60s remains inside the 90s cloud-online window and halves
+                // 120s remains inside the 150s cloud-online window and cuts
                 // Relay heartbeat/observability churn on weak cellular links.
-                if (now - lastHeartbeat >= 60_000) sendHeartbeat(registration);
+                if (now - lastHeartbeat >= 120_000 && now >= nextHeartbeatAttempt) {
+                    try {
+                        sendHeartbeat(registration);
+                        nextHeartbeatAttempt = 0;
+                    } catch (Exception heartbeatError) {
+                        // Do not spin the whole agent loop on a failed heartbeat.
+                        nextHeartbeatAttempt = now + 30_000;
+                        BridgeLog.error("standalone_heartbeat_failed", heartbeatError);
+                    }
+                }
                 flushEvents(registration);
                 if (commandConfiguration.isCurrent(snapshot) && CommandPollingPolicy.shouldPoll(commandChannelConnected, lastCommandPoll, now,
                         commandRetry.remainingMillis(android.os.SystemClock.elapsedRealtime()))) {

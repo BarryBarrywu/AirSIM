@@ -13,11 +13,13 @@ import { RoutingError, parseAgentID, agentSocketKey, matchesTarget, resolveTarge
 import {
   authenticateAndReadAgentHeartbeats,
   authenticateAndWriteAgentHeartbeat,
+  authenticateAndWriteHeartbeatKV,
   deleteRelayState,
   readAgentHeartbeat,
   readAgentHeartbeats,
   readAgentHeartbeatsFromKV,
   readDeviceRecord,
+  readDeviceRecordFromKV,
   readRelayState,
   writeAgentHeartbeat,
   writeDeviceRecord,
@@ -1511,6 +1513,10 @@ async function receiveAgentHeartbeat(request, env) {
     ecm_carrier: stringValue(heartbeat.ecm_carrier),
     ...(Number.isFinite(heartbeat.signal_dbm) ? { signal_dbm: heartbeat.signal_dbm } : {}),
   };
+  // Heartbeat is hot-path telemetry. Prefer KV so every heartbeat does not
+  // invoke the Durable Object and generate an extra Observability event.
+  const kvResponse = await authenticateAndWriteHeartbeatKV(env, heartbeat, agentID, record);
+  if (kvResponse) return kvResponse;
   const directResponse = await authenticateAndWriteAgentHeartbeat(env, heartbeat, agentID, record);
   if (directResponse) return directResponse;
   const authenticated = await authenticate(heartbeat, env);
@@ -1519,8 +1525,45 @@ async function receiveAgentHeartbeat(request, env) {
   return jsonResponse(202, { received: true });
 }
 
+function deviceStatusResponse(heartbeats) {
+  const now = Date.now();
+  const onlineWindowMS = 150_000;
+  const agents = heartbeats
+    .filter((item) => item && Number.isFinite(item.received_at_ms))
+    .sort((left, right) => right.received_at_ms - left.received_at_ms)
+    .map((item) => {
+      const { received_at_ms: receivedAtMS, ...status } = item;
+      return { ...status, cloud_online: now - receivedAtMS <= onlineWindowMS };
+    });
+  const heartbeat = heartbeats
+    .filter((item) => item && Number.isFinite(item.received_at_ms) && now - item.received_at_ms <= onlineWindowMS)
+    .sort((left, right) => right.received_at_ms - left.received_at_ms)[0];
+  if (!heartbeat) {
+    return jsonResponse(200, { cloud_online: false, agents, capabilities: { agent_command_routing: 1 } });
+  }
+  const { received_at_ms: _, ...publicStatus } = heartbeat;
+  return jsonResponse(200, {
+    cloud_online: true,
+    capabilities: { agent_command_routing: 1 },
+    ...publicStatus,
+    active_agent_id: publicStatus.agent_id || "legacy",
+    agents,
+  });
+}
+
 async function receiveDeviceStatus(request, env) {
   const query = await readJSON(request);
+  const kvDeviceID = String(query.device_id || "").trim();
+  const kvDevice = await readDeviceRecordFromKV(env, kvDeviceID);
+  if (kvDevice) {
+    if (!constantTimeEqual(kvDevice.secret_hash,
+        await sha256Hex(String(query.device_secret || "")))) {
+      return jsonResponse(401, { error: "unauthorized" });
+    }
+    const kvHeartbeats = await readAgentHeartbeatsFromKV(env, kvDeviceID);
+    if (kvHeartbeats.length > 0) return deviceStatusResponse(kvHeartbeats);
+    // Pre-roster/legacy registrations may still have only a DO heartbeat.
+  }
   let directResponse = null;
   try {
     directResponse = await authenticateAndReadAgentHeartbeats(env, query);
@@ -1540,28 +1583,7 @@ async function receiveDeviceStatus(request, env) {
     if (authenticated.response) return authenticated.response;
     heartbeats = await readAgentHeartbeatsFromKV(env, authenticated.device.device_id);
   }
-  const now = Date.now();
-  const agents = heartbeats
-    .filter((item) => item && Number.isFinite(item.received_at_ms))
-    .sort((left, right) => right.received_at_ms - left.received_at_ms)
-    .map((item) => {
-      const { received_at_ms: receivedAtMS, ...status } = item;
-      return { ...status, cloud_online: now - receivedAtMS <= 90_000 };
-    });
-  const heartbeat = heartbeats
-    .filter((item) => item && Number.isFinite(item.received_at_ms) && now - item.received_at_ms <= 90_000)
-    .sort((left, right) => right.received_at_ms - left.received_at_ms)[0];
-  if (!heartbeat) {
-    return jsonResponse(200, { cloud_online: false, agents, capabilities:{agent_command_routing:1} });
-  }
-  const { received_at_ms: _, ...publicStatus } = heartbeat;
-  return jsonResponse(200, {
-    cloud_online: true,
-    capabilities:{agent_command_routing:1},
-    ...publicStatus,
-    active_agent_id: publicStatus.agent_id || "legacy",
-    agents,
-  });
+  return deviceStatusResponse(heartbeats);
 }
 
 async function receiveCallOwner(request, env) {

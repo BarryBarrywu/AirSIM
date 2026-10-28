@@ -322,8 +322,10 @@ async function readKVAgentRoster(env, deviceID) {
 }
 
 export async function readAgentHeartbeat(env, deviceID) {
+  const kv = await readKVRecord(env.DEVICES, `${HEARTBEAT_PREFIX}${deviceID}`);
+  if (kv) return kv;
   const stub = registryStub(env);
-  if (!stub) return readKVRecord(env.DEVICES, `${HEARTBEAT_PREFIX}${deviceID}`);
+  if (!stub) return null;
   try {
     const response = await withTimeout(stub.fetch(
       `https://status.internal/heartbeat/${encodeURIComponent(deviceID)}`,
@@ -374,6 +376,41 @@ export async function readDeviceRecord(env, deviceID) {
   return readKVRecord(env.DEVICES, `${DEVICE_PREFIX}${deviceID}`);
 }
 
+export async function readDeviceRecordFromKV(env, deviceID) {
+  return readKVRecord(env.DEVICES, DEVICE_PREFIX + deviceID);
+}
+
+export async function writeHeartbeatKV(env, deviceID, agentID, record) {
+  const id = String(deviceID || "").trim();
+  if (!id) return false;
+  const agent = String(agentID || "legacy");
+  await env.DEVICES.put("heartbeat:" + id + ":agent:" + agent, JSON.stringify(record), {
+    expirationTtl: 30 * 24 * 60 * 60,
+  });
+  await env.DEVICES.put("heartbeat:" + id, JSON.stringify(record), { expirationTtl: 300 });
+  return true;
+}
+
+export async function authenticateAndWriteHeartbeatKV(env, heartbeat, agentID, record) {
+  const deviceID = String(heartbeat.device_id || "").trim();
+  if (!deviceID || typeof heartbeat.device_secret !== "string") return null;
+  const device = await readDeviceRecordFromKV(env, deviceID);
+  // Missing KV record (old registration or exhausted KV) must fall back to the
+  // Durable Object rather than falsely rejecting the device.
+  if (!device) return null;
+  if (!constantTimeEqual(device.secret_hash, await sha256Hex(heartbeat.device_secret))) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  await writeHeartbeatKV(env, deviceID, agentID, record);
+  return new Response(JSON.stringify({ received: true }), {
+    status: 202,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 export async function deleteDeviceRecord(env, deviceID) {
   const id = String(deviceID || "").trim();
   if (!id) return false;
@@ -393,30 +430,30 @@ export async function deleteDeviceRecord(env, deviceID) {
 
 export async function listDeviceRecords(env) {
   const records = new Map();
-  const stub = registryStub(env);
-  let registryAvailable = false;
-  if (stub) {
-    try {
-      const response = await withTimeout(
-        stub.fetch("https://status.internal/devices"), 2_500);
-      if (!response.ok) throw new Error(`device registry returned HTTP ${response.status}`);
-      registryAvailable = true;
-      for (const record of await response.json()) {
-        if (record?.device_id) records.set(record.device_id, record);
-      }
-    } catch (error) {
-      warnDegraded("device-list", "device registry list failed; using KV mirrors", error);
-    }
-  }
-  if (!registryAvailable && typeof env.DEVICES?.list === "function") {
+  if (typeof env.DEVICES?.list === "function") {
     try {
       const keys = await env.DEVICES.list({ prefix: DEVICE_PREFIX, limit: 500 });
       for (const item of keys?.keys || []) {
         const record = await readKVRecord(env.DEVICES, item.name);
-        if (record?.device_id && !records.has(record.device_id)) records.set(record.device_id, record);
+        if (record?.device_id) records.set(record.device_id, record);
       }
     } catch (error) {
       warnDegraded("kv-device-list", "KV device mirror list failed; using status registry records", error);
+    }
+  }
+  if (records.size === 0) {
+    const stub = registryStub(env);
+    if (stub) {
+      try {
+        const response = await withTimeout(
+          stub.fetch("https://status.internal/devices"), 2_500);
+        if (!response.ok) throw new Error(`device registry returned HTTP ${response.status}`);
+        for (const record of await response.json()) {
+          if (record?.device_id) records.set(record.device_id, record);
+        }
+      } catch (error) {
+        warnDegraded("device-list", "device registry list failed", error);
+      }
     }
   }
   return [...records.values()];

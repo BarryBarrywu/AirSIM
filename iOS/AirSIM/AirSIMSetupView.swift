@@ -478,7 +478,7 @@ struct AirSIMSettingsView: View {
                 } footer: {
                     Text(!runtimePolicy.startsCloud
                         ? "当前连接模式不运行云端自检。"
-                        : "依次验证本机 Push 凭据、Relay 身份、设备注册、Agent 记录、90 秒心跳和命令路由；失败步骤会给出具体卡点，不会拨号或发送短信。")
+                        : "依次验证本机 Push 凭据、Relay 身份、设备注册、Agent 记录、150 秒心跳和命令路由；失败步骤会给出具体卡点，不会拨号或发送短信。")
                 }
 
                 Section("短信") {
