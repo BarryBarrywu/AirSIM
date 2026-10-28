@@ -1546,6 +1546,17 @@ final class AirSIMTests: XCTestCase {
                        CNContactFormatter.string(from: contact, style: .fullName))
     }
 
+    func testLimitedContactAccessLoadsInsteadOfRequestingOrBlocking() {
+        XCTAssertEqual(
+            ContactAccessPolicy.action(for: .limited, userInitiated: false),
+            .load
+        )
+        XCTAssertEqual(
+            ContactAccessPolicy.action(for: .limited, userInitiated: true),
+            .load
+        )
+    }
+
     @MainActor
     func testLegacyContactCacheRefreshesOnceWithoutLosingOfflineNames() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
