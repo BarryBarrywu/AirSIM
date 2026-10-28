@@ -379,12 +379,33 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
     init() { vowlan.startBrowsing() }
     func stop() { vowlan.stopBrowsing() }
 
+    private func selectedAgent() -> VoWLANDiscoveredAgent? {
+        let candidates = vowlan.discoveredAgents.filter {
+            PairedAndroidDeviceStore.permits($0.id)
+                && VoWLANCredentialStore.load(agentID: $0.id) != nil
+        }
+        if let bound = AndroidAgentBindingPreference.selected() {
+            return candidates.first { $0.id == bound }
+        }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
     func availableSamsungAPI() async -> AirSIMAPI? {
-        await vowlan.probeNow()
-        guard vowlan.availability.isOnlineForDisplay,
-              let endpoint = vowlan.availability.endpoint,
-              let credential = VoWLANCredentialStore.load() else { return nil }
-        return AirSIMAPI(route: .vowlan(endpoint: endpoint, credential: credential))
+        // PushKit can answer before the SwiftUI AppModel and Bonjour browser
+        // have completed startup. Wait briefly for the bound device, never use
+        // the legacy global credential or an arbitrary discovered Android.
+        for attempt in 0..<10 {
+            await vowlan.probeNow()
+            if vowlan.availability.isOnlineForDisplay,
+               let activeEndpoint = vowlan.availability.endpoint,
+               let agent = selectedAgent(),
+               agent.endpoint == activeEndpoint,
+               let credential = VoWLANCredentialStore.load(agentID: agent.id) {
+                return AirSIMAPI(route: .vowlan(endpoint: activeEndpoint, credential: credential))
+            }
+            if attempt < 9 { try? await Task.sleep(for: .milliseconds(300)) }
+        }
+        return nil
     }
 
     func callKitStart(number: String) async throws {
