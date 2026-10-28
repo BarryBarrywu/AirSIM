@@ -45,6 +45,22 @@ Standalone 复用 [`android/phone-control-app`](../android/phone-control-app/REA
 
 VoWLAN 的 `/api/calls/answer`、`/api/calls/reject`、`/api/calls/hangup` 接受可选 JSON `call_id`，值应为 `/api/calls/status` 中当前通话的 `id`。携带 ID 时只操作该通话；ID 过期或不匹配时拒绝执行，不会改选另一通。未携带 ID 的旧客户端保留当前通话兼容路径。
 
+## Relay 设备记录被删除后的自动恢复
+
+Relay 上的设备记录可能被删除（Dashboard「删除设备记录」、批量清理或每日清理离线设备）。之后心跳、命令拉取或命令通道收到 HTTP 401 时，内置 Agent 会在下一轮重新提交同一份注册（`/v1/devices/register`），不需要重启 App 或重新配对：
+
+- 只有 HTTP 401 触发；429、5xx 和断网仍走原有重试。
+- 第一次立即重新注册；之后两次之间至少间隔 1、2、4……分钟，封顶 60 分钟；任一次心跳成功后复位。重新注册请求失败时不会每轮重试，而是等下一个窗口。
+- 日志事件为 `standalone_relay_reregister reason=unauthorized`，成功后接着出现 `standalone_relay_registration_synced`。
+- 查看状态，或在真机上模拟一次 401（只有具备 DUMP 权限的 adb/shell 能调用）：
+
+```sh
+adb shell dumpsys activity service com.airsim.phonecontrol.standalone/com.airsim.phonecontrol.StandaloneAgentService
+adb shell dumpsys activity service com.airsim.phonecontrol.standalone/com.airsim.phonecontrol.StandaloneAgentService simulate-unauthorized
+```
+
+输出为一行 `relay_recovery pending=… resyncs=… delay_ms=… next_allowed_in_ms=…`。
+
 ## 运行架构
 
 ```text
