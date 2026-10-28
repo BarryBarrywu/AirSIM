@@ -2802,13 +2802,48 @@ final class AirSIMTests: XCTestCase {
         XCTAssertEqual(lifecycle.apply(end), .ignored)
     }
 
-    func testWatchPayloadCarriesBluetoothTransport() {
+    func testWatchPayloadCarriesBluetoothTransportAndIdentityAliases() {
+        let uuid = UUID()
         let payload = WatchCallPayload(
-            callID: "ble-call", callUUID: UUID(), phase: .active,
+            callID: "push-call", callUUID: uuid, aliases: ["local:android:7"], phase: .active,
             number: "10010", callerName: nil, transport: "bluetooth",
             updatedAt: Date(timeIntervalSince1970: 42))
         XCTAssertEqual(payload.dictionary["transport"] as? String, "bluetooth")
-        XCTAssertEqual(WatchCallPayload(dictionary: payload.dictionary)?.transport, "bluetooth")
+        XCTAssertEqual(payload.dictionary["call_aliases"] as? [String], ["local:android:7"])
+        let decoded = WatchCallPayload(dictionary: payload.dictionary)
+        XCTAssertEqual(decoded?.transport, "bluetooth")
+        XCTAssertTrue(decoded?.matches(callID: "local:android:7", callUUID: nil) == true)
+        XCTAssertTrue(decoded?.matches(callID: nil, callUUID: uuid) == true)
+        XCTAssertFalse(decoded?.matches(callID: "other", callUUID: UUID()) == true)
+    }
+
+    func testWatchPayloadDeduplicatesPrimaryIdentityFromAliases() {
+        let payload = WatchCallPayload(
+            callID: "same", callUUID: nil, aliases: ["same", "", "other"], phase: .ended,
+            number: nil, callerName: nil, updatedAt: Date())
+        XCTAssertEqual(payload.aliases, ["other"])
+    }
+    func testWatchMirrorPolicyRejectsStaleAndTombstonedStates() {
+        let uuid = UUID()
+        let active = WatchCallPayload(
+            callID: "push-call", callUUID: uuid, aliases: ["local:call"], phase: .active,
+            number: nil, callerName: nil, updatedAt: Date(timeIntervalSince1970: 20))
+        let oldIncoming = WatchCallPayload(
+            callID: "push-call", callUUID: uuid, aliases: ["local:call"], phase: .incoming,
+            number: nil, callerName: nil, updatedAt: Date(timeIntervalSince1970: 10))
+        XCTAssertTrue(WatchCallMirrorPolicy.isNewer(active, than: oldIncoming.updatedAt))
+        XCTAssertFalse(WatchCallMirrorPolicy.isNewer(oldIncoming, than: active.updatedAt))
+        XCTAssertTrue(WatchCallMirrorPolicy.isTombstoned(
+            oldIncoming, endedCallIDs: ["local:call"], endedCallUUIDs: []))
+        XCTAssertTrue(WatchCallMirrorPolicy.identityKeys(for: active).contains("uuid:\(uuid.uuidString.lowercased())"))
+    }
+
+    func testWatchPayloadRejectsConflictingUUIDWhenCallIDIsReused() {
+        let first = WatchCallPayload(
+            callID: "reused", callUUID: UUID(), phase: .active,
+            number: nil, callerName: nil, updatedAt: Date())
+        XCTAssertFalse(first.matches(callID: "reused", callUUID: UUID()))
+        XCTAssertTrue(first.matches(callID: "reused", callUUID: nil))
     }
 
     func testVoBLEDiagnosticsRedactsSecretsAndMedia() {

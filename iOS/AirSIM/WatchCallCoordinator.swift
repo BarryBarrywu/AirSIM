@@ -71,7 +71,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             phase = previous == nil ? .idle : .ended
         }
         let identityCall = call ?? previous
-        let payload = WatchCallPayload(
+        publish(WatchCallPayload(
             callID: identityCall?.id ?? "",
             callUUID: CallKitController.shared.watchCallUUID(for: identityCall?.id)
                 ?? model?.ownedCallUUID(for: identityCall?.id),
@@ -80,8 +80,20 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
             callerName: callerName,
             transport: transport,
             updatedAt: identityCall?.updatedAt ?? Date()
-        )
-        publish(payload)
+        ))
+    }
+
+    @MainActor
+    func publish(
+        callID: String, callUUID: UUID?, aliases: [String] = [], phase: WatchCallPhase,
+        number: String?, callerName: String?, transport: String? = nil,
+        updatedAt: Date = Date()
+    ) {
+        start()
+        publish(WatchCallPayload(
+            callID: callID, callUUID: callUUID, aliases: aliases, phase: phase,
+            number: number, callerName: callerName, transport: transport, updatedAt: updatedAt
+        ))
     }
 
     @MainActor
@@ -89,36 +101,32 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         _ call: IncomingVoIPCall, callerName: String? = nil,
         transport: String? = nil
     ) {
-        start()
-        publish(WatchCallPayload(
-            callID: call.callID,
-            callUUID: call.uuid,
-            phase: .incoming,
-            number: call.number,
-            callerName: callerName ?? call.callerName,
-            transport: transport,
-            updatedAt: Date()
-        ))
+        publish(
+            callID: call.callID, callUUID: call.uuid, phase: .incoming,
+            number: call.number, callerName: callerName ?? call.callerName, transport: transport
+        )
     }
 
     @MainActor
     private func publish(_ payload: WatchCallPayload) {
-        if payload.phase == .ended, localWatchCall?.callID == payload.callID {
-            if let reservation = localWatchCall?.requestID { model?.deviceCallContext.releaseAdmission(reservation) }
-            localWatchCall = nil
+        if payload.phase == .ended,
+           let localWatchCall,
+           payload.matches(callID: localWatchCall.callID, callUUID: localWatchCall.uuid) {
+            if let reservation = localWatchCall.requestID { model?.deviceCallContext.releaseAdmission(reservation) }
+            self.localWatchCall = nil
         }
         if let lastPayload,
            lastCloudMediaAllowed == CloudModePreference.isEnabled(),
-           lastPayload.callID == payload.callID,
-           lastPayload.callUUID == payload.callUUID,
-           lastPayload.phase == payload.phase,
-           lastPayload.number == payload.number,
-           lastPayload.callerName == payload.callerName,
-           lastPayload.transport == payload.transport {
+           lastPayload == payload {
             return
         }
         lastPayload = payload
         lastCloudMediaAllowed = CloudModePreference.isEnabled()
+        send(payload)
+    }
+
+    @MainActor
+    private func send(_ payload: WatchCallPayload) {
         guard let session, session.activationState == .activated else { return }
         var dictionary = payload.dictionary
         dictionary["cloud_media_allowed"] = CloudModePreference.isEnabled()
@@ -131,6 +139,12 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         session.transferUserInfo(dictionary)
     }
 
+    @MainActor
+    private func resendLastPayload() {
+        guard let lastPayload else { return }
+        send(lastPayload)
+    }
+
     nonisolated func session(
         _ session: WCSession,
         activationDidCompleteWith activationState: WCSessionActivationState,
@@ -139,10 +153,11 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
 #if DEBUG
 		print("[AirSIM iPhone WC] 激活完成；state=\(activationState.rawValue) context=\(session.receivedApplicationContext["event"] as? String ?? "无") error=\(error?.localizedDescription ?? "无")")
 #endif
-		guard activationState == .activated,
-			  !session.receivedApplicationContext.isEmpty else { return }
+		guard activationState == .activated else { return }
 		let context = session.receivedApplicationContext
 		Task { @MainActor in
+			self.resendLastPayload()
+			guard !context.isEmpty else { return }
 			_ = self.consumeWatchRegistration(context) || self.consumeWatchOwnership(context)
 		}
 	}
