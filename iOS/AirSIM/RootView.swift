@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum SystemCommunicationDestination: Equatable {
     case call(String)
@@ -54,6 +55,7 @@ enum PhoneTab: String, CaseIterable, Identifiable {
     }
 }
 
+
 /// 五个主要目的地使用系统 TabView；iOS 26 原生标签栏负责 Liquid Glass、
 /// 长按放大与选中态交互，避免分页手势和自绘按钮争抢横向滑动。
 struct RootView: View {
@@ -64,38 +66,59 @@ struct RootView: View {
     @State private var appUpdatePresentation: AppUpdatePresentation?
     @AppStorage("airsim.selected-tab") private var selectedTabRawValue = PhoneTab.dial.rawValue
     @State private var pendingSMSRecipient: String?
-    @State private var pendingSMSConversation: String?
+    @State private var messageListState = SMSConversationListState()
+    @State private var conversationSender: String?
+    @State private var showingConversation = false
     @AppStorage("airsim.first-connection-complete") private var firstConnectionComplete = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            TabView(selection: selectedTabBinding) {
-                DialPadView()
-                    .tag(PhoneTab.dial)
-                    .tabItem { Label(L10n.t(PhoneTab.dial.tabTitle), systemImage: PhoneTab.dial.icon) }
+            NavigationStack {
+                TabView(selection: selectedTabBinding) {
+                    DialPadView()
+                        .tag(PhoneTab.dial)
+                        .tabItem { Label(L10n.t(PhoneTab.dial.tabTitle), systemImage: PhoneTab.dial.icon) }
 
-                RecentsView(onCall: dial, onMessage: composeMessage)
-                    .tag(PhoneTab.recents)
-                    .tabItem { Label(L10n.t(PhoneTab.recents.tabTitle), systemImage: PhoneTab.recents.icon) }
+                    RecentsView(onCall: dial, onMessage: composeMessage)
+                        .tag(PhoneTab.recents)
+                        .tabItem { Label(L10n.t(PhoneTab.recents.tabTitle), systemImage: PhoneTab.recents.icon) }
 
-                MessagesView(
-                    pendingRecipient: $pendingSMSRecipient,
-                    pendingConversation: $pendingSMSConversation
-                )
-                    .tag(PhoneTab.messages)
-                    .tabItem { Label(L10n.t(PhoneTab.messages.tabTitle), systemImage: PhoneTab.messages.icon) }
+                    MessagesView(
+                        pendingRecipient: $pendingSMSRecipient,
+                        state: $messageListState,
+                        openConversation: showSMSConversation
+                    )
+                        .tag(PhoneTab.messages)
+                        .tabItem { Label(L10n.t(PhoneTab.messages.tabTitle), systemImage: PhoneTab.messages.icon) }
 
-                ContactsView(onCall: dial, onMessage: composeMessage)
-                    .tag(PhoneTab.contacts)
-                    .tabItem { Label(L10n.t(PhoneTab.contacts.tabTitle), systemImage: PhoneTab.contacts.icon) }
+                    ContactsView(onCall: dial, onMessage: composeMessage)
+                        .tag(PhoneTab.contacts)
+                        .tabItem { Label(L10n.t(PhoneTab.contacts.tabTitle), systemImage: PhoneTab.contacts.icon) }
 
-                AirSIMSettingsView()
-                    .tag(PhoneTab.settings)
-                    .tabItem { Label(L10n.t(PhoneTab.settings.tabTitle), systemImage: PhoneTab.settings.icon) }
+                    AirSIMSettingsView()
+                        .tag(PhoneTab.settings)
+                        .tabItem { Label(L10n.t(PhoneTab.settings.tabTitle), systemImage: PhoneTab.settings.icon) }
+                }
+                .phoneTabBarMinimizeOnScroll()
+                .phoneTabSelectionFeedback(selectedTabRawValue)
+                .tint(.blue)
+                .navigationTitle(selectedTab == .messages ? L10n.t("短信") : "")
+                .navigationBarTitleDisplayMode(.large)
+                .toolbar {
+                    if selectedTab == .messages {
+                        SMSConversationListToolbar(state: $messageListState)
+                    }
+                }
+                .toolbar(selectedTab == .messages ? .visible : .hidden, for: .navigationBar)
+                .background { PhoneTabBarNavigationFade() }
+                .navigationDestination(isPresented: $showingConversation) {
+                    if let sender = conversationSender {
+                        MessageThreadView(sender: sender)
+                            .id(sender)
+                            .toolbar(.visible, for: .navigationBar)
+                    }
+                }
             }
-            .phoneTabBarMinimizeOnScroll()
-            .phoneTabSelectionFeedback(selectedTabRawValue)
-            .tint(.blue)
 
             if let call = model.inAppPresentedCall {
                 ActiveCallView(call: call)
@@ -232,20 +255,27 @@ struct RootView: View {
     }
 
     private func dial(_ number: String) {
+        showingConversation = false
         model.numberInput = number
         selectedTab = .dial
         Task { await model.dial() }
     }
 
     private func composeMessage(_ number: String) {
+        showingConversation = false
         pendingSMSRecipient = number
         selectedTab = .messages
     }
 
     private func openSMSConversation(_ sender: String) {
         model.reloadMessagesFromLocalStore()
-        pendingSMSConversation = sender
+        showSMSConversation(sender)
+    }
+
+    private func showSMSConversation(_ sender: String) {
         selectedTab = .messages
+        conversationSender = sender
+        showingConversation = true
     }
 
     private func handleSystemCommunicationURL(_ url: URL) {
@@ -460,5 +490,87 @@ private struct PhoneTabBarCompactScrollReporter: ViewModifier {
 extension View {
     func phoneReportsTabBarCompactState() -> some View {
         modifier(PhoneTabBarCompactScrollReporter())
+    }
+}
+
+/// The entire TabView is the root of the outer navigation stack. Its native
+/// bar fades with that root, below the opaque conversation being pushed/popped.
+private struct PhoneTabBarNavigationFade: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {}
+
+    final class Controller: UIViewController {
+        private weak var nativeTabBar: UITabBar?
+
+        override func loadView() {
+            view = UIView()
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            transitionTabBar(visible: true, animated: animated)
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            transitionTabBar(visible: false, animated: animated)
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            if let bar = findTabBar() { Self.settle(bar, visible: true) }
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            if let bar = nativeTabBar { Self.settle(bar, visible: false) }
+        }
+
+
+        private func findTabBar() -> UITabBar? {
+            if let nativeTabBar { return nativeTabBar }
+            func find(in controller: UIViewController) -> UITabBar? {
+                if let tabs = controller as? UITabBarController { return tabs.tabBar }
+                for child in controller.children {
+                    if let bar = find(in: child) { return bar }
+                }
+                return nil
+            }
+            var ancestor = parent
+            while let controller = ancestor {
+                if let bar = find(in: controller) {
+                    nativeTabBar = bar
+                    return bar
+                }
+                ancestor = controller.parent
+            }
+            return nil
+        }
+
+        private func transitionTabBar(visible: Bool, animated: Bool) {
+            guard let bar = findTabBar() else { return }
+            bar.isUserInteractionEnabled = false
+            bar.accessibilityElementsHidden = true
+            guard animated, !UIAccessibility.isReduceMotionEnabled,
+                  let coordinator = transitionCoordinator else {
+                Self.settle(bar, visible: visible)
+                return
+            }
+            let queued = coordinator.animateAlongsideTransition(in: bar, animation: { _ in
+                bar.alpha = visible ? 1 : 0
+            }, completion: { context in
+                let finalVisible = context.isCancelled ? !visible : visible
+                Self.settle(bar, visible: finalVisible)
+            })
+            if !queued { Self.settle(bar, visible: visible) }
+        }
+
+        private static func settle(_ bar: UITabBar, visible: Bool) {
+            bar.alpha = visible ? 1 : 0
+            bar.isUserInteractionEnabled = visible
+            bar.accessibilityElementsHidden = !visible
+        }
     }
 }

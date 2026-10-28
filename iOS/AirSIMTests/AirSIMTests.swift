@@ -991,12 +991,25 @@ final class VoWLANNetworkRecoveryTests: XCTestCase {
 
 final class SMSDeletionTests: XCTestCase {
     @MainActor
-    func testConversationRowOpensThreadOutsideDeletionMode() async throws {
+    func testConversationRowCanReopenAfterReturning() async throws {
         let model = AppModel()
+        defer { model.stop() }
         model.messages = [SMSMessage(sender: "sms-navigation-fixture", content: "test message",
                                     code: nil, timestamp: Date(), deliveryID: "navigation-fixture")]
-        let view = MessagesView(pendingRecipient: .constant(nil), pendingConversation: .constant(nil))
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "airsim.first-connection-complete")
+        defaults.set(PhoneTab.messages.rawValue, forKey: "airsim.selected-tab")
+        let updates = AppUpdateController(defaults: defaults, fetch: { [] })
+        updates.acknowledgeNotes()
+        let view = RootView()
             .environmentObject(model)
+            .environmentObject(model.contacts)
+            .environmentObject(model.audio)
+            .environmentObject(AppSettings())
+            .environmentObject(updates)
+            .defaultAppStorage(defaults)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
@@ -1004,18 +1017,98 @@ final class SMSDeletionTests: XCTestCase {
         window.makeKeyAndVisible()
         defer { window.isHidden = true; previous?.makeKeyAndVisible() }
         try await Task.sleep(nanoseconds: 500_000_000)
-        func descendants(_ view: UIView) -> [UIView] {
-            [view] + view.subviews.flatMap(descendants)
+        func accessibilityObjects() -> [NSObject] {
+            var pending: [NSObject] = [window]
+            var visited: Set<ObjectIdentifier> = []
+            var result: [NSObject] = []
+            while let object = pending.popLast() {
+                guard visited.insert(ObjectIdentifier(object)).inserted else { continue }
+                result.append(object)
+                if let children = object.accessibilityElements as? [NSObject] {
+                    pending.append(contentsOf: children)
+                }
+                if let view = object as? UIView { pending.append(contentsOf: view.subviews) }
+            }
+            return result
         }
-        let list = try XCTUnwrap(descendants(window).compactMap { $0 as? UICollectionView }.first)
-        let index = IndexPath(item: 0, section: 0)
-        XCTAssertGreaterThan(list.numberOfItems(inSection: 0), 0)
-        list.selectItem(at: index, animated: false, scrollPosition: [])
-        list.delegate?.collectionView?(list, didSelectItemAt: index)
-        try await Task.sleep(nanoseconds: 600_000_000)
-        let navigation = descendants(window).compactMap { $0 as? UINavigationBar }.first
-        XCTAssertEqual(navigation?.topItem?.title, "sms-navigation-fixture",
-                       "Reading a conversation must navigate, not select it for deletion")
+        func conversationRow() -> NSObject? {
+            accessibilityObjects().first {
+                $0.accessibilityTraits.contains(.button)
+                    && $0.accessibilityLabel?.contains("sms-navigation-fixture") == true
+            }
+        }
+        func button(_ label: String) -> NSObject? {
+            accessibilityObjects().first {
+                $0.accessibilityTraits.contains(.button) && $0.accessibilityLabel == label
+            }
+        }
+        func controllers(_ controller: UIViewController) -> [UIViewController] {
+            [controller] + controller.children.flatMap(controllers)
+        }
+        func selectTab(_ tab: PhoneTab) async throws {
+            let index = try XCTUnwrap(PhoneTab.allCases.firstIndex(of: tab))
+            defaults.set(tab.rawValue, forKey: "airsim.selected-tab")
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if let root = window.rootViewController,
+                   controllers(root).compactMap({ $0 as? UITabBarController }).first?.selectedIndex == index {
+                    return
+                }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTFail("The requested tab must be rendered before opening a conversation")
+            throw NSError(domain: "SMSNavigationRegression", code: 1)
+        }
+        for iteration in 0..<3 {
+            try await selectTab(.settings)
+            try await selectTab(.messages)
+            let deadline = Date().addingTimeInterval(5)
+            while conversationRow() == nil && Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            let headerDeadline = Date().addingTimeInterval(5)
+            while (button(L10n.t("新信息")) == nil || button(L10n.t("短信操作")) == nil)
+                    && Date() < headerDeadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            let compose = try XCTUnwrap(button(L10n.t("新信息")))
+            XCTAssertNotNil(button(L10n.t("短信操作")))
+            let rootNavigation = try XCTUnwrap(controllers(try XCTUnwrap(window.rootViewController))
+                .compactMap { $0 as? UINavigationController }.first {
+                    !$0.isNavigationBarHidden && $0.navigationBar.topItem?.title == L10n.t("短信")
+                })
+            XCTAssertEqual(rootNavigation.viewControllers.count, 1)
+            if iteration == 0 {
+                XCTAssertTrue(compose.accessibilityActivate())
+                let composerDeadline = Date().addingTimeInterval(5)
+                while button(L10n.t("取消")) == nil && Date() < composerDeadline {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                }
+                XCTAssertTrue(try XCTUnwrap(button(L10n.t("取消"))).accessibilityActivate())
+                let dismissalDeadline = Date().addingTimeInterval(5)
+                while window.rootViewController?.presentedViewController != nil && Date() < dismissalDeadline {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                }
+                XCTAssertNil(window.rootViewController?.presentedViewController)
+            }
+            let row = try XCTUnwrap(conversationRow())
+            XCTAssertTrue(row.accessibilityActivate(), "The actual row action must remain usable after returning")
+            try await Task.sleep(nanoseconds: 600_000_000)
+            let all = controllers(try XCTUnwrap(window.rootViewController))
+            let tabs = try XCTUnwrap(all.compactMap { $0 as? UITabBarController }.first)
+            let navigation = try XCTUnwrap(all.compactMap { $0 as? UINavigationController }
+                .first { $0.topViewController?.navigationItem.title == "sms-navigation-fixture" })
+            let conversation = try XCTUnwrap(navigation.topViewController)
+            XCTAssertFalse(conversation.view.isDescendant(of: tabs.view),
+                           "The conversation must cover the tabs, not be rendered beneath them")
+            XCTAssertTrue(navigation.navigationBar.topItem === conversation.navigationItem)
+            navigation.popViewController(animated: false)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            XCTAssertEqual(navigation.viewControllers.count, 1)
+            XCTAssertEqual(navigation.navigationBar.topItem?.title, L10n.t("短信"))
+            XCTAssertNotNil(button(L10n.t("新信息")))
+            XCTAssertNotNil(button(L10n.t("短信操作")))
+        }
     }
 
     func testRepeatedFractionalLegacySaveAndUpgradeDoNotDuplicateMessages() throws {
