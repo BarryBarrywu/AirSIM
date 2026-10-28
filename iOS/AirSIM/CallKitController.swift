@@ -617,20 +617,20 @@ final class CallKitController: NSObject {
             guard let handler else { throw CallKitBridgeError.handlerUnavailable }
             let origin: CallAnswerOrigin = appAnswerRequestUUID == action.callUUID ? .app : .system
             appAnswerRequestUUID = nil
-            let backendError = try await CallKitActionCoordinator.perform(
-                prepare: { try handler.callKitPrepareAudioSession() },
-                fulfill: {
-                    self.currentState = "connecting"
-                    // 系统事务只确认“用户接受了接听”。公网 WebSocket、ATA 和 PCM
-                    // 在其后异步建立，不能阻塞 CallKit 激活 AVAudioSession。
-                    action.fulfill()
-                },
-                backend: { try await handler.callKitAnswer(uuid: action.callUUID, origin: origin) }
-            )
-            guard currentUUID == action.callUUID else { return }
-            if let backendError {
+            currentState = "connecting"
+            // Use the same path as the in-app answer button. Preparing the
+            // audio session here used to throw and fail the CXAnswerCallAction,
+            // which made a direct CallKit answer hang up while the in-app answer
+            // worked. The backend prepares/activates audio after the system
+            // transaction has been fulfilled.
+            action.fulfill()
+            do {
+                try await handler.callKitAnswer(uuid: action.callUUID, origin: origin)
+                guard currentUUID == action.callUUID else { return }
+            } catch {
+                guard currentUUID == action.callUUID else { return }
                 finishCurrentCall(previous: nil, reason: .failed)
-                handler.callKitDidFail(backendError.localizedDescription)
+                handler.callKitDidFail(error.localizedDescription)
             }
         } catch {
             fail(action, error: error)
