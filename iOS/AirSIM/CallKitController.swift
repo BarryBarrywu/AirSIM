@@ -618,11 +618,15 @@ final class CallKitController: NSObject {
             let origin: CallAnswerOrigin = appAnswerRequestUUID == action.callUUID ? .app : .system
             appAnswerRequestUUID = nil
             currentState = "connecting"
-            // Use the same path as the in-app answer button. Preparing the
-            // audio session here used to throw and fail the CXAnswerCallAction,
-            // which made a direct CallKit answer hang up while the in-app answer
-            // worked. The backend prepares/activates audio after the system
-            // transaction has been fulfilled.
+            // Configure the audio category before fulfilling the system answer
+            // so CallKit can activate the session. A prepare failure must not
+            // fail CXAnswerCallAction: the backend can still configure audio and
+            // report a real transport error separately.
+            do {
+                try handler.callKitPrepareAudioSession()
+            } catch {
+                debugLog("接听前音频预配置失败，继续系统接听：\(error.localizedDescription)")
+            }
             action.fulfill()
             do {
                 try await handler.callKitAnswer(uuid: action.callUUID, origin: origin)
