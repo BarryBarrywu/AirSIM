@@ -117,7 +117,7 @@ final class WatchCallCoordinator: NSObject, WCSessionDelegate {
         }
         if let lastPayload,
            lastCloudMediaAllowed == CloudModePreference.isEnabled(),
-           lastPayload == payload {
+           lastPayload.isSamePresentation(as: payload) {
             return
         }
         lastPayload = payload

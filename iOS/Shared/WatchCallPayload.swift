@@ -53,6 +53,19 @@ struct WatchCallPayload: Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    /// Identity and presentation fields, excluding the timestamp used only for
+    /// stale/ordering checks. Re-publishing the same state must not create a new
+    /// WatchConnectivity transfer on every update.
+    func isSamePresentation(as other: WatchCallPayload) -> Bool {
+        callID == other.callID
+            && callUUID == other.callUUID
+            && aliases == other.aliases
+            && phase == other.phase
+            && number == other.number
+            && callerName == other.callerName
+            && transport == other.transport
+    }
+
     func matches(callID: String?, callUUID: UUID?) -> Bool {
         let idMatches = callID.map { $0 == self.callID || aliases.contains($0) } ?? false
         if let expectedUUID = self.callUUID, let candidateUUID = callUUID {
