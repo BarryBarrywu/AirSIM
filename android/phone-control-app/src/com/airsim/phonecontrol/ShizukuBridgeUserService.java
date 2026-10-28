@@ -104,25 +104,10 @@ public final class ShizukuBridgeUserService extends Binder {
         if (serviceContext == null) return "error:no_context";
         if (destination == null || destination.trim().isEmpty()
                 || body == null || body.trim().isEmpty()) return "error:invalid";
+        long identity = Binder.clearCallingIdentity();
         try {
-            SmsManager base = serviceContext.getSystemService(SmsManager.class);
-            if (base == null) base = SmsManager.getDefault();
-            if (base == null) return "error:no_service";
-            SmsManager manager = base;
-            try {
-                if (subscriptionId >= 0) {
-                    manager = Build.VERSION.SDK_INT >= 31
-                            ? base.createForSubscriptionId(subscriptionId)
-                            : SmsManager.getSmsManagerForSubscriptionId(subscriptionId);
-                }
-            } catch (RuntimeException error) {
-                // Shell UID may not expose subscription-specific SmsManager on
-                // HyperOS; the default manager still uses the default SMS SIM and
-                // inherits SEND_SMS_NO_CONFIRMATION.
-                Log.w(TAG, "shizuku_sms_subscription_fallback type="
-                        + error.getClass().getSimpleName());
-                manager = base;
-            }
+            SmsManager manager = smsManagerForSubscription(subscriptionId);
+            if (manager == null) return "error:no_service";
             ArrayList<String> parts = manager.divideMessage(body);
             if (parts == null || parts.isEmpty()) return "error:divide";
             if (parts.size() == 1) {
@@ -135,12 +120,40 @@ public final class ShizukuBridgeUserService extends Binder {
         } catch (SecurityException error) {
             Log.w(TAG, "shizuku_sms_permission_denied");
             return "error:permission";
-        } catch (RuntimeException error) {
-            Log.w(TAG, "shizuku_sms_runtime_failed type="
-                    + error.getClass().getSimpleName()
-                    + " detail=" + (error.getMessage() == null ? "none" : error.getMessage()));
-            return "error:runtime:" + error.getClass().getSimpleName();
+        } catch (Exception error) {
+            Log.w(TAG, "shizuku_sms_failed type=" + error.getClass().getSimpleName());
+            return "error:" + error.getClass().getSimpleName();
+        } finally {
+            Binder.restoreCallingIdentity(identity);
         }
+    }
+
+    private SmsManager smsManagerForSubscription(int subscriptionId) throws Exception {
+        if (Build.VERSION.SDK_INT >= 30) {
+            // app_process does not run the app startup that initializes telephony's service registry.
+            Class<?> initializer = Class.forName("android.telephony.TelephonyFrameworkInitializer");
+            synchronized (initializer) {
+                if (initializer.getMethod("getTelephonyServiceManager").invoke(null) == null) {
+                    Class<?> manager = Class.forName("android.os.TelephonyServiceManager");
+                    initializer.getMethod("setTelephonyServiceManager", manager)
+                            .invoke(null, manager.getConstructor().newInstance());
+                }
+            }
+        }
+        Context context = serviceContext;
+        if (Process.myUid() == 2000) {
+            // Use a system-derived shell context rather than attributing the send to the APK.
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Object thread = activityThread.getMethod("currentActivityThread").invoke(null);
+            Context system = (Context) activityThread.getMethod("getSystemContext").invoke(thread);
+            context = system.createPackageContext("com.android.shell", 0);
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            SmsManager base = context.getSystemService(SmsManager.class);
+            return base == null || subscriptionId < 0 ? base : base.createForSubscriptionId(subscriptionId);
+        }
+        return subscriptionId < 0 ? SmsManager.getDefault()
+                : SmsManager.getSmsManagerForSubscriptionId(subscriptionId);
     }
 
     private String recentSms(long afterId, long cutoffMillis, int limit) {
