@@ -31,14 +31,32 @@ enum AirSIMConnectionMode: String, CaseIterable, Codable, Identifiable, Sendable
     }
 }
 
+enum CloudSignalingPreference {
+    static let key = "airsim.cloud-signaling-enabled"
+
+    /// Relay/APNs is a notification channel, independent from call media.
+    /// It defaults off for a fresh install and is enabled when cloud pairing is
+    /// written or the user turns on "云端通知".
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if let stored = defaults.object(forKey: key) as? Bool { return stored }
+        // Existing automatic/cloud installations already rely on Relay.
+        let mode = ConnectionModePreference.selected(defaults: defaults)
+        return mode == .automatic || mode == .cloud
+    }
+
+    static func set(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: key)
+    }
+}
+
 enum ConnectionModePreference {
     static let key = "airsim.connection-mode"
 
-    /// The top-level toggle is a projection of the mode, never a second preference.
+    /// Kept for source compatibility with older call sites. Local/cloud
+    /// notification is now an independent preference and never rewrites the
+    /// selected media mode.
     static func selectingLocalOnly(_ enabled: Bool, from mode: AirSIMConnectionMode) -> AirSIMConnectionMode {
-        let localOnly = !ConnectionModeRuntimePolicy(mode: mode).startsCloud
-        guard enabled != localOnly else { return mode }
-        return enabled ? .localDual : .automatic
+        mode
     }
 
     static func selected(defaults: UserDefaults = .standard) -> AirSIMConnectionMode {

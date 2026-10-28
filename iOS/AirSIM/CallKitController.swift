@@ -279,7 +279,7 @@ final class CallKitController: NSObject {
         let localOwnerBusy = model?.ownsLocalCallPresentation == true
             || model?.cloudCallOwnsPrimaryPresentation == true
             || model?.deviceCallContext.admissionReservation != nil
-        if isAvailable, CloudModePreference.isEnabled(),
+        if isAvailable, CloudSignalingPreference.isEnabled(),
            !localOwnerBusy,
            currentUUID == nil || currentUUID == call.uuid,
            incomingDeduplicator.shouldAccept(callID: call.callID, uuid: call.uuid) {

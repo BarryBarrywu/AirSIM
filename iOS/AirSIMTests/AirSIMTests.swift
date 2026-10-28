@@ -202,15 +202,20 @@ final class AudioGraphAndVerboseRegressionTests: XCTestCase {
         XCTAssertFalse(CloudModePreference.isEnabled())
     }
 
-    func testLocalOnlySwitchConvertsAutomaticToDualLocalWithoutSeparatePreference() {
-        let old = ConnectionModePreference.selected()
-        ConnectionModePreference.set(.automatic)
-        defer { ConnectionModePreference.set(old) }
+    func testCloudSignalingDoesNotChangeVoWLANMediaMode() {
+        let oldMode = ConnectionModePreference.selected()
+        let oldSignaling = CloudSignalingPreference.isEnabled()
+        ConnectionModePreference.set(.vowlan)
+        CloudSignalingPreference.set(false)
+        defer {
+            ConnectionModePreference.set(oldMode)
+            CloudSignalingPreference.set(oldSignaling)
+        }
         let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()))
-        model.setLocalModeEnabled(true)
-        XCTAssertEqual(ConnectionModePreference.selected(), .localDual)
+        model.setCloudSignalingEnabled(true)
+        XCTAssertEqual(ConnectionModePreference.selected(), .vowlan)
+        XCTAssertTrue(CloudSignalingPreference.isEnabled())
         XCTAssertFalse(CloudModePreference.isEnabled())
-        XCTAssertTrue(ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsBluetooth)
     }
 
     func testAuthenticatedMetadataRetainsPeerGenerationAndRejectsWrongOwner() throws {

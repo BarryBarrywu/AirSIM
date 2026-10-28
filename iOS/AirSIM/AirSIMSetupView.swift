@@ -173,6 +173,7 @@ struct AirSIMSettingsView: View {
     @State private var appUpdateInbox = AppUpdateResultInbox()
     @State private var updateViewVisible = false
     @AppStorage(ConnectionModePreference.key) private var connectionModeRaw = ConnectionModePreference.selected().rawValue
+    @AppStorage(CloudSignalingPreference.key) private var cloudSignalingEnabled = CloudSignalingPreference.isEnabled()
     @AppStorage(BackgroundStandbyPreference.key) private var backgroundStandbyEnabled = false
     @AppStorage(LiveActivityVisibilityPreference.key) private var liveActivityEnabled = true
     @AppStorage(SMSVerificationCodeClipboard.enabledKey) private var autoCopySMSCode = true
@@ -205,16 +206,13 @@ struct AirSIMSettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle(isOn: Binding(
-                        get: { !runtimePolicy.startsCloud },
-                        set: { enabled in
-                            connectionModeRaw = ConnectionModePreference.selectingLocalOnly(
-                                enabled, from: selectedMode).rawValue
-                        }
-                    )) {
-                        Label("仅本地模式", systemImage: "network.slash")
+                    Toggle(isOn: $cloudSignalingEnabled) {
+                        Label("云端通知（APNs）", systemImage: "bell.badge")
                     }
-                    .accessibilityIdentifier("localOnlyMode")
+                    .accessibilityIdentifier("cloudSignaling")
+                    .onChange(of: cloudSignalingEnabled) { enabled in
+                        model.setCloudSignalingEnabled(enabled)
+                    }
                     Picker("连接模式", selection: $connectionModeRaw) {
                         ForEach(AirSIMConnectionMode.allCases) { mode in
                             Label(mode.title, systemImage: modeIcon(mode)).tag(mode.rawValue)
@@ -230,7 +228,7 @@ struct AirSIMSettingsView: View {
                 } header: {
                     Text("运行模式")
                 } footer: {
-                    Text(selectedMode.detail + "\n仅本地模式与连接模式同步；关闭表示允许云端，安卓仍需完成云端配对。")
+                    Text(selectedMode.detail + "\n云端通知只负责 APNs/PushKit 与 Relay 注册，不会改变当前媒体模式；VoWLAN 模式下通话仍只走局域网。")
                 }
 
                 Section {

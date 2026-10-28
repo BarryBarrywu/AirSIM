@@ -1914,10 +1914,20 @@ final class AppModel: ObservableObject {
     }
 
     func setLocalModeEnabled(_ enabled: Bool) {
-        let current = ConnectionModePreference.selected()
-        let next = ConnectionModePreference.selectingLocalOnly(enabled, from: current)
-        guard next != current else { return }
-        setConnectionMode(next)
+        setCloudSignalingEnabled(!enabled)
+    }
+
+    func setCloudSignalingEnabled(_ enabled: Bool) {
+        CloudSignalingPreference.set(enabled)
+        VoIPPushController.shared.setSignalingEnabled(enabled)
+        if enabled {
+            UIApplication.shared.registerForRemoteNotifications()
+            Task { await VoIPPushController.shared.syncRegistration() }
+        }
+        Task { [weak self] in
+            guard let self, let (api, _) = await self.readyVoWLANRoute() else { return }
+            try? await api.setPushCloudEnabled(enabled)
+        }
     }
 
     private func releaseInactiveLocalTransports() {
@@ -1932,6 +1942,11 @@ final class AppModel: ObservableObject {
 
     func setConnectionMode(_ mode: AirSIMConnectionMode) {
         ConnectionModePreference.set(mode)
+        // Explicit cloud/automatic media needs Relay signaling; VoWLAN keeps
+        // whatever notification choice the user made.
+        if mode == .cloud || mode == .automatic {
+            CloudSignalingPreference.set(true)
+        }
         eventStreamSupported = nil
         let policy = ConnectionModeRuntimePolicy(mode: mode)
         if policy.startsVoWLAN { localDevices.start() }
@@ -1943,18 +1958,19 @@ final class AppModel: ObservableObject {
         cloudStatusRefreshTask = nil
         cloudStatusRefreshGeneration &+= 1
         lastCloudStatusRefresh = .distantPast
-        if !policy.startsCloud {
+        if !CloudSignalingPreference.isEnabled() {
             cloudAgentStatus = nil
             cloudAgentDirectory = nil
             lastCloudStatusReceivedAt = .distantPast
         }
         callKit.setEnabled(policy.usesCallKit || deviceCalls.active != nil)
-        VoIPPushController.shared.setLocalModeEnabled(!policy.startsCloud)
+        // Media mode never turns APNs/PushKit off. Signaling is independent.
+        VoIPPushController.shared.setSignalingEnabled(CloudSignalingPreference.isEnabled())
         WatchCallCoordinator.shared.refreshMediaPolicy()
-        if !policy.startsCloud {
+        if CloudSignalingPreference.isEnabled() {
             Task { [weak self] in
                 guard let self, let (api, _) = await self.readyVoWLANRoute() else { return }
-                try? await api.setPushCloudEnabled(false)
+                try? await api.setPushCloudEnabled(true)
             }
         }
         if policy.startsVoWLAN {

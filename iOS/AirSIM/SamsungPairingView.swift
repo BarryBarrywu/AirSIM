@@ -1,10 +1,9 @@
 import SwiftUI
 
 struct SamsungPairingView: View {
-    /// Automatic/VoWLAN/VoBLE pairing is a local direct pairing. Only explicit
-    /// cloud mode requires Relay registration; otherwise a disabled Android
-    /// push/relay configuration blocks even Bonjour pairing.
-    static var defaultLocalPairingOnly: Bool { ConnectionModePreference.selected() != .cloud }
+    /// This toggle only controls whether Relay/APNs registration is written.
+    /// It never changes the media connection mode.
+    static var defaultLocalPairingOnly: Bool { !CloudSignalingPreference.isEnabled() }
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var localPairingOnly = SamsungPairingView.defaultLocalPairingOnly
@@ -27,8 +26,8 @@ struct SamsungPairingView: View {
                 .disabled(pairingServiceID != nil)
                 .accessibilityIdentifier("localPairingOnly")
                 Text(localPairingOnly
-                     ? "本次配对只写入 VoWLAN 密钥，不检查或写入 Relay 和推送参数。自动、VoWLAN、VoBLE 模式推荐此项；不会改变全局通话模式。"
-                     : "本次配对写入 VoWLAN 密钥及 Relay／推送配置；只有显式云端模式需要此项，且云端凭据必须就绪。")
+                     ? "本次配对只写入 VoWLAN 密钥，不写入 Relay/APNs。不会改变当前通话媒体模式。"
+                     : "本次配对额外写入 Relay/APNs；仅用于通知，不会改变当前通话媒体模式。VoWLAN 仍只走局域网。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -152,6 +151,7 @@ struct SamsungPairingView: View {
                     registration: registration, endpoint: result.route.endpoint,
                     clockOffset: result.clockOffset)
                 try await model.vowlan.installManualRoute(result.route)
+                if !localPairingOnly { model.setCloudSignalingEnabled(true) }
                 // Tailscale/5G can need a moment before the control port is
                 // reachable after the pairing window closes.
                 for attempt in 0..<3 {
@@ -191,6 +191,7 @@ struct SamsungPairingView: View {
                         registration: registration
                     )
                 try await model.completeLocalPairing(agentID: paired.agentID, registration: registration)
+                if !localPairingOnly { model.setCloudSignalingEnabled(true) }
                 return model.localDevices.api(for: paired.agentID) == nil
                     ? "加密配对已写入安卓，正在等待通话网关身份验证；暂未建立可用路由。" : paired.message
             }

@@ -139,12 +139,12 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
 		// Watch token 与跨设备接听所有权必须在冷启动阶段就可接收，不能等待
 		// SwiftUI 首屏 onAppear（锁屏 PushKit 唤醒时首屏可能永远不出现）。
 		WatchCallCoordinator.shared.start()
-        if policy.startsCloud {
+        if CloudSignalingPreference.isEnabled() {
             VoIPPushController.shared.start()
             application.registerForRemoteNotifications()
         }
 #if DEBUG
-        print(!policy.startsCloud
+        print(!CloudSignalingPreference.isEnabled()
             ? "[AirSIM Local] 已跳过 APNs 与 PushKit 注册"
             : "[AirSIM APNs] 已启动普通通知与 PushKit 注册")
 #endif
@@ -153,7 +153,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         // 首次授权弹窗可能晚于 didFinishLaunching 返回；回到前台时重新登记是幂等的。
-        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else { return }
+        guard CloudSignalingPreference.isEnabled() else { return }
         VoIPPushController.shared.start()
         application.registerForRemoteNotifications()
         Task { await VoIPPushController.shared.syncRegistration() }
@@ -163,7 +163,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
-        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else { return }
+        guard CloudSignalingPreference.isEnabled() else { return }
         VoIPPushController.shared.storeAlertToken(deviceToken)
 #if DEBUG
         print("[AirSIM APNs] 普通通知 token 已更新；字节数=\(deviceToken.count)")
@@ -174,7 +174,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else { return }
+        guard CloudSignalingPreference.isEnabled() else { return }
         VoIPPushController.shared.clearAlertToken()
 #if DEBUG
         print("[AirSIM APNs] 普通通知 token 注册失败：\(error.localizedDescription)")
@@ -186,7 +186,7 @@ final class AirSIMNotificationDelegate: NSObject, UIApplicationDelegate, @precon
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        guard ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud else {
+        guard CloudSignalingPreference.isEnabled() else {
             completionHandler(.noData)
             return
         }
@@ -392,7 +392,8 @@ private final class ColdLaunchCallKitHandler: CallKitActionHandling {
         try await api.dial(number: number)
     }
     func callKitPrepareAudioSession() throws {
-        if CallKitController.shared.currentIncomingPush?.authenticatedMediaURL != nil {
+        if CloudModePreference.isEnabled(),
+           CallKitController.shared.currentIncomingPush?.authenticatedMediaURL != nil {
             try IPhoneCloudCallSession.shared.prepareAudioForCallKit()
         }
     }
@@ -662,9 +663,7 @@ final class IncomingCallNotifier {
             }
 #endif
             Task { @MainActor in
-                guard ConnectionModeRuntimePolicy(
-                    mode: ConnectionModePreference.selected()
-                ).startsCloud else { return }
+                guard CloudSignalingPreference.isEnabled() else { return }
                 VoIPPushController.shared.start()
                 UIApplication.shared.registerForRemoteNotifications()
             }
@@ -792,7 +791,7 @@ final class SMSNotificationCoordinator {
     /// Cloud/APNs is authoritative when a usable alert token exists. Local
     /// notifications are only the owner for local/BLE-only operation.
     func cloudOwnsNotifications() -> Bool {
-        CloudModePreference.isEnabled()
+        CloudSignalingPreference.isEnabled()
             && VoIPPushController.shared.registrationReadiness().alertTokenReady
     }
 
