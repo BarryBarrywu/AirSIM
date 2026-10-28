@@ -13,15 +13,13 @@ enum AppReleaseNotes {
     // Bundled: showing installed-version notes never needs GitHub, Relay or pairing.
     // Keep this summary in sync with the candidate's source and docs when publishing.
     static let items = [
-        "新增全局“后台静音音频保活”开关，默认关闭，显著降低后台耗电；PushKit/CallKit 仍可唤醒。",
-        "反馈改为手动上传：在设置里填写描述与备注后点击上传，不会在通话或短信时自动提交。",
-        "VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧 LAN 地址并重新发现验证，减少离线卡住。",
-        "灵动岛每页最多 3 台设备；国际号码保留国家码，修复英国等号码显示错误。",
-        "修复 OnePlus 等机型 DTMF 按键被立即取消、挂断无响应的问题；KernelSU root bridge 增加 Looper 初始化。",
-        "CallKit 接听改为幂等，修复冷启动/通知打开时 active call id mismatch 与自动挂断；VoBLE 新增短信下行。",
-        "来电事件优先走 Relay，已结束的来电不再迟到拉起 CallKit；挂断控制回执超时按本地结束处理。",
-        "云端接听后立即启动音频，不再等待迟到的 Agent active 帧；弱网短丢包隐藏并自适应扩大 jitter 缓冲。",
-        "新增崩溃诊断与最新 Android 日志采集；反馈输入框支持键盘“完成”收起；云端自检复用 HTTPS 连接。"
+        "VoWLAN 增加独立“云端通知（APNs）”开关；关闭本地模式不再自动切换到自动模式。",
+        "iOS 18 受限通讯录会明确提示，新增联系人会刷新；不再被旧缓存挡住。",
+        "短信会话支持日期分组、原生文本选择、多选删除与系统分享，并完整覆盖 Tab 栏。",
+        "iPhone 接听 CallKit 后同步结束 Apple Watch 响铃；迟到的 Watch 推送不会重新拉起。",
+        "反馈只保留手动上传，不再在通话或短信时自动提交。",
+        "CallKit 接听前尽力配置音频但不因预配置失败挂断，修复接听后等待语音链路。",
+        "VoWLAN 冷启动接听只使用当前绑定设备与专属凭据，避免等待错误模块。"
     ]
     static let limitations = "各机型双向声音、长时锁屏与多设备场景仍需分别真机验证；GitHub 发布不代表 TestFlight 已可更新。"
 }
@@ -100,39 +98,39 @@ private enum NewFeatureCatalog {
     static let pages: [NewFeaturePage] = [
         NewFeaturePage(
             id: 0,
-            kicker: "新功能",
-            title: "后台保活，\n由你决定",
-            body: "新增全局静音音频保活开关。默认关闭，不再用持续静音播放维持后台，显著降低耗电。PushKit、CallKit 与云端唤醒仍可工作。",
-            symbol: "battery.25percent",
-            accent: .green,
-            demo: .standby
-        ),
-        NewFeaturePage(
-            id: 1,
-            kicker: "反馈",
-            title: "问题手动留痕",
-            body: "在设置里填写用户描述与备注，手动把脱敏日志、设备信息和 PCM 状态上传到 Notion。不会在通话或短信时自动上传。",
-            symbol: "paperplane.fill",
-            accent: .cyan,
-            demo: .feedback
-        ),
-        NewFeaturePage(
-            id: 2,
-            kicker: "VoWLAN 自愈",
-            title: "换网也能\n自己找回来",
-            body: "Wi-Fi 或 DHCP 换址后，旧的局域网地址会被丢弃，重新发现并做签名验证；Tailscale 路由会保留，不再反复探测失效 IP。",
-            symbol: "wifi",
+            kicker: "云端通知",
+            title: "VoWLAN，也能\n收到 CallKit",
+            body: "新增独立“云端通知（APNs）”开关。关闭本地模式不再自动切到自动模式；接听仍优先走 VoWLAN，不会静默切到云端媒体。",
+            symbol: "bell.badge.fill",
             accent: .blue,
             demo: .vowlan
         ),
         NewFeaturePage(
-            id: 3,
-            kicker: "多设备",
-            title: "四台安卓，\n一页掌控",
-            body: "灵动岛每页最多显示 3 台设备，左右翻页即可切换；当前设备始终置顶，底部说明不再被最后一行挤出卡片。",
-            symbol: "rectangle.stack.fill",
-            accent: .purple,
+            id: 1,
+            kicker: "通讯录",
+            title: "完整访问，\n即时刷新",
+            body: "识别 iOS 18 受限通讯录并提示选择更多联系人；新增联系人会自动刷新，不再被旧缓存挡住。",
+            symbol: "person.2.fill",
+            accent: .orange,
             demo: .devices
+        ),
+        NewFeaturePage(
+            id: 2,
+            kicker: "短信",
+            title: "像系统信息\n一样好用",
+            body: "会话完整覆盖 Tab 栏，支持日期分组、原生文本选择、多选删除与系统分享；只影响本机 AirSIM 记录。",
+            symbol: "message.fill",
+            accent: .green,
+            demo: .feedback
+        ),
+        NewFeaturePage(
+            id: 3,
+            kicker: "Apple Watch",
+            title: "iPhone 接听，\nWatch 停铃",
+            body: "iPhone CallKit 接通后同步状态到 Watch，结束手表独立响铃；迟到的 APNs 不会让同一通电话再次响起。",
+            symbol: "applewatch",
+            accent: .mint,
+            demo: .standby
         ),
     ]
 }
