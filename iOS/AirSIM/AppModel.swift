@@ -1136,6 +1136,16 @@ final class AppModel: ObservableObject {
         }
         // Block before awaiting unpair, so delayed discovery/status callbacks cannot restore it.
         PairedAndroidDeviceStore.forget(agentID)
+        if CloudAgentTargetStore.last() == agentID {
+            CloudAgentTargetStore.forget()
+        }
+        // A stale Agent target is enough for cloud dialing. Clear the last-known
+        // target when the user removes the final paired device, otherwise a
+        // removed phone can still produce a cloud call page.
+        if PairedAndroidDeviceStore.records().isEmpty {
+            AndroidAgentBindingPreference.set(nil)
+            CloudAgentTargetStore.forget()
+        }
         pairedDeviceRecords = PairedAndroidDeviceStore.records()
         vowlan.forget(agentID)
         try await localDevices.forget(agentID: agentID)
@@ -1922,7 +1932,14 @@ final class AppModel: ObservableObject {
         VoIPPushController.shared.setSignalingEnabled(enabled)
         if enabled {
             UIApplication.shared.registerForRemoteNotifications()
-            Task { await VoIPPushController.shared.syncRegistration() }
+            Task { [weak self] in
+                guard let self else { return }
+                if let (api, _) = await self.readyVoWLANRoute() {
+                    await VoIPPushController.shared.syncRegistration(with: api)
+                } else {
+                    await VoIPPushController.shared.syncRegistration()
+                }
+            }
         }
         Task { [weak self] in
             guard let self, let (api, _) = await self.readyVoWLANRoute() else { return }
