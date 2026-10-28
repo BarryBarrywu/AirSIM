@@ -46,6 +46,12 @@ export default {
   async fetch(request, env) {
     return handleRequest(request, env);
   },
+  async scheduled(event, env, ctx) {
+    // Keep the relay registration table small: remove devices that have not
+    // registered in 30 days and are not currently sending heartbeats.
+    const before = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
+    ctx.waitUntil(pruneDashboardDevices(env, { before, onlyOffline: true }));
+  },
 };
 
 export async function handleRequest(request, env) {

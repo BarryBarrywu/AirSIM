@@ -229,7 +229,9 @@ async function dashboardControlID(env, deviceID) {
   return [...signature.slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function pruneDashboardDevices(env, { keepControlIDs = [], before = null, limit = 500 } = {}) {
+export async function pruneDashboardDevices(env, {
+  keepControlIDs = [], before = null, limit = 500, onlyOffline = false,
+} = {}) {
   const keep = new Set(Array.isArray(keepControlIDs) ? keepControlIDs : []);
   const cutoff = before ? Date.parse(before) : NaN;
   const maximum = Math.max(1, Math.min(500, Number(limit) || 500));
@@ -239,7 +241,11 @@ export async function pruneDashboardDevices(env, { keepControlIDs = [], before =
     if (!device?.device_id) continue;
     const controlID = await dashboardControlID(env, device.device_id);
     const registered = Date.parse(device.registered_at || "");
-    if (keep.has(controlID) || (Number.isFinite(cutoff) && Number.isFinite(registered) && registered >= cutoff)) {
+    const heartbeat = onlyOffline ? await readAgentHeartbeat(env, device.device_id) : null;
+    const online = heartbeat && Number.isFinite(heartbeat.received_at_ms)
+      && Date.now() - heartbeat.received_at_ms <= 150_000;
+    if (keep.has(controlID) || online
+        || (Number.isFinite(cutoff) && Number.isFinite(registered) && registered >= cutoff)) {
       kept++;
       continue;
     }
