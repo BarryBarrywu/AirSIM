@@ -38,6 +38,7 @@ public final class StandaloneAgentService extends Service {
     private StandaloneRelayClient relay;
     private int syncedRegistrationHash;
     private final RelayRegistrationRecovery registrationRecovery = new RelayRegistrationRecovery();
+    private final CloudCallRetryPolicy callEventRetry = new CloudCallRetryPolicy();
     private long lastHeartbeat;
     private long nextHeartbeatAttempt;
     private long lastCommandPoll;
@@ -204,9 +205,6 @@ public final class StandaloneAgentService extends Service {
                     if (!commandConfiguration.isCurrent(snapshot)) return;
                     result = StandaloneAgentGateway.get(this).executeCloudCommand(command,
                             () -> commandConfiguration.isCurrent(snapshot));
-                    if (result.optString("status").equals("completed") && "dial".equals(command.optString("type"))) {
-                        StandaloneCloudMediaManager.get(this).startOutgoing(command.optJSONObject("call"));
-                    }
                 }
             } catch (Exception error) {
                 result = new JSONObject().put("command_id", commandID).put("status", "failed")
@@ -265,10 +263,6 @@ public final class StandaloneAgentService extends Service {
                         if (!agentID(registration).equals(command.optString("target_agent_id"))) continue;
                         JSONObject result = StandaloneAgentGateway.get(this).executeCloudCommand(command,
                                 () -> commandConfiguration.isCurrent(commandSnapshot));
-                        if (result.optString("status").equals("completed")
-                                && "dial".equals(command.optString("type"))) {
-                            StandaloneCloudMediaManager.get(this).startOutgoing(command.optJSONObject("call"));
-                        }
                         socket.writeText(result.toString());
                     } catch (SocketTimeoutException timeout) {
                         socket.writePing("command-keepalive".getBytes(StandardCharsets.US_ASCII));
@@ -327,8 +321,22 @@ public final class StandaloneAgentService extends Service {
                             registration, new JSONObject(encoded), relay);
                     CALL_EVENTS.poll();
                 } catch (Exception error) {
+                    if (callEventRetry.shouldDrop(encoded, error, android.os.SystemClock.elapsedRealtime())) {
+                        // A refused or long-failing event must not hold every later event,
+                        // including the "ended" that closes the cloud call, behind it.
+                        CALL_EVENTS.poll();
+                        BridgeLog.info("standalone_call_event_dropped " + CloudCallRetryPolicy.describe(error));
+                        try {
+                            StandaloneCloudMediaManager.get(this).abandonCallEvent(encoded);
+                        } catch (RuntimeException abandonError) {
+                            // The event is already out of the queue; escaping here would end the
+                            // single event-worker thread and crash the process.
+                            BridgeLog.error("standalone_call_event_drop_failed", abandonError);
+                        }
+                        continue;
+                    }
                     BridgeLog.info("standalone_call_event_retry failures=" + (attempt + 1)
-                            + " type=" + error.getClass().getSimpleName());
+                            + " " + CloudCallRetryPolicy.describe(error));
                     try { Thread.sleep(500); } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         return;

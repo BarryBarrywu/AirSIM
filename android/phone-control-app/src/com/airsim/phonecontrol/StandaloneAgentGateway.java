@@ -249,21 +249,33 @@ final class StandaloneAgentGateway {
         AgentCommand local = new AgentCommand(commandID, action, callID,
                 command.optString("number", ""), command.optString("message", ""),
                 command.optString("sim_account", ""));
-        AgentCommandDispatcher.Result result = execute(local);
-        JSONObject output = new JSONObject().put("command_id", commandID)
-                .put("status", result.success() ? "completed" : "failed");
-        if (result.success()) {
-            JSONObject detail = new JSONObject();
-            if ("send_sms".equals(action)) detail.put("sent", true).put("segments", result.segments());
-            else if ("dial".equals(action)) detail.put("dialing", true).put("android_confirmed", true);
-            else if ("answer".equals(action)) detail.put("answered", true).put("android_confirmed", true);
-            else if ("end".equals(action) || "reject".equals(action)) detail.put("ended", true).put("android_confirmed", true);
-            else detail.put("sent", true);
-            output.put("result", detail);
-        } else {
-            output.put("error", result.error());
+        var outgoing = "dial".equals(action) ? CallRepository.observeOutgoing(command.optString("number", "")) : null;
+        boolean handedToMedia = false;
+        try {
+            AgentCommandDispatcher.Result result = execute(local);
+            JSONObject output = new JSONObject().put("command_id", commandID)
+                    .put("status", result.success() ? "completed" : "failed");
+            if (result.success()) {
+                JSONObject detail = new JSONObject();
+                if ("send_sms".equals(action)) detail.put("sent", true).put("segments", result.segments());
+                else if ("dial".equals(action)) {
+                    detail.put("dialing", true).put("android_confirmed", true);
+                    // This uncached path runs once per command. Replayed completions must not
+                    // restart media, replace its ownership observation, or resurrect ended calls.
+                    StandaloneCloudMediaManager.get(context).startOutgoing(command.optJSONObject("call"), outgoing);
+                    handedToMedia = true;
+                }
+                else if ("answer".equals(action)) detail.put("answered", true).put("android_confirmed", true);
+                else if ("end".equals(action) || "reject".equals(action)) detail.put("ended", true).put("android_confirmed", true);
+                else detail.put("sent", true);
+                output.put("result", detail);
+            } else {
+                output.put("error", result.error());
+            }
+            return rememberCommand(commandKey, output);
+        } finally {
+            if (!handedToMedia && outgoing != null) outgoing.close();
         }
-        return rememberCommand(commandKey, output);
     }
 
     private JSONObject rememberCommand(String commandKey, JSONObject output) {

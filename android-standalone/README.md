@@ -61,6 +61,20 @@ adb shell dumpsys activity service com.airsim.phonecontrol.standalone/com.airsim
 
 输出为一行 `relay_recovery pending=… resyncs=… delay_ms=… next_allowed_in_ms=…`。
 
+## 云端通话事件被 Relay 拒绝时
+
+内置 Agent 按顺序把来电、接通、挂断等通话状态提交给 Relay。某条事件提交失败时：
+
+- Relay 返回 4xx（401、408、429 除外）表示它不会接受这条事件（通话已结束或过期、生命周期顺序不合法等），立即丢弃，继续处理后面的事件。
+- 断网、超时、5xx、401、408、429 继续重试，但同一条事件最多占住队首 60 秒，之后丢弃，避免挡住后面的挂断和下一通电话。
+- 被丢弃的是「挂断」时，仍会关闭同一通 Android 通话对应的云端媒体会话（按 Android 通话 ID 匹配，不会关掉另一通）。
+- 云端会话只接受它自己那通 Android 电话的事件。外呼在执行拨号前开始记录新建 Telecom 通话，只绑定之后新增、号码匹配且唯一的通话；即使它在事件队列处理前已结束或移除，仍保留创建身份以正确清理会话。不能仅凭队列里的 `outgoing` 事件认领 ID。观察窗口为 15 秒，最多记录 64 通，超限或匹配有歧义时不猜测。呼叫等待中的第二通电话、或上一通电话迟到的事件不提交给 Relay，也不会结束当前通话。仍在缓存中的重复云端拨号命令返回缓存结果，不重新拨号或重建已结束的媒体会话；该缓存不跨进程重启持久化。
+- 云端媒体握手遇到 401 时保留同一描述符和密钥，按既有退避重试，每个会话从第一次 401 起最多 60 秒，兼容 KV 部署的暂时不可见；成功握手重置窗口。期间交替出现断网或 5xx 不延长窗口。410 和其他 4xx（401、408、429 除外）立即停止。重试不新建 VoIP 推送；失败后 Android 电话仍在时保留会话位置，待该通电话结束后释放。此恢复不绕过鉴权，也不保证所有 KV 传播延迟都能在窗口内恢复。
+
+自动化覆盖实际媒体管理器的旧事件隔离、独立通话归属、重复拨号缓存、丢弃挂断清理、401 重试/耗尽/成功重置。Standalone 测试同时构建 APK 并运行这些测试；并不代表真实来电、双向音频、弱网或各厂商系统已完成验收。本次仅合并代码，不随之部署 Relay 或发布 APK。
+
+日志事件：`standalone_call_event_retry`、`standalone_call_event_dropped`、`standalone_call_event_drop_failed`、`standalone_call_event_other_call`、`standalone_cloud_call_closed_unconfirmed`、`standalone_cloud_media_abandoned`。重试、丢弃和放弃带异常类型、HTTP 状态和 Relay 返回的原因（只保留字母，不含号码等数字）；本地关闭和放弃还带 `call_uuid`，便于对上是哪一通云端通话。关闭被丢弃事件对应的通话时出错，只记 `standalone_call_event_drop_failed`，队列照常继续。
+
 ## 运行架构
 
 ```text

@@ -4,6 +4,7 @@ public class Context {
     private final android.content.pm.PackageManager packageManager = new android.content.pm.PackageManager();
     public android.content.pm.PackageManager getPackageManager() { return packageManager; }
     public static final int MODE_PRIVATE = 0;
+    public static final int RECEIVER_NOT_EXPORTED = 4;
     private final java.util.Map<Class<?>, Object> services = new java.util.HashMap<>();
     private final java.util.Set<String> permissions = new java.util.HashSet<>();
     private java.util.Map<String, SharedPreferences> storage = new java.util.HashMap<>();

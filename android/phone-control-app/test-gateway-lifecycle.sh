@@ -12,6 +12,8 @@ mkdir -p "$OUT"
   "$ROOT"/test/android/Manifest.java \
   "$ROOT"/test/android/content/Context.java \
   "$ROOT"/test/android/content/Intent.java \
+  "$ROOT"/test/android/os/Handler.java \
+  "$ROOT"/test/gateway-lifecycle/android/content/*.java \
   "$ROOT"/test/gateway-lifecycle/android/app/Service.java \
   "$ROOT"/test/gateway-lifecycle/com/airsim/phonecontrol/RuntimeMode.java \
   "$ROOT"/src/com/airsim/phonecontrol/voble/VoBLEGatewayService.java \
