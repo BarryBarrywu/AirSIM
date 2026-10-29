@@ -116,6 +116,11 @@ mkdir -p "$OUT"
   "$ROOT"/src/com/airsim/phonecontrol/CloudCallRetryPolicy.java \
   "$ROOT"/test/com/airsim/phonecontrol/CloudCallRetryPolicyTests.java
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CloudCallRetryPolicyTests
+"$JAVAC" --release 17 -d "$OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/RelayHTTPException.java \
+  "$ROOT"/src/com/airsim/phonecontrol/CloudSMSUploader.java \
+  "$ROOT"/test/com/airsim/phonecontrol/CloudSMSUploaderTests.java
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.CloudSMSUploaderTests
 "$JAVAC" --release 17 -cp "$CRYPTO_JAR" -d "$OUT" \
   "$ROOT"/test/android/Manifest.java \
   "$ROOT"/test/android/provider/Settings.java \
