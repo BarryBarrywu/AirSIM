@@ -129,6 +129,10 @@ AirSIM 会识别小米、Redmi、OPPO、OnePlus、realme、vivo、iQOO 和荣耀
 
 iPhone 经 VoWLAN 或云端 Relay 提交发信请求后，AVF Agent 把 `send_sms` 命令交给 Android Bridge。Android Bridge 使用系统短信服务和默认短信 SIM 分段发送；每一段都收到系统「已发送」回执后，才向 Agent 回报成功。这个回执表示手机已把短信交给运营商网络，不代表收件人已收到。超时或失败时，请先在手机短信记录中核对，避免重复发送。短信命令与 Telecom 通话 ID 控制相互独立。
 
+Shizuku 发信在 UserService 内清除传入的 Binder 调用身份，并在 `finally` 中恢复。shell 进程使用系统派生的 `com.android.shell` Context；API 30+ 补齐 `app_process` 缺少的电话服务注册表，API 31+ 使用 Context 创建指定 SIM 的 `SmsManager`。指定 SIM 初始化失败时返回错误，不降级到默认卡。Shizuku 返回 `ok` 仅表示 API 接受请求，不是运营商发送回执或收件人送达回执。
+
+2026-10-21，该路径在一台红米（私有 Android build 103）上验证了锁屏、熄屏发信，无需操作确认弹窗，也未使用 root、关闭系统优化或更换默认短信 App。其他 ROM、双卡切换、长短信和重启恢复尚未完成真机验证。此修改不涉及 5G 消息／RCS 接收。`sh android/phone-control-app/test-privileged-sms.sh` 可单独运行身份、SIM 选择和失败路径的 JVM 回归测试；这些测试不代替厂商系统实测。
+
 ## VoBLE 广播生命周期（未发布，2026-10-19）
 
 共享 `VoBLEGatewayService` 现在监听系统蓝牙状态：打开时重新启动 GATT server／广播，关闭时释放失效 server；广播启动失败会关闭失效 server 并按 2/4/8 秒有界重试 3 次。此前服务先于蓝牙启动时不会自动恢复，iPhone 会一直停在“正在发现”。诊断日志只记录尝试次数、错误码和状态，不记录设备地址、号码或密钥。JVM GATT 生命周期回归通过；正式包仍需原 release keystore，未安装或发布。

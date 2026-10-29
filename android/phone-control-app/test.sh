@@ -313,3 +313,5 @@ mkdir -p "$PCM_OUT"
 "$JAVA" -cp "$PCM_OUT:$OUT:$ANDROID_JAR" com.airsim.phonecontrol.DirectPCMIntegrationTests
 
 sh "$ROOT/test-audio-policy.sh"
+
+sh "$ROOT/test-privileged-sms.sh"
