@@ -15,6 +15,11 @@ final class StandaloneRelayClient {
     record Response(int status, String body, long retryAfterMillis) {}
 
     Response post(JSONObject registration, String path, JSONObject payload, int timeoutMillis) throws Exception {
+        return post(registration, path, payload, timeoutMillis, null, 0);
+    }
+
+    private Response post(JSONObject registration, String path, JSONObject payload, int timeoutMillis,
+                          RelayCommandRetryState lifetime, long epoch) throws Exception {
         String base = registration.getString("relay_url");
         URI target = URI.create(base + path);
         if (!"https".equalsIgnoreCase(target.getScheme()) || target.getHost() == null
@@ -23,6 +28,10 @@ final class StandaloneRelayClient {
         }
         HttpURLConnection connection = (HttpURLConnection) new URL(target.toString()).openConnection();
         try {
+            if (lifetime != null && !lifetime.attach(epoch, connection::disconnect)) {
+                throw new java.io.IOException("stale_sms_operation");
+            }
+            connection.setInstanceFollowRedirects(false);
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(8_000);
             connection.setReadTimeout(timeoutMillis);
@@ -31,12 +40,15 @@ final class StandaloneRelayClient {
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("User-Agent", "AirSIM-Standalone/0.1");
             byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
+            if (lifetime != null && !lifetime.isCurrent(epoch)) throw new java.io.IOException("stale_sms_operation");
             try (OutputStream output = connection.getOutputStream()) { output.write(body); }
             int status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 300
                     ? connection.getInputStream() : connection.getErrorStream();
-            return new Response(status, read(stream), RelayHTTPException.parseRetryAfter(
+            Response response = new Response(status, read(stream), RelayHTTPException.parseRetryAfter(
                     connection.getHeaderField("Retry-After"), System.currentTimeMillis()));
+            if (lifetime != null && !lifetime.isCurrent(epoch)) throw new java.io.IOException("stale_sms_operation");
+            return response;
         } finally {
             connection.disconnect();
         }
@@ -44,7 +56,12 @@ final class StandaloneRelayClient {
 
     JSONObject postJSON(JSONObject registration, String path, JSONObject payload, int timeoutMillis)
             throws Exception {
-        Response response = post(registration, path, payload, timeoutMillis);
+        return postJSON(registration, path, payload, timeoutMillis, null, 0);
+    }
+
+    JSONObject postJSON(JSONObject registration, String path, JSONObject payload, int timeoutMillis,
+                        RelayCommandRetryState lifetime, long epoch) throws Exception {
+        Response response = post(registration, path, payload, timeoutMillis, lifetime, epoch);
         if (response.status < 200 || response.status >= 300) {
             throw new RelayHTTPException(response.status, response.body, response.retryAfterMillis);
         }

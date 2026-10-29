@@ -9,10 +9,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.DoubleSupplier;
+import java.util.function.LongSupplier;
+import java.util.function.BooleanSupplier;
 
 /**
  * Uploads queued incoming SMS to the Relay so that no message can hold back the ones behind it,
- * and a Relay outage of any length loses none of them. Only a 400 (the Relay refuses the message
+ * subject to the durable store's capacity. Only a recognized 400 (the Relay refuses the message
  * itself) settles a message unsent. Any other failure ends the flush and pauses the whole queue
  * with the shared Relay cooldown (Retry-After, jitter, reset by the next success); the failed
  * message also backs off on its own (5 s, doubling, at most 5 min) and messages that never failed
@@ -21,12 +23,15 @@ import java.util.function.DoubleSupplier;
 final class CloudSMSUploader {
     static final long FIRST_RETRY_MILLIS = 5_000L;
     static final long MAX_RETRY_MILLIS = 300_000L;
-    /** Keeps one agent cycle short enough for its heartbeat when a backlog drains. */
+    /** Bounds a batch; the service runs it separately from heartbeat and command polling. */
     static final int MAX_SENDS_PER_FLUSH = 10;
 
     interface Sender { void send(String deliveryID) throws Exception; }
     /** Called for a delivered and for a dropped message alike: both leave the cloud queue. */
-    interface Ledger { void settled(String deliveryID) throws Exception; }
+    interface Ledger {
+        void settled(String deliveryID) throws Exception;
+        default void rejected(String deliveryID) throws Exception { settled(deliveryID); }
+    }
     interface Listener { void failed(Throwable error, Verdict verdict, int attempt, long pauseMillis); }
     /** RETRY: the Relay answered; STOP: no answer; DROP: refused for good. */
     enum Verdict { RETRY, DROP, STOP }
@@ -47,32 +52,43 @@ final class CloudSMSUploader {
     /** Sends due messages, fewest failures first. Only Sender failures are handled here. */
     synchronized void flush(List<String> pending, Sender sender, Ledger ledger, Listener listener, long nowMillis)
             throws Exception {
+        flush(pending, sender, ledger, listener, () -> nowMillis, () -> true);
+    }
+
+    synchronized void flush(List<String> pending, Sender sender, Ledger ledger, Listener listener,
+                            LongSupplier clock, BooleanSupplier current) throws Exception {
+        long nowMillis = clock.getAsLong();
+        if (!current.getAsBoolean()) return;
         retries.keySet().retainAll(new HashSet<>(pending));
         if (pause.remainingMillis(nowMillis) > 0) return;
         List<String> order = new ArrayList<>(pending);
         order.sort(Comparator.comparingInt(this::attempts));
         int sends = 0;
         for (String id : order) {
+            if (!current.getAsBoolean()) return;
             Retry retry = retries.get(id);
-            if (retry != null && nowMillis < retry.dueAt) continue;
+            if (retry != null && clock.getAsLong() < retry.dueAt) continue;
             if (sends++ == MAX_SENDS_PER_FLUSH) return;
             try {
                 sender.send(id);
             } catch (Exception error) {
+                if (!current.getAsBoolean()) return;
                 if (rejected(error)) {
                     retries.remove(id);
                     listener.failed(error, Verdict.DROP, attempts(retry) + 1, 0);
-                    ledger.settled(id);
+                    ledger.rejected(id);
                     continue;
                 }
                 if (retry == null) retries.put(id, retry = new Retry());
                 retry.attempts++;
+                nowMillis = clock.getAsLong();
                 retry.dueAt = nowMillis + Math.min(MAX_RETRY_MILLIS, FIRST_RETRY_MILLIS << Math.min(retry.attempts - 1, 6));
                 long pauseMillis = pause.failed(nowMillis, 0, error, jitter.getAsDouble()).delayMillis();
                 listener.failed(error, error instanceof RelayHTTPException ? Verdict.RETRY : Verdict.STOP,
                         retry.attempts, pauseMillis);
                 return;
             }
+            if (!current.getAsBoolean()) return;
             retries.remove(id);
             pause.reset();
             ledger.settled(id);
@@ -85,7 +101,10 @@ final class CloudSMSUploader {
 
     /** The Relay refused this SMS itself; every other status, Cloudflare's included, can clear up. */
     static boolean rejected(Throwable error) {
-        return error instanceof RelayHTTPException http && http.statusCode() == 400;
+        // Match the Worker's canonical JSON, not an arbitrary proxy/Cloudflare 400.
+        // Unknown representations are safely retried rather than discarded.
+        return error instanceof RelayHTTPException http && http.statusCode() == 400
+                && "{\"error\":\"invalid incoming SMS\"}".equals(http.detailBody().trim());
     }
 
     /** The Relay answers 400 to times over 5 min ahead; a carrier clock running fast must not cost the SMS. */

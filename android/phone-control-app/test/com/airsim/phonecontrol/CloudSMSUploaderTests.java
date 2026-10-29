@@ -39,7 +39,7 @@ public final class CloudSMSUploaderTests {
     public static void main(String[] args) throws Exception {
         var u = uploader();
         var f = new Fake();
-        f.replies.put("a", http(400));
+        f.replies.put("a", new RelayHTTPException(400, "{\"error\":\"invalid incoming SMS\"}"));
         f.flush(u, 0, "a", "b");
         check(f.sent.equals(List.of("a", "b")), "an invalid message does not hold the next one: " + f.sent);
         check(f.settled.equals(List.of("a", "b")), "rejected and delivered messages both leave the queue: " + f.settled);
@@ -74,13 +74,13 @@ public final class CloudSMSUploaderTests {
         check(f.sent.equals(List.of("a")) && f.settled.isEmpty(), "a long outage never drops a message: " + f.settled);
         check(f.failures.equals(List.of("STOP:2:6000")), "the pause keeps growing: " + f.failures);
 
-        for (int status : new int[]{401, 403, 404, 408, 409, 413, 429, 500, 502, 503}) {
+        for (int status : new int[]{400, 401, 403, 404, 408, 409, 413, 429, 500, 502, 503}) {
             u = uploader();
             f = new Fake();
             f.replies.put("a", http(status));
             f.flush(u, 0, "a");
             check(f.failures.size() == 1 && f.failures.get(0).startsWith("RETRY:1:") && f.settled.isEmpty(),
-                    status + " is retried, only 400 is final: " + f.failures);
+                    status + " without a recognized rejection body is retried: " + f.failures);
         }
 
         u = uploader();
@@ -151,6 +151,50 @@ public final class CloudSMSUploaderTests {
                 "a carrier clock running fast is clamped to now, so the Relay does not answer 400");
         check(CloudSMSUploader.uploadTimestamp("", now).equals("2026-10-29T10:00:00Z"), "a missing time becomes now");
         check(CloudSMSUploader.uploadTimestamp("yesterday", now).equals("2026-10-29T10:00:00Z"), "an unreadable time becomes now");
+        slowRequestsAndCancellation();
         System.out.println("CloudSMSUploaderTests passed");
+    }
+
+    private static void slowRequestsAndCancellation() throws Exception {
+        long[] clock = {0};
+        var u = uploader();
+        List<String> sent = new ArrayList<>();
+        List<String> settled = new ArrayList<>();
+        CloudSMSUploader.Listener quiet = (error, verdict, attempt, pause) -> {};
+        u.flush(List.of("a"), id -> {
+            clock[0] = 12_000;
+            throw new RelayHTTPException(429, "", 60_000);
+        }, settled::add, quiet, () -> clock[0], () -> true);
+        clock[0] = 60_000;
+        u.flush(List.of("a", "b"), sent::add, settled::add, quiet, () -> clock[0], () -> true);
+        check(sent.isEmpty(), "slow request must not consume Retry-After");
+        clock[0] = 72_000;
+        u.flush(List.of("a", "b"), sent::add, settled::add, quiet, () -> clock[0], () -> true);
+        check(sent.equals(List.of("b", "a")), "full cooldown starts at failure time");
+
+        var lifetime = new RelayCommandRetryState();
+        long epoch = lifetime.configure("first");
+        boolean[] cancelled = {false};
+        lifetime.attach(epoch, () -> cancelled[0] = true);
+        settled.clear();
+        sent.clear();
+        uploader().flush(List.of("a", "b"), id -> {
+            sent.add(id);
+            lifetime.configure(null); // Pure local/cloud off.
+            lifetime.configure("first"); // Rapidly re-enable: old batch stays stale.
+        }, settled::add, quiet, () -> clock[0], () -> lifetime.isCurrent(epoch));
+        check(cancelled[0], "turning cloud off cancels the active request");
+        check(settled.isEmpty() && sent.equals(List.of("a")), "stale success neither settles nor sends next SMS");
+        check(!lifetime.attach(epoch, () -> {}), "stale epoch cannot attach a new connection");
+        check(!CloudSMSUploader.rejected(new RelayHTTPException(400, "<html>Bad Request</html>")),
+                "proxy 400 must not discard SMS");
+        List<String> rejected = new ArrayList<>();
+        uploader().flush(List.of("invalid"), id -> {
+            throw new RelayHTTPException(400, "{\"error\":\"invalid incoming SMS\"}");
+        }, new CloudSMSUploader.Ledger() {
+            public void settled(String id) { throw new AssertionError("rejected SMS is not delivered"); }
+            public void rejected(String id) { rejected.add(id); }
+        }, quiet, () -> clock[0], () -> true);
+        check(rejected.equals(List.of("invalid")), "rejection has a distinct durable outcome");
     }
 }

@@ -30,7 +30,9 @@ import java.util.concurrent.Executors;
 public final class StandaloneAgentService extends Service {
     private static final ConcurrentLinkedQueue<String> CALL_EVENTS = new ConcurrentLinkedQueue<>();
     private static volatile StandaloneAgentService instance;
-    private final ExecutorService worker = Executors.newFixedThreadPool(2);
+    private final ExecutorService worker = Executors.newFixedThreadPool(3);
+    private final RelayCommandRetryState smsTransport = new RelayCommandRetryState();
+    private record SMSSnapshot(RelayCommandConfiguration.Snapshot<JSONObject> configuration, long epoch) {}
     // CallKit latency must not wait behind heartbeat/registration/command I/O.
     private final ExecutorService eventWorker = Executors.newSingleThreadExecutor();
     private final Object callEventLock = new Object();
@@ -51,7 +53,7 @@ public final class StandaloneAgentService extends Service {
     private final RelayCommandRetryState commandRetry = new RelayCommandRetryState();
     private RelayCommandConfiguration<JSONObject> commandConfiguration;
     private final android.content.SharedPreferences.OnSharedPreferenceChangeListener commandPreferences =
-            (preferences, key) -> commandConfiguration.snapshot();
+            (preferences, key) -> smsSnapshot();
 
     public static void start(Context context) {
         try { context.startForegroundService(new Intent(context, StandaloneAgentService.class)); }
@@ -81,6 +83,7 @@ public final class StandaloneAgentService extends Service {
         VoWLANGatewayService.start(this);
         worker.execute(this::loop);
         worker.execute(this::commandLoop);
+        worker.execute(this::smsLoop);
         BridgeLog.info("standalone_agent_created");
     }
 
@@ -128,7 +131,7 @@ public final class StandaloneAgentService extends Service {
                         BridgeLog.error("standalone_heartbeat_failed", heartbeatError);
                     }
                 }
-                flushEvents(registration);
+                flushCallEvents();
                 if (commandConfiguration.isCurrent(snapshot) && CommandPollingPolicy.shouldPoll(commandChannelConnected, lastCommandPoll, now,
                         commandRetry.remainingMillis(android.os.SystemClock.elapsedRealtime()))) {
                     lastCommandPoll = now;
@@ -351,8 +354,27 @@ public final class StandaloneAgentService extends Service {
         }
     }
 
-    private void flushEvents(JSONObject registration) throws Exception {
-        flushCallEvents();
+    private synchronized SMSSnapshot smsSnapshot() {
+        var snapshot = commandConfiguration.snapshot();
+        long epoch = smsTransport.configure(snapshot.scope() == null ? null : Long.toString(snapshot.epoch()));
+        return new SMSSnapshot(snapshot, epoch);
+    }
+
+    private void smsLoop() {
+        while (running) {
+            try {
+                var snapshot = smsSnapshot();
+                if (snapshot.configuration().scope() != null) flushEvents(snapshot);
+            } catch (Exception error) {
+                BridgeLog.error("standalone_sms_cycle_failed", error);
+            }
+            try { Thread.sleep(2_000); }
+            catch (InterruptedException stopped) { Thread.currentThread().interrupt(); return; }
+        }
+    }
+
+    private void flushEvents(SMSSnapshot snapshot) throws Exception {
+        JSONObject registration = snapshot.configuration().registration();
         StandaloneSMSStore smsStore = new StandaloneSMSStore(this);
         JSONArray smsPending = smsStore.cloudPending();
         Map<String, JSONObject> events = new LinkedHashMap<>();
@@ -365,8 +387,20 @@ public final class StandaloneAgentService extends Service {
         }
         // One SMS the Relay refuses or cannot push must neither stall the others nor fail the agent cycle.
         smsUploader.flush(new ArrayList<>(events.keySet()),
-                id -> relay.postJSON(registration, "/v1/events/sms", events.get(id), 12_000),
-                smsStore::markCloudSent, this::smsFailure, android.os.SystemClock.elapsedRealtime());
+                id -> relay.postJSON(registration, "/v1/events/sms", events.get(id), 12_000,
+                        smsTransport, snapshot.epoch()),
+                new CloudSMSUploader.Ledger() {
+                    public void settled(String id) throws Exception {
+                        if (commandConfiguration.isCurrent(snapshot.configuration()) && smsTransport.isCurrent(snapshot.epoch()))
+                            smsStore.markCloudSent(id);
+                    }
+                    public void rejected(String id) throws Exception {
+                        if (commandConfiguration.isCurrent(snapshot.configuration()) && smsTransport.isCurrent(snapshot.epoch()))
+                            smsStore.markCloudRejected(id);
+                    }
+                }, this::smsFailure, android.os.SystemClock::elapsedRealtime,
+                () -> running && commandConfiguration.isCurrent(snapshot.configuration())
+                        && smsTransport.isCurrent(snapshot.epoch()));
     }
 
     private void smsFailure(Throwable smsError, CloudSMSUploader.Verdict verdict, int attempt, long pauseMillis) {
@@ -406,6 +440,7 @@ public final class StandaloneAgentService extends Service {
         eventWorker.shutdownNow();
         getSharedPreferences("standalone_agent", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(commandPreferences);
         commandConfiguration.stop();
+        smsTransport.configure(null);
         StandaloneWebSocket socket = commandSocket;
         if (socket != null) socket.close();
         worker.shutdownNow();
