@@ -75,6 +75,19 @@ adb shell dumpsys activity service com.airsim.phonecontrol.standalone/com.airsim
 
 日志事件：`standalone_call_event_retry`、`standalone_call_event_dropped`、`standalone_call_event_drop_failed`、`standalone_call_event_other_call`、`standalone_cloud_call_closed_unconfirmed`、`standalone_cloud_media_abandoned`。重试、丢弃和放弃带异常类型、HTTP 状态和 Relay 返回的原因（只保留字母，不含号码等数字）；本地关闭和放弃还带 `call_uuid`，便于对上是哪一通云端通话。关闭被丢弃事件对应的通话时出错，只记 `standalone_call_event_drop_failed`，队列照常继续。
 
+## 云端短信被 Relay 拒绝时
+
+内置 Agent 将短信提交给 Relay（`/v1/events/sms`），优先处理未失败的短信。队列不因断网时长主动丢弃，但本地最多保留 512 条，不能保证无限积压不丢失：
+
+- 只有 Relay 返回 400 且正文为明确的 `invalid incoming SMS` JSON 错误时，这条短信标为 `cloud_rejected`（不是已送达），退出云端队列，同一轮继续提交后面的。未知/代理 400 仍重试。未被本地确认的短信保留供本地读取，仍受存储容量限制。
+- 其他任何失败（5xx、401、409「iPhone 尚无通知 token」、429、Cloudflare 的 403/404，以及断网、超时）都不放弃：本轮立即停止，整个队列按命令通道同一套冷却暂停（无响应 3 秒起、最长 60 秒；429/5xx 15 秒起、最长 300 秒；遵守 `Retry-After`，带抖动，任何一条成功即复位）。失败的那条自己再退避 5 秒起、翻倍、最长 5 分钟；暂停结束后先提交从未失败过的短信，所以一条坏短信不会把后面的饿死。
+- 短信使用独立串行任务，每轮最多提交 10 条，不占用心跳或 HTTP 命令轮询线程。冷却从请求失败时开始计时，而非发送前。
+- 关闭云端、切换设备身份或停止服务会取消短信请求；旧配置代际的回执不能继续处理后续短信或标记送达。未提交的纯本地功能集成时仍须保留进程级 Relay 出口门禁，不能用此配置校验替代它。
+- 短信中心时间比本机快时，上传前改成本机当前时间（Relay 拒绝超前 5 分钟以上的时间）；去重编号不受影响。
+- 短信提交失败不再让 Agent 主循环进入「正在重连」：心跳、命令拉取照常进行；401 仍会触发设备记录重新注册。重试状态只在内存里，App 重启后从头计时。
+
+日志事件：`standalone_sms_upload_retry verdict=retry|stop attempt=… pause_ms=…`（`retry` 表示 Relay 有响应，`stop` 表示连不上）和 `standalone_sms_upload_dropped`，都带异常类型、HTTP 状态和 Relay 返回的原因，不含发件人、正文或短信编号。
+
 ## 运行架构
 
 ```text
