@@ -75,6 +75,17 @@ adb shell dumpsys activity service com.airsim.phonecontrol.standalone/com.airsim
 
 日志事件：`standalone_call_event_retry`、`standalone_call_event_dropped`、`standalone_call_event_drop_failed`、`standalone_call_event_other_call`、`standalone_cloud_call_closed_unconfirmed`、`standalone_cloud_media_abandoned`。重试、丢弃和放弃带异常类型、HTTP 状态和 Relay 返回的原因（只保留字母，不含号码等数字）；本地关闭和放弃还带 `call_uuid`，便于对上是哪一通云端通话。关闭被丢弃事件对应的通话时出错，只记 `standalone_call_event_drop_failed`，队列照常继续。
 
+## 云端短信被 Relay 拒绝时
+
+内置 Agent 按到达顺序把收到的短信提交给 Relay（`/v1/events/sms`），每条短信各自重试，互不阻塞：
+
+- Relay 返回 4xx（401、408、409、429 除外）表示它不会接受这条短信（例如正文为空、时间戳超前），立即退出云端队列，不再提交。短信仍保存在本机，iPhone 走本地网络时照常可读。
+- 其他失败（服务器 5xx、401、408、409「iPhone 尚无通知 token」、429）只重试这一条：5 秒后第一次，之后间隔翻倍，最长每 5 分钟一次；从第一次失败起满 24 小时仍未成功，同样退出云端队列。
+- 没有拿到 HTTP 响应（断网、超时）说明 Relay 不可达，本轮停止提交，其余短信等下一轮。
+- 短信提交失败不再让 Agent 主循环进入「正在重连」：心跳、命令拉取照常进行；401 仍会触发设备记录重新注册。
+
+日志事件：`standalone_sms_upload_retry`（带第几次、下次重试的毫秒数）和 `standalone_sms_upload_dropped`，都带异常类型、HTTP 状态和 Relay 返回的原因，不含发件人、正文或短信编号。
+
 ## 运行架构
 
 ```text

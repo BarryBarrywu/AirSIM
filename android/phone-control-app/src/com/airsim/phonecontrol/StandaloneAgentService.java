@@ -16,8 +16,11 @@ import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -39,6 +42,7 @@ public final class StandaloneAgentService extends Service {
     private int syncedRegistrationHash;
     private final RelayRegistrationRecovery registrationRecovery = new RelayRegistrationRecovery();
     private final CloudCallRetryPolicy callEventRetry = new CloudCallRetryPolicy();
+    private final CloudSMSUploader smsUploader = new CloudSMSUploader();
     private long lastHeartbeat;
     private long nextHeartbeatAttempt;
     private long lastCommandPoll;
@@ -351,14 +355,27 @@ public final class StandaloneAgentService extends Service {
         flushCallEvents();
         StandaloneSMSStore smsStore = new StandaloneSMSStore(this);
         JSONArray smsPending = smsStore.cloudPending();
+        Map<String, JSONObject> events = new LinkedHashMap<>();
         for (int index = 0; index < smsPending.length(); index++) {
             JSONObject source = smsPending.getJSONObject(index);
-            JSONObject event = identity(registration).put("event", "incoming_sms")
+            events.put(source.getString("delivery_id"), identity(registration).put("event", "incoming_sms")
                     .put("delivery_id", source.optString("delivery_id"))
                     .put("sender", source.optString("sender")).put("content", source.optString("content"))
-                    .put("timestamp", source.optString("timestamp", Instant.now().toString()));
-            relay.postJSON(registration, "/v1/events/sms", event, 12_000);
-            smsStore.markCloudSent(source.getString("delivery_id"));
+                    .put("timestamp", source.optString("timestamp", Instant.now().toString())));
+        }
+        // One SMS the Relay refuses or cannot push must neither stall the others nor fail the agent cycle.
+        smsUploader.flush(new ArrayList<>(events.keySet()),
+                id -> relay.postJSON(registration, "/v1/events/sms", events.get(id), 12_000),
+                smsStore::markCloudSent, this::smsFailure, android.os.SystemClock.elapsedRealtime());
+    }
+
+    private void smsFailure(Throwable smsError, CloudSMSUploader.Verdict verdict, int attempt, long retryInMillis) {
+        registrationRecovery.onFailure(smsError, android.os.SystemClock.elapsedRealtime());
+        if (verdict == CloudSMSUploader.Verdict.DROP) {
+            BridgeLog.info("standalone_sms_upload_dropped attempt=" + attempt + " " + CloudCallRetryPolicy.describe(smsError));
+        } else {
+            BridgeLog.info("standalone_sms_upload_retry attempt=" + attempt + " retry_in_ms=" + retryInMillis
+                    + " " + CloudCallRetryPolicy.describe(smsError));
         }
     }
 

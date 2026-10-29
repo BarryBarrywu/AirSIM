@@ -43,6 +43,14 @@ assert_contains "$S" '" " + CloudCallRetryPolicy.describe(error)' \
   'call event retries must log the Relay status'
 assert_contains "$S" 'BridgeLog.error("standalone_call_event_drop_failed", abandonError);' \
   'a failure while closing a dropped call must not escape to the event worker thread'
+assert_contains "$S" 'smsUploader.flush(' \
+  'cloud SMS must go through the uploader so one message cannot block the queue'
+assert_contains "$S" 'id -> relay.postJSON(registration, "/v1/events/sms", events.get(id), 12_000)' \
+  'the uploader must be the only place that posts cloud SMS'
+assert_contains "$S" 'smsStore::markCloudSent' \
+  'delivered and dropped SMS must both leave the cloud queue'
+assert_contains "$S" 'registrationRecovery.onFailure(smsError, android.os.SystemClock.elapsedRealtime());' \
+  'an SMS upload 401 must still request re-registration'
 M="$ROOT/../android/phone-control-app/src/com/airsim/phonecontrol/StandaloneCloudMediaManager.java"
 assert_contains "$M" 'mediaRetry.outcome(error, CallRepository.state(descriptor.androidID),' \
   'a media session must ask the retry policy about every failed connect'
