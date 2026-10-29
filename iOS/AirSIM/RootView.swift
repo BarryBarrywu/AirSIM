@@ -109,7 +109,7 @@ struct RootView: View {
                         SMSConversationListToolbar(state: $messageListState)
                     }
                 }
-                .toolbar(selectedTab == .messages ? .visible : .hidden, for: .navigationBar)
+                .toolbar(selectedTab == .messages || selectedTab == .contacts ? .visible : .hidden, for: .navigationBar)
                 .background { PhoneTabBarNavigationFade() }
                 .navigationDestination(isPresented: $showingConversation) {
                     if let sender = conversationSender {
