@@ -361,7 +361,7 @@ public final class StandaloneAgentService extends Service {
             events.put(source.getString("delivery_id"), identity(registration).put("event", "incoming_sms")
                     .put("delivery_id", source.optString("delivery_id"))
                     .put("sender", source.optString("sender")).put("content", source.optString("content"))
-                    .put("timestamp", source.optString("timestamp", Instant.now().toString())));
+                    .put("timestamp", CloudSMSUploader.uploadTimestamp(source.optString("timestamp", ""), System.currentTimeMillis())));
         }
         // One SMS the Relay refuses or cannot push must neither stall the others nor fail the agent cycle.
         smsUploader.flush(new ArrayList<>(events.keySet()),
@@ -369,13 +369,13 @@ public final class StandaloneAgentService extends Service {
                 smsStore::markCloudSent, this::smsFailure, android.os.SystemClock.elapsedRealtime());
     }
 
-    private void smsFailure(Throwable smsError, CloudSMSUploader.Verdict verdict, int attempt, long retryInMillis) {
+    private void smsFailure(Throwable smsError, CloudSMSUploader.Verdict verdict, int attempt, long pauseMillis) {
         registrationRecovery.onFailure(smsError, android.os.SystemClock.elapsedRealtime());
         if (verdict == CloudSMSUploader.Verdict.DROP) {
             BridgeLog.info("standalone_sms_upload_dropped attempt=" + attempt + " " + CloudCallRetryPolicy.describe(smsError));
         } else {
-            BridgeLog.info("standalone_sms_upload_retry attempt=" + attempt + " retry_in_ms=" + retryInMillis
-                    + " " + CloudCallRetryPolicy.describe(smsError));
+            BridgeLog.info("standalone_sms_upload_retry verdict=" + verdict.name().toLowerCase(java.util.Locale.ROOT)
+                    + " attempt=" + attempt + " pause_ms=" + pauseMillis + " " + CloudCallRetryPolicy.describe(smsError));
         }
     }
 

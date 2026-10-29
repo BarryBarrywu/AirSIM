@@ -1,6 +1,8 @@
 package com.airsim.phonecontrol;
 
+import java.io.IOException;
 import java.net.SocketTimeoutException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -9,6 +11,7 @@ import java.util.Map;
 public final class CloudSMSUploaderTests {
     private static void check(boolean ok, String detail) { if (!ok) throw new AssertionError(detail); }
     private static RelayHTTPException http(int status) { return new RelayHTTPException(status, ""); }
+    private static CloudSMSUploader uploader() { return new CloudSMSUploader(() -> 0); }
 
     /** Replies with a scripted failure per delivery ID and records every send, settle and failure. */
     private static final class Fake {
@@ -18,117 +21,136 @@ public final class CloudSMSUploaderTests {
         final List<String> failures = new ArrayList<>();
 
         void flush(CloudSMSUploader uploader, long now, String... pending) throws Exception {
-            uploader.flush(List.of(pending), id -> {
+            flush(uploader, now, List.of(pending));
+        }
+
+        void flush(CloudSMSUploader uploader, long now, List<String> pending) throws Exception {
+            clear();
+            uploader.flush(pending, id -> {
                 sent.add(id);
                 Exception reply = replies.get(id);
                 if (reply != null) throw reply;
-            }, settled::add, (error, verdict, attempt, retryIn) -> failures.add(verdict + ":" + attempt + ":" + retryIn), now);
+            }, settled::add, (error, verdict, attempt, pause) -> failures.add(verdict + ":" + attempt + ":" + pause), now);
         }
 
         void clear() { sent.clear(); settled.clear(); failures.clear(); }
     }
 
     public static void main(String[] args) throws Exception {
-        var u = new CloudSMSUploader();
+        var u = uploader();
         var f = new Fake();
         f.replies.put("a", http(400));
         f.flush(u, 0, "a", "b");
-        check(f.sent.equals(List.of("a", "b")), "a rejected message does not hold the next one: " + f.sent);
+        check(f.sent.equals(List.of("a", "b")), "an invalid message does not hold the next one: " + f.sent);
         check(f.settled.equals(List.of("a", "b")), "rejected and delivered messages both leave the queue: " + f.settled);
         check(f.failures.equals(List.of("DROP:1:0")), "the rejection is reported as a drop: " + f.failures);
 
-        u = new CloudSMSUploader();
+        u = uploader();
         f = new Fake();
         f.replies.put("a", http(502));
         f.flush(u, 0, "a", "b");
-        check(f.sent.equals(List.of("a", "b")), "a transient failure does not hold the next one: " + f.sent);
-        check(f.settled.equals(List.of("b")), "only the delivered message leaves the queue: " + f.settled);
-        check(f.failures.equals(List.of("RETRY:1:5000")), "the first retry comes after 5 s: " + f.failures);
-        f.clear();
-        f.flush(u, 4_999, "a");
-        check(f.sent.isEmpty(), "not retried before its delay");
-        long t = 5_000;
-        for (long delay : new long[]{10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000}) {
-            f.clear();
-            f.flush(u, t, "a");
-            check(f.sent.equals(List.of("a")), "retried when due at " + t);
-            check(f.failures.size() == 1 && f.failures.get(0).endsWith(":" + delay), "next delay " + delay + ": " + f.failures);
-            f.clear();
-            f.flush(u, t + delay - 1, "a");
-            check(f.sent.isEmpty(), "not retried 1 ms early at " + (t + delay - 1));
-            t += delay;
-        }
+        check(f.sent.equals(List.of("a")), "a Relay failure ends the flush instead of trying every message: " + f.sent);
+        check(f.failures.equals(List.of("RETRY:1:15000")), "5xx pauses the whole queue for 15 s: " + f.failures);
+        f.flush(u, 14_999, "a", "b");
+        check(f.sent.isEmpty(), "nothing is sent while the queue is paused");
+        f.flush(u, 15_000, "a", "b");
+        check(f.sent.equals(List.of("b", "a")), "after a pause a message that never failed goes first: " + f.sent);
+        check(f.settled.equals(List.of("b")), "the good message is delivered: " + f.settled);
+        check(f.failures.equals(List.of("RETRY:2:15000")), "success resets the pause before the next failure: " + f.failures);
 
-        u = new CloudSMSUploader();
+        u = uploader();
         f = new Fake();
         f.replies.put("a", new SocketTimeoutException("connect timed out"));
         f.flush(u, 0, "a", "b");
-        check(f.sent.equals(List.of("a")), "an unreachable Relay is tried once per flush: " + f.sent);
-        check(f.failures.equals(List.of("STOP:1:5000")), "a transport failure stops the flush and backs off: " + f.failures);
-        check(f.settled.isEmpty(), "nothing leaves the queue while the Relay is unreachable");
-
-        for (int status : new int[]{401, 408, 409, 429, 500, 502, 503}) {
-            u = new CloudSMSUploader();
-            f = new Fake();
-            f.replies.put("a", http(status));
-            f.flush(u, 0, "a");
-            check(f.failures.equals(List.of("RETRY:1:5000")) && f.settled.isEmpty(), status + " is retried: " + f.failures);
-        }
-        for (int status : new int[]{400, 403, 404, 413}) {
-            u = new CloudSMSUploader();
-            f = new Fake();
-            f.replies.put("a", http(status));
-            f.flush(u, 0, "a");
-            check(f.failures.equals(List.of("DROP:1:0")) && f.settled.equals(List.of("a")), status + " is dropped: " + f.failures);
-        }
+        check(f.sent.equals(List.of("a")) && f.settled.isEmpty(), "an unreachable Relay is tried once: " + f.sent);
+        check(f.failures.equals(List.of("STOP:1:3000")), "a failure without an answer is a 3 s pause: " + f.failures);
 
         long day = 24L * 60 * 60 * 1000;
-        u = new CloudSMSUploader();
+        u = uploader();
         f = new Fake();
-        f.replies.put("a", http(503));
+        f.replies.put("a", new IOException("network unreachable"));
         f.flush(u, 1_000, "a");
-        f.clear();
-        f.flush(u, 1_000 + day - 1, "a");
-        check(f.failures.equals(List.of("RETRY:2:10000")) && f.settled.isEmpty(), "still retried just before 24 h: " + f.failures);
-        f.clear();
-        f.flush(u, 1_000 + day - 1 + 10_000, "a");
-        check(f.failures.equals(List.of("DROP:3:0")) && f.settled.equals(List.of("a")),
-                "dropped at its first failure after 24 h: " + f.failures);
+        f.flush(u, 1_000 + day + 3_600_000, "a");
+        check(f.sent.equals(List.of("a")) && f.settled.isEmpty(), "a long outage never drops a message: " + f.settled);
+        check(f.failures.equals(List.of("STOP:2:6000")), "the pause keeps growing: " + f.failures);
 
-        u = new CloudSMSUploader();
+        for (int status : new int[]{401, 403, 404, 408, 409, 413, 429, 500, 502, 503}) {
+            u = uploader();
+            f = new Fake();
+            f.replies.put("a", http(status));
+            f.flush(u, 0, "a");
+            check(f.failures.size() == 1 && f.failures.get(0).startsWith("RETRY:1:") && f.settled.isEmpty(),
+                    status + " is retried, only 400 is final: " + f.failures);
+        }
+
+        u = uploader();
+        f = new Fake();
+        f.replies.put("a", new RelayHTTPException(429, "", 60_000));
+        f.flush(u, 0, "a");
+        check(f.failures.equals(List.of("RETRY:1:60000")), "Retry-After sets the pause: " + f.failures);
+        f.flush(u, 59_999, "a");
+        check(f.sent.isEmpty(), "Retry-After is honoured");
+        f.flush(u, 60_000, "a");
+        check(f.sent.equals(List.of("a")), "retried once Retry-After has passed");
+
+        u = uploader();
+        f = new Fake();
+        f.replies.put("a", http(502));
+        f.flush(u, 0, "a", "b");
+        f.flush(u, 15_000, "a", "b");
+        f.flush(u, 30_000, "a", "c");
+        check(f.sent.equals(List.of("c", "a")), "a is due again after 10 s of its own backoff: " + f.sent);
+        f.flush(u, 45_000, "a", "d");
+        check(f.sent.equals(List.of("d")), "while other messages flow, a waits for its own 20 s backoff: " + f.sent);
+
+        u = uploader();
+        f = new Fake();
+        List<String> queue = new ArrayList<>();
+        for (int i = 0; i < 25; i++) queue.add("m" + i);
+        f.flush(u, 0, queue);
+        check(f.sent.size() == 10 && f.settled.size() == 10, "at most 10 sends per flush: " + f.sent.size());
+        queue.removeAll(f.settled);
+        f.flush(u, 1, queue);
+        queue.removeAll(f.settled);
+        f.flush(u, 2, queue);
+        check(f.settled.size() == 5 && queue.size() == 5, "the backlog drains over later flushes");
+
+        u = uploader();
         f = new Fake();
         f.replies.put("a", http(502));
         f.flush(u, 0, "a");
-        f.clear();
-        f.flush(u, 5_000, "a");
         f.replies.remove("a");
-        f.clear();
         f.flush(u, 15_000, "a");
         check(f.settled.equals(List.of("a")) && f.failures.isEmpty(), "delivered on a later attempt: " + f.settled);
         f.replies.put("a", http(502));
-        f.clear();
         f.flush(u, 15_001, "a");
-        check(f.failures.equals(List.of("RETRY:1:5000")), "success clears the retry state: " + f.failures);
+        check(f.failures.equals(List.of("RETRY:1:15000")), "success clears the message state and the pause: " + f.failures);
 
-        u = new CloudSMSUploader();
+        u = uploader();
         f = new Fake();
         f.replies.put("a", http(502));
         f.flush(u, 0, "a");
-        f.clear();
-        f.flush(u, 1_000, "b");
-        f.clear();
-        f.flush(u, 1_001, "a");
-        check(f.sent.equals(List.of("a")) && f.failures.equals(List.of("RETRY:1:5000")),
+        f.flush(u, 15_000, "b");
+        f.flush(u, 15_001, "a");
+        check(f.sent.equals(List.of("a")) && f.failures.equals(List.of("RETRY:1:15000")),
                 "state of a message that left the queue is forgotten: " + f.failures);
 
         boolean threw = false;
         try {
-            new CloudSMSUploader().flush(List.of("a"), id -> {}, id -> { throw new IllegalStateException("disk full"); },
-                    (error, verdict, attempt, retryIn) -> {}, 0);
+            uploader().flush(List.of("a"), id -> {}, id -> { throw new IllegalStateException("disk full"); },
+                    (error, verdict, attempt, pause) -> {}, 0);
         } catch (IllegalStateException expected) {
             threw = true;
         }
         check(threw, "a failing ledger is not mistaken for a Relay failure");
+
+        long now = Instant.parse("2026-10-29T10:00:00Z").toEpochMilli();
+        check(CloudSMSUploader.uploadTimestamp("2026-10-29T09:59:00Z", now).equals("2026-10-29T09:59:00Z"),
+                "a past carrier time is kept");
+        check(CloudSMSUploader.uploadTimestamp("2026-10-29T10:10:00Z", now).equals("2026-10-29T10:00:00Z"),
+                "a carrier clock running fast is clamped to now, so the Relay does not answer 400");
+        check(CloudSMSUploader.uploadTimestamp("", now).equals("2026-10-29T10:00:00Z"), "a missing time becomes now");
+        check(CloudSMSUploader.uploadTimestamp("yesterday", now).equals("2026-10-29T10:00:00Z"), "an unreadable time becomes now");
         System.out.println("CloudSMSUploaderTests passed");
     }
 }

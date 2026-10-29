@@ -118,6 +118,8 @@ mkdir -p "$OUT"
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CloudCallRetryPolicyTests
 "$JAVAC" --release 17 -d "$OUT" \
   "$ROOT"/src/com/airsim/phonecontrol/RelayHTTPException.java \
+  "$ROOT"/src/com/airsim/phonecontrol/RelayCommandRetryState.java \
+  "$ROOT"/src/com/airsim/phonecontrol/WebSocketPeerClose.java \
   "$ROOT"/src/com/airsim/phonecontrol/CloudSMSUploader.java \
   "$ROOT"/test/com/airsim/phonecontrol/CloudSMSUploaderTests.java
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CloudSMSUploaderTests
