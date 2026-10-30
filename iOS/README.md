@@ -1,5 +1,7 @@
 # AirSIM iOS 与 watchOS
 
+2026-10-30 未发布修复：[APNs 接听后的本地音频启动竞态](../docs/vowlan-first-call-startup.md)。兼容通话的音频任务独立于轮询；前后台刷新不再因轮询世代或调用方取消而关闭已握手的 PCM。挂断、停止、CallKit 停用／重置仍取消在途启动，回滚记录固定原因码，不记录通话身份或 PCM。未安装、发布或上传 TestFlight，锁屏 APNs 接听与双向声音须真机复验。
+
 2026-10-29 未发布候选：[反馈仅允许手动上传](../docs/manual-feedback-policy.md)。设置页手动按钮保留，非手动触发在采集与联网前拒绝；Verbose 本地记录不受影响。
 
 2026-10-29 未发布候选：[Tailscale / 其他 VPN 恢复修复](../docs/handoff/2026-10-29-tunnel-recovery-review.md)。保留经配对的非 CGNAT 私网候选、蜂窝下重新验证、限制离线端点循环切换；不改变签名认证或通话中的媒体路径。需用户设备复测，尚未进入 TestFlight 147。

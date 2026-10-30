@@ -74,3 +74,24 @@ the iPhone production APNs channel was accepted. The user subsequently confirmed
 that CallKit appeared, but with a large delay. This does not establish which
 stage caused the delay or certify reliable background delivery. PR #18 addresses
 post-answer PCM startup cancellation, not APNs/ringing latency.
+
+## PR #18 integration — 2026-10-31
+
+- Reviewed PR head `5c8e2c9` against `VoBLE`; retained its independent audio
+  startup task and call/owner/route validation without restoring poll-generation
+  coupling. The earlier delivery/registration repairs are commit `e29139a`.
+- Fixed the review finding: an observer joining an explicitly cancelled startup
+  now waits for owner-scoped cleanup, rechecks the slot and starts or joins the
+  replacement instead of silently discarding its request. No overlapping startup
+  is introduced; a cancelled observer cannot revive audio.
+- Added three tests for serial handoff/coalescing, cancelled waiters and repeated
+  cancellation. Original polling-cancellation and late-rollback tests still pass.
+- Integrated iOS unit suite: 373 passed, 0 failures on iOS 27 Simulator. This is
+  the `AirSIMTests` target, not physical-device or UI-test acceptance.
+- Worker unit suite: 67 passed; Android `test.sh`: passed; diff checks passed.
+- No new Worker deployment is required for PR #18. No phone installation,
+  Release asset or TestFlight upload was performed as part of this integration.
+- Next device check: background/locked incoming CallKit answer, immediately
+  foreground/background the app, confirm continuous two-way audio, then rapidly
+  hang up and accept the next call. Test Samsung and MU300 separately. Correlate
+  ringing latency independently; APNs acceptance alone is not a delivery receipt.

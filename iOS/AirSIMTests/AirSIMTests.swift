@@ -861,15 +861,169 @@ final class CallUpdateWorkSchedulerTests: XCTestCase {
         XCTAssertEqual(reducer.state, .ready)
     }
 
+    func testCancelledPollDoesNotCancelSingleFlightAudioRegistration() async {
+        let coordinator = LocalCallAudioStartupCoordinator()
+        let waiting = expectation(description: "registration pending")
+        var release: CheckedContinuation<Void, Never>?
+        var outcome: LocalCallAudioStartupOutcome?
+        var rollbacks: [LocalCallAudioRollbackReason] = []
+        var starts = 0
+        let poll = Task {
+            await coordinator.run {
+                starts += 1
+                outcome = await LocalCallAudioStartupCoordinator.start(
+                    activatePhoneAudio: { true },
+                    registerAgentAudio: {
+                        await withCheckedContinuation { release = $0; waiting.fulfill() }
+                        return .registered
+                    }, rollbackPhoneAudio: { rollbacks.append($0) })
+            }
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        poll.cancel()
+        let callbackEntered = expectation(description: "CallKit callback joins startup")
+        let callKit = Task {
+            callbackEntered.fulfill()
+            await coordinator.run { starts += 1 }
+        }
+        await fulfillment(of: [callbackEntered], timeout: 2)
+        release?.resume()
+        await poll.value
+        await callKit.value
+        XCTAssertEqual(outcome, .started)
+        XCTAssertTrue(rollbacks.isEmpty)
+        XCTAssertEqual(starts, 1, "CallKit and polling must share one audio startup")
+    }
+
+    func testExplicitAudioCancellationRollsBackLateRegistration() async {
+        let coordinator = LocalCallAudioStartupCoordinator()
+        let waiting = expectation(description: "registration pending")
+        var release: CheckedContinuation<Void, Never>?
+        var outcome: LocalCallAudioStartupOutcome?
+        var rollbacks: [LocalCallAudioRollbackReason] = []
+        let callback = Task {
+            await coordinator.run {
+                outcome = await LocalCallAudioStartupCoordinator.start(
+                    activatePhoneAudio: { true },
+                    registerAgentAudio: {
+                        await withCheckedContinuation { release = $0; waiting.fulfill() }
+                        return .registered
+                    }, rollbackPhoneAudio: { rollbacks.append($0) })
+            }
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        coordinator.cancel()
+        release?.resume()
+        await callback.value
+        XCTAssertEqual(outcome, .callNoLongerActive)
+        XCTAssertEqual(rollbacks, [.taskCancelled])
+    }
+
+    func testCancelledStartupHandsOffToOneReplacementAfterCleanup() async {
+        let coordinator = LocalCallAudioStartupCoordinator()
+        let oldWaiting = expectation(description: "old startup pending")
+        let newEntered = expectation(description: "replacement callers entered")
+        newEntered.expectedFulfillmentCount = 2
+        let newStarted = expectation(description: "replacement started")
+        var releaseOld: CheckedContinuation<Void, Never>?
+        var releaseNew: CheckedContinuation<Void, Never>?
+        var cleanedUp = false
+        var starts = 0
+        let old = Task {
+            await coordinator.run {
+                await withCheckedContinuation { releaseOld = $0; oldWaiting.fulfill() }
+                cleanedUp = true
+            }
+        }
+        await fulfillment(of: [oldWaiting], timeout: 2)
+        coordinator.cancel()
+        let replacements = (0..<2).map { _ in Task {
+            newEntered.fulfill()
+            await coordinator.run {
+                XCTAssertTrue(cleanedUp, "New audio must not overlap old rollback")
+                starts += 1
+                await withCheckedContinuation { releaseNew = $0; newStarted.fulfill() }
+            }
+        } }
+        await fulfillment(of: [newEntered], timeout: 2)
+        XCTAssertEqual(starts, 0)
+        releaseOld?.resume()
+        await fulfillment(of: [newStarted], timeout: 2)
+        await old.value
+        let lateEntered = expectation(description: "late observer joins replacement")
+        let late = Task {
+            lateEntered.fulfill()
+            await coordinator.run { starts += 1 }
+        }
+        await fulfillment(of: [lateEntered], timeout: 2)
+        releaseNew?.resume()
+        for replacement in replacements { await replacement.value }
+        await late.value
+        XCTAssertEqual(starts, 1, "Cancelled startup must neither swallow nor duplicate replacement")
+    }
+
+    func testCancelledReplacementWaiterCannotReviveAudio() async {
+        let coordinator = LocalCallAudioStartupCoordinator()
+        let oldWaiting = expectation(description: "old startup pending")
+        let newEntered = expectation(description: "replacement waiting")
+        var release: CheckedContinuation<Void, Never>?
+        var starts = 0
+        let old = Task {
+            await coordinator.run {
+                await withCheckedContinuation { release = $0; oldWaiting.fulfill() }
+            }
+        }
+        await fulfillment(of: [oldWaiting], timeout: 2)
+        coordinator.cancel()
+        let replacement = Task {
+            newEntered.fulfill()
+            await coordinator.run { starts += 1 }
+        }
+        await fulfillment(of: [newEntered], timeout: 2)
+        replacement.cancel()
+        release?.resume()
+        await old.value
+        await replacement.value
+        XCTAssertEqual(starts, 0)
+        await coordinator.run { starts += 1 }
+        XCTAssertEqual(starts, 1, "A later valid request must still start")
+    }
+
+    func testRepeatedStartupCancellationHandsOffWithoutLosingRequests() async {
+        let coordinator = LocalCallAudioStartupCoordinator()
+        var starts = 0
+        for _ in 0..<3 {
+            let waiting = expectation(description: "startup pending")
+            let entered = expectation(description: "replacement waiting")
+            var release: CheckedContinuation<Void, Never>?
+            let old = Task {
+                await coordinator.run {
+                    await withCheckedContinuation { release = $0; waiting.fulfill() }
+                }
+            }
+            await fulfillment(of: [waiting], timeout: 2)
+            coordinator.cancel()
+            let replacement = Task {
+                entered.fulfill()
+                await coordinator.run { starts += 1 }
+            }
+            await fulfillment(of: [entered], timeout: 2)
+            release?.resume()
+            await old.value
+            await replacement.value
+        }
+        XCTAssertEqual(starts, 3)
+    }
+
     func testEndedCallCannotRegisterAfterPhoneActivationReturns() async throws {
         var current = true
         var registrations = 0
         var rollbacks = 0
         let result = await LocalCallAudioStartupCoordinator.start(
-            isCurrent: { current },
+            invalidationReason: { current ? nil : .callNotActive },
             activatePhoneAudio: { current = false; return true },
             registerAgentAudio: { registrations += 1; return .registered },
-            rollbackPhoneAudio: { rollbacks += 1 }
+            rollbackPhoneAudio: { _ in rollbacks += 1 }
         )
         XCTAssertEqual(result, .callNoLongerActive)
         XCTAssertEqual(registrations, 0)
@@ -880,9 +1034,9 @@ final class CallUpdateWorkSchedulerTests: XCTestCase {
         var current = true
         var rollbacks = 0
         let result = await LocalCallAudioStartupCoordinator.start(
-            isCurrent: { current }, activatePhoneAudio: { true },
+            invalidationReason: { current ? nil : .callNotActive }, activatePhoneAudio: { true },
             registerAgentAudio: { current = false; return .registered },
-            rollbackPhoneAudio: { rollbacks += 1 }
+            rollbackPhoneAudio: { _ in rollbacks += 1 }
         )
         XCTAssertEqual(result, .callNoLongerActive)
         XCTAssertEqual(rollbacks, 1)
@@ -901,6 +1055,17 @@ final class CallUpdateWorkSchedulerTests: XCTestCase {
         XCTAssertEqual(entries.first?.category, "call-audio")
         XCTAssertEqual(entries.first?.elapsedMilliseconds, 180)
         XCTAssertEqual(entries.first?.fields, ["phase": "engine_ready"])
+    }
+
+    func testAudioRollbackReasonPersistsWithoutVerboseOrPrivateIdentifiers() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = directory.appendingPathComponent("rollback-trace.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 10, persistenceURL: file)
+        await recorder.recordAudioStartup(phase: "rollback", rollbackReason: .routeChanged)
+        let restored = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 10, persistenceURL: file)
+        let entries = await restored.snapshot()
+        XCTAssertEqual(entries.map(\.fields), [["phase": "rollback", "reason": "route_changed"]])
     }
 
     func testSlowSupplementalWorkCannotDelayToneStopOrAudioStartup() async {
