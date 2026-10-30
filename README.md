@@ -1,12 +1,12 @@
 # AirSIM — Android 与 iPhone / Apple Watch 跨设备通话、短信和 VoWLAN
 
-[Apps v0.9.8.18 · Android 123 / iOS 147](docs/releases/0.9.8.18.md)：VoWLAN 保留云端 APNs 通知、iOS 18 受限通讯录刷新、原生短信会话、Watch 接听后撤铃与 Relay 401 恢复。推荐 Android 10–13 用户升级 Standalone；双 SIM、真实换卡和不同 OEM 双向音频仍需真机复验。TestFlight build 147 已上传并处理中；AVF Linux Agent v0.4.7 已单独发布。
+[Apps v0.9.8.19 · Android 124 / iOS 148](docs/releases/0.9.8.19.md)：本地出口控制、VPN 隧道恢复、手动心跳／云端自检与独立短信重试。纯本地跨端协商及零 Relay 流量仍未完成端到端验收；请阅读发布限制。AVF Linux Agent 保持 v0.4.7。
 
 [![Android Standalone](https://img.shields.io/badge/Android-Standalone%20APK-3DDC84?logo=android&logoColor=white)](android-standalone/README.md)
 [![iOS](https://img.shields.io/badge/iOS-16.3%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![watchOS](https://img.shields.io/badge/watchOS-10%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![Android AVF](https://img.shields.io/badge/Android%20AVF-Linux%20arm64-FCC624?logo=linux&logoColor=black)](module/packaging/README.md)
-[![Apps release](https://img.shields.io/badge/Apps-v0.9.8.18-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.18)
+[![Apps release](https://img.shields.io/badge/Apps-v0.9.8.19-2563EB)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.19)
 [![AVF Agent release](https://img.shields.io/badge/AVF%20Agent-v0.4.7-0F766E)](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.7)
 [![Cloudflare Relay](https://img.shields.io/badge/Relay-airsim--push.remotepilot.site-F38020?logo=cloudflare&logoColor=white)](https://airsim-push.remotepilot.site/healthz)
 [![Project status](https://img.shields.io/badge/status-active%20development-1f6feb)](#项目状态)
@@ -99,22 +99,22 @@ VoBLE 是与 VoWLAN、云端 Relay 并列的模式选项，不是现有 Wi-Fi �
 
 | 组件 | 当前版本或地址 |
 | --- | --- |
-| Android Standalone / AVF Bridge | [`v0.9.8.18 (123)`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.18)，推荐安装 Standalone |
-| iPhone / Apple Watch App | `0.9.8 (147)`，随 [v0.9.8.18](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.18) 提供 full／sideload unsigned IPA；TestFlight build 147 已上传，processing |
+| Android Standalone / AVF Bridge | [`v0.9.8.19 (124)`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.19)，推荐安装 Standalone |
+| iPhone / Apple Watch App | `0.9.8 (148)`，随 [v0.9.8.19](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.9.8.19) 提供 full／sideload unsigned IPA；TestFlight 状态见发布说明 |
 | Android AVF Linux Agent | [`v0.4.7`](https://github.com/kai-wu-cortex/AirSIM/releases/tag/v0.4.7)（Debian 包版本 `0.4.7-1`） |
 | AirSIM Relay | `0.2.1` · [`https://airsim-push.remotepilot.site`](https://airsim-push.remotepilot.site/healthz) |
 | DJOneHub Relay | `https://push.remotepilot.site`（独立服务，AirSIM 不得使用） |
 
 ### 应用发布包
 
-当前版为 [Apps v0.9.8.18（Android 123 / iOS 147）](docs/releases/0.9.8.18.md)，重点包含：VoWLAN 保留云端 APNs 通知、iOS 18 受限通讯录刷新、原生短信会话、Watch 接听后撤铃与 Relay 401 恢复。
+当前版为 [Apps v0.9.8.19（Android 124 / iOS 148）](docs/releases/0.9.8.19.md)，重点包含：本地出口控制、隧道恢复、手动心跳、云端自检与短信独立重试。纯本地跨端功能仍属实验阶段。
 
-- `AirSIM-Android-Standalone-0.9.8.18-build123.apk`：推荐新安装，内置 Agent，不依赖 AVF Linux。
-- `AirSIM-Android-AVF-0.9.8.18-build123.apk`：旧 AVF 部署的 Android Bridge；不包含新的 Linux Agent。
-- `AirSIM-iOS-0.9.8-build147-unsigned.ipa`／`-sideload-unsigned.ipa`：公开未签名包，必须用部署者自己的 Team、Bundle ID 与 profiles 重签，不能直接安装或上传 TestFlight。
-- TestFlight：build 147 已上传 App Store Connect，等待处理；上传成功不等于 Apple 处理完成、外测审核或测试者可更新。
+- `AirSIM-Android-Standalone-0.9.8.19-build124.apk`：推荐新安装，内置 Agent，不依赖 AVF Linux。
+- `AirSIM-Android-AVF-0.9.8.19-build124.apk`：旧 AVF 部署的 Android Bridge；不包含新的 Linux Agent。
+- `AirSIM-iOS-0.9.8-build148-unsigned.ipa`／`-sideload-unsigned.ipa`：公开未签名包，必须用部署者自己的 Team、Bundle ID 与 profiles 重签，不能直接安装或上传 TestFlight。
+- TestFlight：build 148 的上传进度见发布说明；上传成功不等于 Apple 处理完成、外测审核或测试者可更新。
 
-正式 APK 使用既有 AirSIM Release 证书，可覆盖同包名、同签名安装；不要先卸载或清除配对数据。历史版本与旧 Android 10–13 修复包仍保留在 [Releases](https://github.com/kai-wu-cortex/AirSIM/releases)，新安装直接使用 0.9.8.18。
+正式 APK 使用既有 AirSIM Release 证书，可覆盖同包名、同签名安装；不要先卸载或清除配对数据。历史版本与旧 Android 10–13 修复包仍保留在 [Releases](https://github.com/kai-wu-cortex/AirSIM/releases)。Debug 包与正式包签名不同，不能直接覆盖。
 
 ### 1. 准备开发环境
 
@@ -254,7 +254,7 @@ xcodebuild -project iOS/AirSIM.xcodeproj -scheme AirSIM \
 
 ## 项目状态
 
-AirSIM 当前处于主动开发阶段。仓库已整合 Android Standalone、旧 AVF Agent / Installer、iOS / watchOS 与 Cloudflare Relay 源码，并提供本地自动化验证。Android `0.9.8.18 (123)` 与 iOS `0.9.8 (147)` 的候选包已完成覆盖安装；正式 APK 的云端接听、短信通知兜底、日志分享、自检命令路由、锁屏与重启后自启动仍待完整真机验收。Apple 正式签名、更多 Android 厂商兼容性、后台推送与长期稳定性仍需各部署者在自己的环境中验证。
+AirSIM 当前处于主动开发阶段。仓库已整合 Android Standalone、旧 AVF Agent / Installer、iOS / watchOS 与 Cloudflare Relay 源码，并提供本地自动化验证。发布编号为 Android `0.9.8.19 (124)` 与 iOS `0.9.8 (148)`；其基础提交曾以旧编号覆盖安装并启动，但新编号发布包仍待完整真机验收。纯本地跨端协商、零 Relay 流量、云端接听、短信、锁屏与重启恢复仍需联合验证；不同 OEM、后台推送与长期稳定性不能仅凭构建通过确认。
 
 ## 项目趋势
 
