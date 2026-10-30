@@ -1030,6 +1030,53 @@ test("relay sends iPhone VoIP, Watch VoIP, mirror alert, and SMS on distinct APN
   assert.equal(storedCall.call_secret, undefined);
 });
 
+test("new calls are not blocked by another Agent or an orphaned prior call", async () => {
+  const env = testEnvironment();
+  await worker.fetch(post("/v1/devices/register", registration), env);
+  const originalFetch = globalThis.fetch;
+  const delivered = [];
+  globalThis.fetch = async (_url, options) => {
+    if (options.headers["apns-push-type"] === "voip") delivered.push(JSON.parse(options.body));
+    return new Response("", { status: 200 });
+  };
+  const makeCall = (suffix, agent) => ({
+    event: "incoming_call", device_id: registration.device_id, device_secret: registration.device_secret,
+    agent_id: agent, call_id: `call-${suffix}`,
+    call_uuid: `d9b59660-05bb-4ea8-9aeb-4505b35c93f${suffix}`,
+    call_secret: "test-call-secret-0123456789abcdef", generation: 1,
+    issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 45_000).toISOString(),
+  });
+  try {
+    // Pre-deployment state must not poison all new UUIDs until its five-hour TTL.
+    await env.DEVICES.put(`call-lifecycle:${registration.device_id}`, JSON.stringify({
+      ...makeCall("0", "old-agent"), phase: "active", timestamp: new Date().toISOString(),
+    }));
+    const a = makeCall("1", "samsung"), b = makeCall("2", "mu300"), c = makeCall("3", "samsung");
+    for (const call of [a, b, c]) {
+      const result = await worker.fetch(post("/v2/events/call", call), env);
+      assert.equal(result.status, 202, JSON.stringify(await result.json()));
+    }
+    const end = await worker.fetch(post("/v2/events/call-state", {
+      ...a, event: "call_state", phase: "ended", source: "agent", timestamp: new Date().toISOString(),
+    }), env);
+    assert.equal(end.status, 202);
+    // Ended-call replay remains forbidden; do not achieve recovery by disabling validation.
+    assert.equal((await worker.fetch(post("/v2/events/call", a), env)).status, 409);
+    assert.equal((await worker.fetch(post("/v2/events/call", b), env)).status, 202);
+    assert.equal((await worker.fetch(post("/v2/events/call-state", {
+      ...b, agent_id: "samsung", event: "call_state", phase: "ended", source: "agent",
+      timestamp: new Date().toISOString(),
+    }), env)).status, 403);
+    assert.ok(delivered.length >= 3);
+    const legacy = makeCall("4", "legacy-agent");
+    await env.DEVICES.put(`call-lifecycle:${registration.device_id}`, JSON.stringify({
+      call_id: legacy.call_id, call_uuid: legacy.call_uuid, generation: 1,
+      phase: "ended", timestamp: new Date().toISOString(),
+    }));
+    assert.equal((await worker.fetch(post("/v1/events/call", legacy), env)).status, 409);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("incoming call retries deduplicate VoIP and Watch alert by call UUID", async () => {
   const env = testEnvironment();
   await worker.fetch(post("/v1/devices/register", registration), env);

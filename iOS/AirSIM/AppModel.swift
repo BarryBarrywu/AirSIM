@@ -1432,6 +1432,18 @@ final class AppModel: ObservableObject {
         self.deviceBackendOverride = deviceBackend
         if let localDirectory { self.localDevices = localDirectory }
         let runtimePolicy = ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected())
+        VoIPPushController.shared.registrationAPIs = { [weak self] in
+            guard let self else { return [] }
+            var apis = self.localDevices.agentIDs.filter { PairedAndroidDeviceStore.permits($0) }
+                .compactMap { self.localDevices.api(for: $0) }
+            if let legacy = self.verifiedVoWLANAPI(), !apis.contains(where: { $0.route == legacy.route }) {
+                apis.append(legacy)
+            }
+            return apis
+        }
+        localDevices.onVerified = { api in
+            Task { await VoIPPushController.shared.syncRegistration(with: api) }
+        }
         localDevices.onCallEvent = { [weak self] event in _ = self?.receiveOwnedCallEvent(event) }
         localDevices.onHistory = { [weak self] records, source in self?.persistDeviceHistory(records, agentID: source) ?? false }
         localDevices.objectWillChange.sink { [weak self] _ in
@@ -1484,7 +1496,7 @@ final class AppModel: ObservableObject {
             }
             if case let .verified(endpoint, _) = availability,
                let credential = self.credentialForVoWLANEndpoint(endpoint),
-               ConnectionModeRuntimePolicy(mode: ConnectionModePreference.selected()).startsCloud {
+               CloudSignalingPreference.isEnabled() {
                 let vowlanAPI = AirSIMAPI(route: .vowlan(
                     endpoint: endpoint,
                     credential: credential

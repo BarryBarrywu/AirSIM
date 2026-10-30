@@ -45,6 +45,7 @@ final class LocalDeviceDirectory: ObservableObject {
     private var forgotten = Set<String>()
     var onCallEvent: ((DeviceCallEvent) -> Void)?
     var onHistory: (([CallRecord], String) -> Bool)?
+    var onVerified: ((AirSIMAPI) -> Void)?
     init(credentials: any LocalDeviceCredentialStoring = KeychainLocalDeviceCredentials(),
          legacyBinding: @escaping () -> String? = { AndroidAgentBindingPreference.selected() },
          bluetoothReady: @escaping (String) -> Bool = { _ in false },
@@ -137,6 +138,7 @@ final class LocalDeviceDirectory: ObservableObject {
                 credential: credential, epoch: epoch, metadata: identity)
         }
         objectWillChange.send()
+        if let api = api(for: agentID) { onVerified?(api) }
         if enabled { subscribe(agentID: agentID) }
     }
     func forget(agentID: String) async throws {
@@ -193,6 +195,7 @@ final class LocalDeviceDirectory: ObservableObject {
                         peer.metadata = identity; peer.verified = true
                         peer.revision = AgentEventCursor.initial
                         self.objectWillChange.send()
+                        self.onVerified?(peer.api)
                     }
                     let status: CallStatus
                     do {

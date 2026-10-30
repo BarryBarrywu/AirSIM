@@ -2159,6 +2159,31 @@ final class AirSIMTests: XCTestCase {
         ))
     }
 
+    func testPushRegistrationBackoffIsIndependentForEachGateway() {
+        var ledger = PushRegistrationLedger<String>()
+        let now = Date(timeIntervalSince1970: 1_000)
+        ledger.record("mu300", fingerprint: "production-token", succeeded: false, now: now)
+        XCTAssertFalse(ledger.shouldAttempt("mu300", fingerprint: "production-token", now: now))
+        XCTAssertTrue(ledger.shouldAttempt("samsung", fingerprint: "production-token", now: now))
+        ledger.record("samsung", fingerprint: "production-token", succeeded: true, now: now)
+        XCTAssertFalse(ledger.needsRegistration("samsung", fingerprint: "production-token"))
+        XCTAssertTrue(ledger.needsRegistration("mu300", fingerprint: "production-token"))
+        XCTAssertTrue(ledger.shouldAttempt("mu300", fingerprint: "production-token", now: now.addingTimeInterval(30)))
+        XCTAssertFalse(ledger.shouldAttempt("samsung", fingerprint: "production-token", now: now.addingTimeInterval(60)))
+    }
+
+    func testPushTokenChangeAndGatewayRecoveryInvalidateRegistrationCache() {
+        var ledger = PushRegistrationLedger<String>()
+        ledger.record("samsung", fingerprint: "sandbox-token", succeeded: true)
+        ledger.record("mu300", fingerprint: "sandbox-token", succeeded: true)
+        for route in ["samsung", "mu300"] {
+            XCTAssertTrue(ledger.shouldAttempt(route, fingerprint: "production-token"))
+        }
+        ledger.retain(["samsung"])
+        XCTAssertTrue(ledger.shouldAttempt("mu300", fingerprint: "sandbox-token"))
+        XCTAssertTrue(ledger.shouldAttempt("samsung-new-ip", fingerprint: "sandbox-token"))
+    }
+
     func testNewAgentRouteRequiresRegistrationEvenWithSameToken() {
         XCTAssertTrue(PushRegistrationAttemptPolicy.shouldRegisterAgent(
             fingerprint: "same-token",

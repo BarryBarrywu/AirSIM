@@ -7,6 +7,22 @@ import WatchConnectivity
 
 @MainActor
 final class LocalDeviceDirectoryTests: XCTestCase {
+    func testPushRegistrationCallbackOnlyReceivesAuthenticatedGateways() async throws {
+        let id = "push-sync-" + UUID().uuidString
+        let peer = try AuthenticatedHealthPeer(agentID: id, secret: aSecret)
+        defer { peer.stop() }
+        let endpoint = try await peer.start()
+        let directory = LocalDeviceDirectory(credentials: MemoryWLANCredentials(), healthTransport: AuthenticatedHealthPeer.transport)
+        var routes: [LocalAgentRoute] = []
+        directory.onVerified = { routes.append($0.route) }
+        XCTAssertTrue(routes.isEmpty)
+        try await directory.verifyPairing(agentID: id, endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
+        XCTAssertEqual(routes, [directory.api(for: id)!.route])
+        try await directory.forget(agentID: id)
+        XCTAssertNil(directory.api(for: id))
+        XCTAssertEqual(routes.count, 1)
+    }
+
     func testHealthWithoutDeviceNameCannotPersistSpoofedBonjourName() async throws {
         let id = "nameless-" + UUID().uuidString
         defer { PairedAndroidDeviceStore.forget(id); PairedAndroidDeviceStore.allowPairing(id) }

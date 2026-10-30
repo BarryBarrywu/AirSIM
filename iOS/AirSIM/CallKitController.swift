@@ -294,6 +294,11 @@ final class CallKitController: NSObject {
         let end = systemEnd ?? { [provider] uuid in
             provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
         }
+        PushDiagnostics.record("PushKit 来电未进入主通话展示", fields: [
+            "callkit_available": String(isAvailable),
+            "signaling_enabled": String(CloudSignalingPreference.isEnabled()),
+            "local_owner_busy": String(localOwnerBusy),
+            "system_call_exists": String(currentUUID != nil)])
         report(call.uuid, update(number: call.number, callerName: call.callerName,
                                  genericHandle: call.isVirtual)) { error in
             Task { @MainActor in
@@ -452,6 +457,7 @@ final class CallKitController: NSObject {
                 guard let self else { return }
                 guard self.currentUUID == uuid else { return }
                 if let error {
+                    PushDiagnostics.record("CallKit 系统来电上报失败", error: error)
                     let diagnosticError = error as NSError
                     self.debugLog(
                         "系统来电上报失败；domain=\(diagnosticError.domain) code=\(diagnosticError.code) "
@@ -467,6 +473,7 @@ final class CallKitController: NSObject {
                     self.handler?.callKitDidFail("系统来电界面启动失败：\(error.localizedDescription)")
                     self.finishIncomingReport(error)
                 } else {
+                    PushDiagnostics.record("CallKit 系统来电上报成功")
                     self.debugLog("系统来电上报成功")
                     self.systemCallReported = true
                     self.finishIncomingReport(nil)

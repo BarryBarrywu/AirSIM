@@ -1210,8 +1210,14 @@ async function receiveCall(request, env) {
     return jsonResponse(400, { error: "invalid incoming call" });
   }
 
-  const lifecycleKey = `call-lifecycle:${authenticated.device.device_id}`;
-  const lifecycle = applyCallLifecycle(await bestEffortReadRelayRecord(env, lifecycleKey), {
+  const existingCall = await bestEffortReadRelayRecord(env, `call:${call.call_uuid.toLowerCase()}`);
+  if (existingCall && (existingCall.device_id !== authenticated.device.device_id ||
+      !matchesTarget(existingCall.agent_id, agentID))) {
+    return jsonResponse(403, { error: "wrong_agent" });
+  }
+  const lifecycleKey = callLifecycleKey(authenticated.device.device_id, agentID, call.call_uuid);
+  const lifecycle = applyCallLifecycle(await readScopedCallLifecycle(env, lifecycleKey,
+    authenticated.device.device_id, call.call_uuid), {
     call_id: call.call_id.trim(),
     call_uuid: call.call_uuid.toLowerCase(),
     generation,
@@ -1223,6 +1229,7 @@ async function receiveCall(request, env) {
     failure: null,
   });
   if (!lifecycle.accepted) {
+    console.warn("incoming call lifecycle rejected", { reason: lifecycle.reason });
     return jsonResponse(409, { accepted: false, reason: lifecycle.reason, lifecycle: lifecycle.snapshot });
   }
   await bestEffortWriteRelayState(env, lifecycleKey, JSON.stringify(lifecycle.snapshot), 5 * 60 * 60);
@@ -1677,8 +1684,10 @@ async function receiveCallState(request, env) {
       !Number.isFinite(Date.parse(timestamp))) {
     return jsonResponse(400, { error: "invalid call state event" });
   }
-  const lifecycleKey = `call-lifecycle:${authenticated.device.device_id}`;
-  const currentLifecycle = await readRelayRecord(env, lifecycleKey);
+  const agentID = routingV2(request) ? parseAgentID(event.agent_id) : null;
+  const lifecycleKey = callLifecycleKey(authenticated.device.device_id, agentID, event.call_uuid);
+  const currentLifecycle = await readScopedCallLifecycle(env, lifecycleKey,
+    authenticated.device.device_id, event.call_uuid);
   const transition = applyCallLifecycle(currentLifecycle, {
     call_id: event.call_id.trim(),
     call_uuid: event.call_uuid.toLowerCase(),
@@ -1734,6 +1743,22 @@ const CALL_LIFECYCLE_PHASES = new Set([
   "idle", "ringing", "connecting", "active", "ending", "ended", "failed",
 ]);
 const CALL_LIFECYCLE_SOURCES = new Set(["app", "callkit", "agent", "relay"]);
+
+// A lost terminal event must never block every future call on an iPhone. Keep
+// ordering/tombstones per Agent AND call UUID; existing five-hour state TTL still
+// bounds retention. Different calls no longer need to overwrite an active call.
+function callLifecycleKey(deviceID, agentID, uuid) {
+  return `call-lifecycle:v2:${deviceID}:${encodeURIComponent(agentID ?? "legacy")}:${uuid.toLowerCase()}`;
+}
+
+async function readScopedCallLifecycle(env, key, deviceID, uuid) {
+  const scoped = await bestEffortReadRelayRecord(env, key);
+  if (scoped) return scoped;
+  // Migrate only the SAME call: preserve old terminal replay protection without
+  // importing an unrelated stale ringing/active record into a new call.
+  const legacy = await bestEffortReadRelayRecord(env, `call-lifecycle:${deviceID}`);
+  return legacy?.call_uuid?.toLowerCase() === uuid.toLowerCase() ? legacy : null;
+}
 
 export function applyCallLifecycle(current, candidate) {
   const generation = Number(candidate?.generation || 0);
