@@ -375,7 +375,7 @@ final class AppModel: ObservableObject {
     private let callUpdateWork = CallUpdateWorkScheduler()
     private var moduleMetadataTask: Task<Void, Never>?
     private var activeOperationCount = 0
-    private var startingCallAudio = false
+    private let localAudioStartup = LocalCallAudioStartupCoordinator()
     private var currentCallTransport: CallTransport?
     private var lockedCallTransport: LockedCallTransport?
     private var currentLocalAPI: AirSIMAPI?
@@ -2058,6 +2058,7 @@ final class AppModel: ObservableObject {
         localDirectoryRefresh?.cancel()
         localDevices.stop()
         callUpdateWork.cancel()
+        localAudioStartup.cancel()
         pollingGeneration &+= 1
         pollingTask?.cancel()
         pollingTask = nil
@@ -3393,36 +3394,55 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func makeLocalAudioStartupValidityCheck() -> () -> Bool {
+    func makeLocalAudioStartupInvalidationCheck() -> () -> LocalCallAudioRollbackReason? {
+        let startupTransport = currentCallTransport
+        let startupPCMRoute = currentPCMRoute
         if let key = presentedDeviceCall, let route = deviceCallRouter.route(for: key) {
             return { [weak self] in
-                guard let self, !Task.isCancelled else { return false }
-                // A discovery/poll restart does not revoke an admitted call's
-                // media lease. Only its exact identity, owner and locked lane do.
-                return self.presentedDeviceCall == key && self.deviceCalls.active == key
-                    && self.deviceCallContext.media.owner == key
-                    && self.deviceCallRouter.route(for: key) == route
-                    && self.deviceCalls.latestEvent(for: key)?.state == .active
-                    && self.currentCallTransport == route.transport
+                guard let self else { return .callChanged }
+                guard !Task.isCancelled else { return .taskCancelled }
+                guard self.presentedDeviceCall == key, self.deviceCalls.active == key else { return .callChanged }
+                guard self.deviceCallContext.media.owner == key else { return .mediaOwnerChanged }
+                guard self.deviceCallRouter.route(for: key) == route,
+                      self.currentCallTransport == startupTransport,
+                      self.currentPCMRoute == startupPCMRoute else { return .routeChanged }
+                guard self.deviceCalls.latestEvent(for: key)?.state == .active else { return .callNotActive }
+                return nil
             }
         }
         let startupCall = callLifecycleSnapshot
         let startupAttempt = outgoingAttemptID
-        let startupPollingGeneration = pollingGeneration
-        let startupTransport = currentCallTransport
         return { [weak self] in
-            guard let self else { return false }
+            guard let self else { return .callChanged }
+            guard !Task.isCancelled else { return .taskCancelled }
             let current = self.callLifecycleSnapshot
-            return !Task.isCancelled && current.state == .active
-                && current.callID == startupCall.callID && current.callUUID == startupCall.callUUID
-                && current.generation == startupCall.generation
-                && self.outgoingAttemptID == startupAttempt
-                && self.pollingGeneration == startupPollingGeneration
-                && self.currentCallTransport == startupTransport
+            guard current.callID == startupCall.callID, current.callUUID == startupCall.callUUID,
+                  current.generation == startupCall.generation,
+                  self.outgoingAttemptID == startupAttempt else { return .callChanged }
+            guard current.state == .active else { return .callNotActive }
+            guard !WatchCallCoordinator.shared.ownsMedia(callID: current.callID),
+                  self.deviceCallContext.media.owner == nil else { return .mediaOwnerChanged }
+            guard self.currentCallTransport == startupTransport,
+                  self.currentPCMRoute == startupPCMRoute else { return .routeChanged }
+            return nil
         }
     }
 
     private func startCallAudioIfReady() async {
+        guard !Task.isCancelled else { return }
+        let cloudSession = IPhoneCloudCallSession.shared
+        if cloudSession.call != nil, cloudSession.answered {
+            await performCallAudioStartup()
+            return
+        }
+        guard callLifecycleSnapshot.state == .active, !audio.active else { return }
+        await localAudioStartup.run { [weak self] in
+            await self?.performCallAudioStartup()
+        }
+    }
+
+    private func performCallAudioStartup() async {
+        guard !Task.isCancelled else { return }
         if let key = presentedDeviceCall, deviceCallRouter.route(for: key) != nil {
             guard deviceCallContext.media.owner == key, currentCallTransport == .vowlan else { return }
         }
@@ -3449,11 +3469,10 @@ final class AppModel: ObservableObject {
             return
         }
         guard !managedByCallKit || callKit.audioSessionIsActive else { return }
-        guard callLifecycleSnapshot.state == .active, !audio.active, !startingCallAudio else { return }
-        startingCallAudio = true
-        defer { startingCallAudio = false }
+        guard !Task.isCancelled, callLifecycleSnapshot.state == .active, !audio.active else { return }
         let owner = UUID()
-        let isCurrent = makeLocalAudioStartupValidityCheck()
+        let invalidationReason = makeLocalAudioStartupInvalidationCheck()
+        let isCurrent = { invalidationReason() == nil }
         backgroundStandby.suspendForCall()
 
         do {
@@ -3466,7 +3485,7 @@ final class AppModel: ObservableObject {
             // 先完成麦克风授权和 AVAudioEngine 启动，再让 Agent 开始等待 PCM
             // 客户端。否则首次授权停留超过 Agent 的等待窗口时，helper 会被提前杀死。
             let outcome = try await LocalCallAudioStartupCoordinator.start(
-                isCurrent: isCurrent,
+                invalidationReason: invalidationReason,
                 activatePhoneAudio: { [audio] in
                     await audio.activateForCall(route: pcmRoute, sessionAlreadyActive: managedByCallKit,
                                                 owner: owner, isCurrent: isCurrent)
@@ -3486,7 +3505,9 @@ final class AppModel: ObservableObject {
                     ) }
                     return outcome
                 },
-                rollbackPhoneAudio: { [audio] in
+                rollbackPhoneAudio: { [audio] reason in
+                    Task { await AgentVerboseTraceRecorder.shared.recordAudioStartup(
+                        phase: "rollback", rollbackReason: reason) }
                     guard audio.sessionOwner == owner else { return }
                     // A replaced BLE/cloud call may already own AVAudioSession.
                     audio.deactivate(preservingSharedSession: !isCurrent())
@@ -3668,8 +3689,16 @@ final class AppModel: ObservableObject {
         callLifecycleSnapshot = callLifecycleStore.snapshot
         if previous.callID != callLifecycleSnapshot.callID
             || previous.callUUID != callLifecycleSnapshot.callUUID
+            || previous.generation != callLifecycleSnapshot.generation
             || previous.state != callLifecycleSnapshot.state {
             callUpdateWork.cancel()
+            // Poll refreshes leave this task alone; a changed call revokes it.
+            if previous.callID != callLifecycleSnapshot.callID
+                || previous.callUUID != callLifecycleSnapshot.callUUID
+                || previous.generation != callLifecycleSnapshot.generation
+                || callLifecycleSnapshot.state != .active {
+                localAudioStartup.cancel()
+            }
         }
         if event.state == .active {
             // Publish the authoritative answer state before any audio or UI await.
@@ -3857,39 +3886,69 @@ enum LocalCallAudioStartupOutcome: Equatable, Sendable {
     case temporarilyUnavailable
 }
 
+enum LocalCallAudioRollbackReason: String, Sendable {
+    case taskCancelled = "task_cancelled"
+    case callChanged = "call_changed"
+    case callNotActive = "call_not_active"
+    case mediaOwnerChanged = "media_owner_changed"
+    case routeChanged = "route_changed"
+    case agentCallInactive = "agent_call_inactive"
+    case registrationUnavailable = "registration_unavailable"
+    case registrationFailed = "registration_failed"
+}
+
 @MainActor
-enum LocalCallAudioStartupCoordinator {
+final class LocalCallAudioStartupCoordinator {
+    private var task: Task<Void, Never>?
+
+    func run(_ operation: @escaping @MainActor () async -> Void) async {
+        guard !Task.isCancelled else { return }
+        if let task { await task.value; return }
+        // Unstructured on purpose: polling and CallKit are observers, not owners.
+        let startup = Task { @MainActor in
+            defer { self.task = nil }
+            await operation()
+        }
+        task = startup
+        await startup.value
+    }
+
+    func cancel() { task?.cancel() }
+
     static func start(
-        isCurrent: () -> Bool = { true },
+        invalidationReason: () -> LocalCallAudioRollbackReason? = { nil },
         activatePhoneAudio: () async -> Bool,
         registerAgentAudio: () async throws -> CallAudioRegistrationOutcome,
-        rollbackPhoneAudio: () async -> Void
+        rollbackPhoneAudio: (LocalCallAudioRollbackReason) async -> Void
     ) async rethrows -> LocalCallAudioStartupOutcome {
-        guard !Task.isCancelled, isCurrent() else { return .callNoLongerActive }
+        func invalidation() -> LocalCallAudioRollbackReason? {
+            Task.isCancelled ? .taskCancelled : invalidationReason()
+        }
+        guard invalidation() == nil else { return .callNoLongerActive }
         let activated = await activatePhoneAudio()
-        guard !Task.isCancelled, isCurrent() else {
-            if activated { await rollbackPhoneAudio() }
+        if let reason = invalidation() {
+            if activated { await rollbackPhoneAudio(reason) }
             return .callNoLongerActive
         }
         guard activated else { return .phoneAudioUnavailable }
         do {
             let outcome = try await registerAgentAudio()
-            guard !Task.isCancelled, isCurrent() else {
-                await rollbackPhoneAudio()
+            if let reason = invalidation() {
+                await rollbackPhoneAudio(reason)
                 return .callNoLongerActive
             }
             switch outcome {
             case .registered:
                 return .started
             case .callNoLongerActive:
-                await rollbackPhoneAudio()
+                await rollbackPhoneAudio(.agentCallInactive)
                 return .callNoLongerActive
             case .temporarilyUnavailable:
-                await rollbackPhoneAudio()
+                await rollbackPhoneAudio(.registrationUnavailable)
                 return .temporarilyUnavailable
             }
         } catch {
-            await rollbackPhoneAudio()
+            await rollbackPhoneAudio(invalidation() ?? .registrationFailed)
             throw error
         }
     }
@@ -4452,6 +4511,7 @@ extension AppModel: CallKitActionHandling {
     }
 
     func callKitAudioSessionDidDeactivate() {
+        localAudioStartup.cancel()
         beginCallTransitionProtection()
         if VirtualCallTTSController.shared.isPrepared {
             VirtualCallTTSController.shared.stop()
@@ -4473,6 +4533,7 @@ extension AppModel: CallKitActionHandling {
     }
 
     func callKitProviderDidReset() async {
+        localAudioStartup.cancel()
         beginCallTransitionProtection()
         if vobleCalls.currentIdentity != nil {
             vobleCalls.setCallKitAudioActive(false)

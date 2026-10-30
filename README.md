@@ -2,6 +2,8 @@
 
 [Apps v0.9.8.19 · Android 124 / iOS 148](docs/releases/0.9.8.19.md)：本地出口控制、VPN 隧道恢复、手动心跳／云端自检与独立短信重试。纯本地跨端协商及零 Relay 流量仍未完成端到端验收；请阅读发布限制。AVF Linux Agent 保持 v0.4.7。
 
+未发布修复：[APNs 接听后的本地音频启动竞态](docs/vowlan-first-call-startup.md)。前后台重启轮询不再撤销同一通话的音频启动，真正挂断、媒体归属／锁定路由变化和 CallKit 停用仍会使其失效；尚未安装或上传 TestFlight。
+
 [![Android Standalone](https://img.shields.io/badge/Android-Standalone%20APK-3DDC84?logo=android&logoColor=white)](android-standalone/README.md)
 [![iOS](https://img.shields.io/badge/iOS-16.3%2B-000000?logo=apple&logoColor=white)](iOS/README.md)
 [![watchOS](https://img.shields.io/badge/watchOS-10%2B-000000?logo=apple&logoColor=white)](iOS/README.md)

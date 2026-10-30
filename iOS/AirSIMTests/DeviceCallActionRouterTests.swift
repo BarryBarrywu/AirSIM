@@ -110,13 +110,36 @@ final class DeviceCallActionRouterTests: XCTestCase {
         let route = try await model.deviceCallRouter.dial(agentID: "A", number: "fixture", mode: .vowlan)
         _ = model.receiveOwnedCallEvent(.init(agentID: "A", callID: "shared", state: .active,
             transport: .vowlan, transportEpoch: 1, backendCallID: "shared"))
-        let isCurrent = model.makeLocalAudioStartupValidityCheck()
-        XCTAssertTrue(isCurrent())
+        let invalidation = model.makeLocalAudioStartupInvalidationCheck()
+        XCTAssertNil(invalidation())
         model.restartPolling()
-        XCTAssertTrue(isCurrent(), "Discovery/poll refresh after mode switch cannot cancel the unchanged owned call")
+        XCTAssertNil(invalidation(), "Poll refresh cannot cancel the unchanged owned call")
         model.deviceCallRouter.finished(route.key)
-        XCTAssertFalse(isCurrent(), "A real hangup must still invalidate in-flight audio startup")
+        XCTAssertNotNil(invalidation(), "A real hangup must still invalidate in-flight audio startup")
     }
+    func testLegacyAudioRegistrationSurvivesPollRestart() async {
+        let old = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.bluetooth)
+        defer { ConnectionModePreference.set(old) }
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()))
+        defer { model.stop() }
+        let now = Date()
+        let call = CallRecord(id: "legacy-push", index: 0, direction: "incoming", state: "active",
+            number: "fixture", startedAt: now, updatedAt: now, endedAt: nil, missed: false)
+        XCTAssertTrue(model.applyAgentCallRecord(call))
+        XCTAssertNil(model.deviceCalls.active, "Exercise the APNs/legacy path, not an owned device call")
+        let invalidation = model.makeLocalAudioStartupInvalidationCheck()
+        var rollbacks = 0
+        let outcome = await LocalCallAudioStartupCoordinator.start(
+            invalidationReason: invalidation, activatePhoneAudio: { true },
+            registerAgentAudio: { model.restartPolling(); return .registered },
+            rollbackPhoneAudio: { _ in rollbacks += 1 })
+        XCTAssertEqual(outcome, .started)
+        XCTAssertEqual(rollbacks, 0)
+        XCTAssertTrue(model.applyAgentCallRecord(call, forcedState: .ended))
+        XCTAssertEqual(invalidation(), .callNotActive, "Actual call termination must still revoke startup")
+    }
+
     func testOtherLaneEventCannotInvalidateProvenBLEAliasBeforeACK() async throws {
         let backend = DeviceBackendProbe(id: "A")
         backend.provisionalReply = true
