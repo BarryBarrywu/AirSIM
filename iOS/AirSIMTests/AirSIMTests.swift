@@ -8,6 +8,85 @@ import SwiftUI
 @testable import AirSIM
 
 @MainActor
+final class ManualFeedbackPolicyTests: XCTestCase {
+    func testAutomaticTriggersAreRejectedBeforeCollectionOrUpload() async {
+        for trigger in ["", "periodic", "error", "call_ended", "sms_sent", "sms_received", "crash", "startup", "MANUAL", " manual "] {
+            XCTAssertFalse(FeedbackUploader.permitsUpload(trigger: trigger))
+            let message = await FeedbackUploader.shared.upload(trigger: trigger, eventID: "fixture", api: nil, model: nil)
+            XCTAssertEqual(message, "自动反馈上传已关闭，请手动上传")
+        }
+    }
+
+    func testExplicitManualActionRemainsAllowed() {
+        XCTAssertTrue(FeedbackUploader.permitsUpload(trigger: "manual"))
+    }
+}
+
+final class TunnelRecoveryRegressionTests: XCTestCase {
+    func testNetworkChangeKeepsPairedVPNCandidatesOutsideCGNAT() throws {
+        let routes = ["100.64.1.2", "10.88.0.2", "172.20.1.2", "192.168.50.2"].map {
+            VoWLANManualRoute(agentID: $0, host: $0, controlPort: 39001, pcmPort: 39002)
+        }
+        XCTAssertEqual(VoWLANNetworkChangePolicy.manualCandidates(routes), routes)
+        for route in routes {
+            let endpoint = try XCTUnwrap(route.endpoint)
+            XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host, isLocalSubnet: false))
+            XCTAssertFalse(VoWLANAvailability.discovered(endpoint, at: Date()).isReady(),
+                           "Restoring a saved VPN route must not restore online state")
+        }
+    }
+
+    func testRecoveryCandidatesRejectMalformedRoutes() {
+        let invalid = [
+            VoWLANManualRoute(agentID: "", host: "10.88.0.2", controlPort: 39001, pcmPort: 39002),
+            VoWLANManualRoute(agentID: "peer", host: "127.0.0.1", controlPort: 39001, pcmPort: 39002),
+            VoWLANManualRoute(agentID: "peer", host: "10.88.0.2", controlPort: 0, pcmPort: 39002)
+        ]
+        XCTAssertTrue(VoWLANNetworkChangePolicy.manualCandidates(invalid).isEmpty)
+    }
+
+    func testFreshDHCPAddressBeatsSavedCandidateExceptDuringCall() throws {
+        let saved = VoWLANManualRoute(agentID: "peer", host: "10.88.0.2", controlPort: 39001, pcmPort: 39002)
+        let fresh = VoWLANDiscoveredAgent(id: "peer",
+            endpoint: try .init(host: "192.168.50.3", controlPort: 40001, pcmPort: 40002),
+            deviceName: "Phone", manufacturer: nil, model: nil, phoneNumber: nil, agentKind: nil)
+        let candidates = VoWLANNetworkChangePolicy.manualCandidates([saved])
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [fresh], manual: candidates,
+            live: [], preferred: nil).first?.endpoint, fresh.endpoint)
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [fresh], manual: candidates,
+            live: [], preferred: saved.endpoint).first?.endpoint, saved.endpoint)
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [], manual: candidates,
+            live: [], preferred: nil).first?.endpoint, saved.endpoint)
+    }
+
+    func testOfflineLANAndVPNFallbackCannotCycleWithinOneProbe() throws {
+        let lan = try VoWLANEndpoint(host: "192.168.50.3", controlPort: 7592, pcmPort: 7593)
+        let vpn = try VoWLANEndpoint(host: "100.64.1.2", controlPort: 39001, pcmPort: 39002)
+        var attempts = VoWLANProbeAttempts()
+        XCTAssertTrue(attempts.begin(lan))
+        XCTAssertTrue(attempts.permits(vpn))
+        XCTAssertTrue(attempts.begin(vpn))
+        XCTAssertFalse(attempts.permits(lan))
+        XCTAssertFalse(attempts.begin(lan))
+        XCTAssertFalse(attempts.begin(vpn))
+        var nextRecovery = VoWLANProbeAttempts()
+        XCTAssertTrue(nextRecovery.begin(vpn), "A later recovery can retry the VPN")
+    }
+
+    func testVerboseExportDisclosesWhenTunnelTracingWasDisabled() async {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 20, persistenceURL: nil)
+        await recorder.recordAudioStartup(phase: "answer_observed")
+        await recorder.recordEvent(source: "ios", category: "vowlan", phase: "failed", title: "not collected")
+        let disabled = await recorder.exportText(agentEvents: [])
+        XCTAssertTrue(disabled.contains("verbose_enabled=false"))
+        XCTAssertFalse(disabled.contains("not collected"))
+        await recorder.setEnabled(true)
+        let enabled = await recorder.exportText(agentEvents: [])
+        XCTAssertTrue(enabled.contains("verbose_enabled=true"))
+    }
+}
+
+@MainActor
 final class CloudStandbyLifecycleRegressionTests: XCTestCase {
     func testFailedFreshDialQueryClearsPreviousOnlinePresentation() async throws {
         let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()

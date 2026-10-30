@@ -1,5 +1,7 @@
 # AirSIM Android Standalone
 
+反馈仅支持用户在设置页面主动点击上传，不支持自动上传。客户端在收集日志及进入上传队列前拒绝非手动触发；Relay 接收端也拒绝非手动反馈。本轮为未发布改动，需安装新版并部署 Worker 后生效。[手动反馈策略](../docs/manual-feedback-policy.md)。
+
 2026-10-20 发布：[Apps v0.9.8.8](../docs/releases/0.9.8.8.md)，Android `0.9.8.8 (102)`。推荐 Android 10–13 用户升级；包含配对时钟校正、双卡短信/卡槽、KernelSU Root 通道、私有网段与可配置端口、VoBLE 静音修复。双 SIM、Root 与问题设备双向声音仍待实测；下文旧候选记录为历史依据。
 
 0.9.8.1 新增应用更新入口：首次安装／升级启动展示离线版本说明；「设置 → 关于」可重看并检查 Standalone APK 新版。前台每日最多自动检查一次（失败也限频），与 Linux Agent 更新分开，不自动下载或安装、不修改配对或通话。[说明与验证边界](../docs/app-updates.md)。

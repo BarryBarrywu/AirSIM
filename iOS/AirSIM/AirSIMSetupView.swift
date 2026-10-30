@@ -948,7 +948,11 @@ final class FeedbackUploader {
 
     private init() {}
 
+    static func permitsUpload(trigger: String) -> Bool { trigger == "manual" }
+
     func upload(trigger: String, eventID: String, api: AirSIMAPI?, model: AppModel?) async -> String {
+        // Reject before collecting Android logs or contacting either endpoint.
+        guard Self.permitsUpload(trigger: trigger) else { return "自动反馈上传已关闭，请手动上传" }
 
         let snapshot: AgentFeedbackSnapshot?
         if let api {

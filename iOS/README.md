@@ -1,5 +1,9 @@
 # AirSIM iOS 与 watchOS
 
+2026-10-29 未发布候选：[反馈仅允许手动上传](../docs/manual-feedback-policy.md)。设置页手动按钮保留，非手动触发在采集与联网前拒绝；Verbose 本地记录不受影响。
+
+2026-10-29 未发布候选：[Tailscale / 其他 VPN 恢复修复](../docs/handoff/2026-10-29-tunnel-recovery-review.md)。保留经配对的非 CGNAT 私网候选、蜂窝下重新验证、限制离线端点循环切换；不改变签名认证或通话中的媒体路径。需用户设备复测，尚未进入 TestFlight 147。
+
 2026-10-20 发布：[Apps v0.9.8.8](../docs/releases/0.9.8.8.md)，iOS／Watch／Live Activity `0.9.8 (113)`。包含配对时钟校正、双卡短信与通话卡槽、私有网段、VoBLE 静音修复；灵动岛仅保留 Agent 状态，通话全部交给 CallKit。GitHub unsigned IPA 仍需重签。TestFlight 上传/处理状态以 App Store Connect 实际回执为准。下文候选及旧版本记录保留追溯。
 
 0.9.8.1 新增应用更新入口：首次安装／升级启动展示包内版本说明；「设置 → 关于」可重看和手动检查新版。前台每日最多自动检查一次（失败也限频），不自动下载／安装 IPA，不访问 Relay；TestFlight 可用性与 GitHub 发布分开提示。[行为、维护和验证边界](../docs/app-updates.md)。

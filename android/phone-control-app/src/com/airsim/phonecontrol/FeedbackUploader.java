@@ -17,7 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Best-effort Android-only feedback upload; never blocks Telecom or SMS callbacks. */
+/** Manual-only feedback upload; never invoked by Telecom, SMS or background timers. */
 final class FeedbackUploader {
     private static final String ENDPOINT = "https://airsim-push.remotepilot.site/v1/feedback";
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
@@ -46,7 +46,7 @@ final class FeedbackUploader {
     }
 
     static void submit(Context context, String trigger, String eventID) {
-        if (context == null || trigger == null || trigger.isEmpty()) return;
+        if (context == null || !FeedbackUploadPolicy.allows(trigger)) return;
         Context app = context.getApplicationContext();
         WORKER.execute(() -> {
             try {

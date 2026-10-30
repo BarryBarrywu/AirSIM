@@ -28,6 +28,13 @@ assert_not_contains() {
   fi
 }
 
+assert_contains "$ROOT/src/com/airsim/phonecontrol/PairingServer.java" \
+  'pairing_direct_gateway_unavailable state=' \
+  'manual pairing must diagnose missing live control/PCM listeners'
+assert_contains "$ROOT/src/com/airsim/phonecontrol/PairingServer.java" \
+  'listener.onFailed("密钥已保存，但直连网关未就绪，尚未完成手动配对。"' \
+  'missing direct gateway must not report complete pairing success on Android'
+
 assert_contains "$ROOT/AndroidManifest.xml" \
   'android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING' \
   'boot-safe watchdog permission is missing'
@@ -84,6 +91,12 @@ assert_contains "$ROOT/src/com/airsim/phonecontrol/MainActivity.java" \
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
+"$JAVAC" --release 17 -d "$OUT" \
+  "$ROOT"/src/com/airsim/phonecontrol/FeedbackUploadPolicy.java \
+  "$ROOT"/test/com/airsim/phonecontrol/FeedbackUploadPolicyTests.java
+"$JAVA" -cp "$OUT" com.airsim.phonecontrol.FeedbackUploadPolicyTests
+assert_contains "$ROOT/src/com/airsim/phonecontrol/FeedbackUploader.java" \
+  '!FeedbackUploadPolicy.allows(trigger)' 'feedback upload must gate collection and network access'
 "$JAVAC" --release 17 -d "$OUT" \
   "$ROOT"/src/com/airsim/phonecontrol/AppUpdatePolicy.java \
   "$ROOT"/src/com/airsim/phonecontrol/AppUpdateSession.java \
