@@ -1,5 +1,7 @@
 # AirSIM Cloudflare Relay 部署手册
 
+2026-10-29 未部署候选：[反馈仅允许手动上传](../docs/manual-feedback-policy.md)。`/v1/feedback` 仅接受 `trigger=manual`，其他触发类型在写入 Notion 前拒绝；线上需部署后生效，不改变 APNs、心跳或通话媒体。
+
 未发布的 v2 定向命令协议、v1 安全兼容与上线顺序见 [多安卓路由说明](../docs/relay-agent-routing.md)。本轮未部署生产；媒体连接路径及存储 namespace 不变。
 
 `push-relay-worker/` 中已经包含可部署的 Relay 后端，而不是域名占位文件。它负责 AirSIM iPhone、Apple Watch、Live Activity 与 Android Standalone 内置 Agent（或旧 AVF Agent）之间的公网控制、APNs 推送、状态同步、命令队列和通话媒体中继。AirSIM 与 DJOneHub 应使用相互隔离的 Worker、KV、Durable Objects 和域名；本项目维护者的 AirSIM 生产域名是 `https://airsim-push.remotepilot.site`，其他部署者应换成自己控制的 Cloudflare 自定义域名。

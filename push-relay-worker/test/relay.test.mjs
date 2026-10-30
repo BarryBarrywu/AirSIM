@@ -82,6 +82,26 @@ class UnavailableStatusNamespace {
   get() { return { fetch: async () => new Response("unavailable", { status: 503 }) }; }
 }
 
+test("exhausted DO heartbeat returns retryable capacity error, never false success or KV heartbeat", async () => {
+  const env = testEnvironment();
+  await worker.fetch(post("/v1/devices/register", registration), env);
+  env.STATUS = {
+    idFromName: (name) => name,
+    get: () => ({ fetch: async () => {
+      throw new Error("Exceeded allowed volume of requests in Durable Objects free tier.");
+    } }),
+  };
+  const response = await worker.fetch(post("/v1/events/heartbeat", {
+    event: "agent_heartbeat", device_id: registration.device_id,
+    device_secret: registration.device_secret, agent_id: "android-test",
+    at_ok: true, cellular_state: "registered",
+  }), env);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("Retry-After"), "300");
+  assert.equal((await response.json()).error, "relay_capacity_exhausted");
+  assert.equal([...env.DEVICES.values.keys()].some((key) => key.startsWith("heartbeat:")), false);
+});
+
 class MemoryMediaSocket {
   constructor(role) {
     this.attachment = { role, owner: false, pendingControl: "" };

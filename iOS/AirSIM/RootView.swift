@@ -73,7 +73,6 @@ struct RootView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            NavigationStack {
                 TabView(selection: selectedTabBinding) {
                     DialPadView()
                         .tag(PhoneTab.dial)
@@ -83,11 +82,23 @@ struct RootView: View {
                         .tag(PhoneTab.recents)
                         .tabItem { Label(L10n.t(PhoneTab.recents.tabTitle), systemImage: PhoneTab.recents.icon) }
 
-                    MessagesView(
-                        pendingRecipient: $pendingSMSRecipient,
-                        state: $messageListState,
-                        openConversation: showSMSConversation
-                    )
+                    NavigationStack {
+                        MessagesView(
+                            pendingRecipient: $pendingSMSRecipient,
+                            state: $messageListState,
+                            openConversation: showSMSConversation
+                        )
+                        .navigationTitle(L10n.t("短信"))
+                        .navigationBarTitleDisplayMode(.large)
+                        .toolbar { SMSConversationListToolbar(state: $messageListState) }
+                        .navigationDestination(isPresented: $showingConversation) {
+                            if let sender = conversationSender {
+                                MessageThreadView(sender: sender)
+                                    .id(sender)
+                                    .toolbar(.hidden, for: .tabBar)
+                            }
+                        }
+                    }
                         .tag(PhoneTab.messages)
                         .tabItem { Label(L10n.t(PhoneTab.messages.tabTitle), systemImage: PhoneTab.messages.icon) }
 
@@ -102,23 +113,6 @@ struct RootView: View {
                 .phoneTabBarMinimizeOnScroll()
                 .phoneTabSelectionFeedback(selectedTabRawValue)
                 .tint(.blue)
-                .navigationTitle(selectedTab == .messages ? L10n.t("短信") : "")
-                .navigationBarTitleDisplayMode(.large)
-                .toolbar {
-                    if selectedTab == .messages {
-                        SMSConversationListToolbar(state: $messageListState)
-                    }
-                }
-                .toolbar(selectedTab == .messages || selectedTab == .contacts ? .visible : .hidden, for: .navigationBar)
-                .background { PhoneTabBarNavigationFade() }
-                .navigationDestination(isPresented: $showingConversation) {
-                    if let sender = conversationSender {
-                        MessageThreadView(sender: sender)
-                            .id(sender)
-                            .toolbar(.visible, for: .navigationBar)
-                    }
-                }
-            }
 
             if let call = model.inAppPresentedCall {
                 ActiveCallView(call: call)

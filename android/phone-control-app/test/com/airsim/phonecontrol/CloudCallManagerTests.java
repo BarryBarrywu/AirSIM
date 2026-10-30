@@ -6,6 +6,7 @@ import java.lang.reflect.*;
 /** Runs the actual manager without starting a socket, dial, or background executor. */
 public final class CloudCallManagerTests {
     public static void main(String[] args) throws Exception {
+        RelayEgressGate.shared.enableAfterRestore();
         endedBeforeEventDrainStillReleasesOutgoing();
         callCanCompleteBeforeSessionCreation();
         lateOutgoingCannotBindUnownedSession("ended");
@@ -15,9 +16,25 @@ public final class CloudCallManagerTests {
         droppedEndedClosesOnlyOwner();
         pendingDialBindsOnlyUniqueNewMatchingCall();
         cachedDialCannotRecreateEndedSession();
+        oldMediaCannotRestartAfterPureLocalExit();
         media401RetriesThenStopsWithoutReplacingLiveSlot();
         successfulHandshakeResetsMedia401Window();
         System.out.println("CloudCallManagerTests passed");
+    }
+
+    private static void oldMediaCannotRestartAfterPureLocalExit() throws Exception {
+        try (var f = new Fixture("")) {
+            Object session = f.active();
+            RelayEgressGate.shared.disableAndDrain(1000);
+            RelayEgressGate.shared.enableAfterRestore();
+            StandaloneWebSocket.attempts = 0;
+            StandaloneWebSocket.next = () -> {
+                android.os.SystemClock.now = StandaloneWebSocket.attempts == 1 ? 0 : 60_000;
+                throw new RelayHTTPException(401, "fixture expired");
+            };
+            ((Runnable) session).run();
+            check(StandaloneWebSocket.attempts == 0, "old media task revived after pure-local exit");
+        }
     }
 
     private static void callCanCompleteBeforeSessionCreation() throws Exception {
@@ -141,6 +158,11 @@ public final class CloudCallManagerTests {
                     .put("call_secret", "synthetic-secret").put("relay_url", "https://example.invalid");
             var command = new JSONObject().put("command_id", "33333333-3333-4333-8333-333333333333")
                     .put("type", "dial").put("number", "5550100").put("call", call);
+            RelayEgressGate.shared.disableAndDrain(1000);
+            var denied = gateway.executeCloudCommand(command);
+            check("failed".equals(denied.optString("status")) && telecom.dialCount == 0 && executor.tasks == 0,
+                    "late cloud command must not dial or create media in pure local");
+            RelayEgressGate.shared.enableAfterRestore();
             var first = gateway.executeCloudCommand(command);
             check("completed".equals(first.optString("status")), "synthetic dial must succeed: " + first);
             check(executor.tasks == 1, "successful dial must schedule media once");

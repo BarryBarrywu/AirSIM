@@ -341,7 +341,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var callLifecycleSnapshot: CallLifecycleSnapshot = .idle
     private var outgoingAttemptID = UUID()
 
-    let contacts = ContactStore()
+    let contacts: ContactStore
     let audio: AudioSessionController
     let callKit: CallKitController
     let backgroundStandby = BackgroundStandbyController()
@@ -826,6 +826,7 @@ final class AppModel: ObservableObject {
     // Relay result. Never use the query sentinel as connectivity evidence.
     private var lastCloudStatusReceivedAt = Date.distantPast
     private let cloudStatusFetcher: @MainActor () async throws -> CloudAgentStatus
+    private let cloudOutgoingStarter: @MainActor (String, CloudCommandTarget) async throws -> IncomingVoIPCall
     private let cloudStatusNow: () -> Date
     private var cloudStatusRefreshTask: Task<Void, Never>?
     private var cloudStatusRefreshGeneration = 0
@@ -1405,6 +1406,7 @@ final class AppModel: ObservableObject {
     }
 
     init(audioController: AudioSessionController? = nil,
+         contactStore: ContactStore? = nil,
          deviceBackend: ((String, CallTransport) -> (any DeviceCallBackend)?)? = nil,
          localDirectory: LocalDeviceDirectory? = nil,
          bluetoothHub: VoBLEDeviceHub? = nil,
@@ -1413,8 +1415,13 @@ final class AppModel: ObservableObject {
          cloudStatusFetcher: @escaping @MainActor () async throws -> CloudAgentStatus = {
              try await VoIPPushController.shared.fetchCloudAgentStatus()
          },
+         cloudOutgoingStarter: @escaping @MainActor (String, CloudCommandTarget) async throws -> IncomingVoIPCall = { number, target in
+             try await VoIPPushController.shared.startCloudOutgoingCall(number: number, target: target)
+         },
          cloudStatusNow: @escaping () -> Date = Date.init) {
+        self.contacts = contactStore ?? ContactStore()
         self.cloudStatusFetcher = cloudStatusFetcher
+        self.cloudOutgoingStarter = cloudOutgoingStarter
         self.cloudStatusNow = cloudStatusNow
         self.audio = audioController ?? AudioSessionController()
         self.historyStore = historyStore ?? LocalHistoryStore()
@@ -4137,8 +4144,7 @@ extension AppModel: CallKitActionHandling {
                 // make the command wait for a fresh /devices/status observation.
                 if let target = self.cloudDialTarget(bound: boundAtStart) {
                     CloudAgentTargetStore.remember(target.agentID)
-                    return try await VoIPPushController.shared.startCloudOutgoingCall(
-                        number: number, target: target)
+                    return try await self.cloudOutgoingStarter(number, target)
                 }
                 let queryGeneration = self.cloudStatusRefreshGeneration
                 let status: CloudAgentStatus
@@ -4165,7 +4171,7 @@ extension AppModel: CallKitActionHandling {
                     throw CloudAgentRoutingError.unavailable
                 }
                 CloudAgentTargetStore.remember(target.agentID)
-                return try await VoIPPushController.shared.startCloudOutgoingCall(number: number, target: target)
+                return try await self.cloudOutgoingStarter(number, target)
             }
 
             switch routeResult {

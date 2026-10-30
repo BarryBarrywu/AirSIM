@@ -56,6 +56,7 @@ export default {
 export async function handleRequest(request, env) {
   try { return await routeRequest(request, env); }
   catch (error) {
+    if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse();
     if (error instanceof RoutingError) return jsonResponse(error.status,{error:error.code});
     console.error("relay request failed", safeError(error));
     return jsonResponse(500,{error:"relay internal error"});
@@ -196,6 +197,7 @@ async function routeRequest(request, env) {
     }
     return jsonResponse(404, { error: "not found" });
   } catch (error) {
+    if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse();
     if (error instanceof RoutingError) return jsonResponse(error.status,{error:error.code});
     console.error("relay request failed", safeError(error));
     return jsonResponse(500, { error: "relay internal error" });
@@ -2042,6 +2044,23 @@ function stringValue(value) {
 
 function safeError(error) {
   return error instanceof Error ? error.message.slice(0, 1024) : "unknown error";
+}
+
+function isDurableObjectQuotaError(error) {
+  return error instanceof Error &&
+    error.message.includes("Exceeded allowed volume of requests in Durable Objects free tier");
+}
+
+function durableObjectQuotaResponse() {
+  // Do not acknowledge a heartbeat that was never persisted, or switch the
+  // high-frequency stream to KV and exhaust a second storage quota.
+  const response = jsonResponse(503, {
+    error: "relay_capacity_exhausted",
+    message: "云端 Durable Objects 额度已耗尽，心跳未写入；请等待额度恢复或联系部署者调整套餐",
+    retry_after_seconds: 300,
+  });
+  response.headers.set("Retry-After", "300");
+  return response;
 }
 
 function jsonResponse(status, value) {

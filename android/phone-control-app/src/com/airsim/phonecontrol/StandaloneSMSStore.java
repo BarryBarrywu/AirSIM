@@ -33,7 +33,7 @@ final class StandaloneSMSStore {
                 if (id.equals(records.getJSONObject(i).optString("delivery_id"))) return false;
             }
             JSONObject record = new JSONObject(event.toString())
-                    .put("local_ack", false).put("cloud_sent", !cloudEnabled);
+                    .put("local_ack", false).put("cloud_sent", !cloudEnabled || RelayEgressGate.shared.isBlocked());
             records.put(record);
             while (records.length() > MAX_RECORDS) {
                 recent.remember(records.getJSONObject(0).optString("delivery_id"));
@@ -59,6 +59,7 @@ final class StandaloneSMSStore {
     JSONArray cloudPending() throws Exception {
         synchronized (LOCK) {
             JSONArray pending = new JSONArray();
+            if (RelayEgressGate.shared.isBlocked()) return pending;
             JSONArray records = records();
             for (int i = 0; i < records.length(); i++) {
                 JSONObject record = records.getJSONObject(i);
@@ -79,6 +80,18 @@ final class StandaloneSMSStore {
     void markCloudSent(String id) throws Exception {
         synchronized (LOCK) {
             mutate(Set.of(id), "cloud_sent");
+        }
+    }
+
+    /** Remove only the cloud delivery obligation; keep unread local messages and dedup IDs. */
+    void discardCloudBacklog() throws Exception {
+        synchronized (LOCK) {
+            Set<String> all = new HashSet<>();
+            JSONArray records = records();
+            for (int index = 0; index < records.length(); index++) {
+                all.add(records.getJSONObject(index).optString("delivery_id"));
+            }
+            mutate(all, "cloud_sent");
         }
     }
 

@@ -4,10 +4,24 @@ import SwiftUI
 @main
 struct AirSIMIPadApp: App {
     @UIApplicationDelegateAdaptor(AirSIMNotificationDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
     @StateObject private var settings = AppSettings()
-    @StateObject private var appUpdates = AppUpdateController()
+    @StateObject private var appUpdates: AppUpdateController
     @Environment(\.scenePhase) private var scenePhase
+    private let uiTestDefaults: UserDefaults?
+
+    init() {
+#if DEBUG && targetEnvironment(simulator)
+        let fixture = SMSNavigationFixture.fromLaunchEnvironment()
+        _model = StateObject(wrappedValue: fixture?.model ?? AppModel())
+        _appUpdates = StateObject(wrappedValue: fixture?.updates ?? AppUpdateController())
+        uiTestDefaults = fixture?.defaults
+#else
+        _model = StateObject(wrappedValue: AppModel())
+        _appUpdates = StateObject(wrappedValue: AppUpdateController())
+        uiTestDefaults = nil
+#endif
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -17,13 +31,16 @@ struct AirSIMIPadApp: App {
                 .environmentObject(model.audio)
                 .environmentObject(settings)
                 .environmentObject(appUpdates)
+                .defaultAppStorage(uiTestDefaults ?? .standard)
                 .onAppear {
+                    guard uiTestDefaults == nil else { return }
                     WatchCallCoordinator.shared.configure(model: model)
                     WatchCallCoordinator.shared.start()
                     model.start(sceneIsActive: scenePhase == .active)
                 }
         }
         .onChange(of: scenePhase) { phase in
+            guard uiTestDefaults == nil else { return }
             switch phase {
             case .active:
                 model.didBecomeActive()

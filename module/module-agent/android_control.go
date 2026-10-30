@@ -314,7 +314,9 @@ func (a *agent) androidPairRegister(response http.ResponseWriter, request *http.
 		"device_id_hint": hint,
 	})
 	if a.pairRegistrationSync != nil {
-		go a.pairRegistrationSync()
+		// The scheduler admits the job before spawning it, so a queued callback
+		// cannot become a fresh cloud operation after a pure-local enter/exit.
+		a.pairRegistrationSync()
 	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"configured": true, "device_id_hint": hint,

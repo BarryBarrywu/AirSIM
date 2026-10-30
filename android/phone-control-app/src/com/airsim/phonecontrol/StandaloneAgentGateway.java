@@ -61,6 +61,10 @@ final class StandaloneAgentGateway {
 
     String pushStatus() throws Exception { return store.pushStatus().toString(); }
 
+    String registrationSnapshot() { JSONObject value = store.registration(); return value == null ? "" : value.toString(); }
+    void restoreRegistrationSnapshot(String snapshot) throws Exception { store.restoreSnapshot(snapshot); }
+    void discardCloudBacklog() throws Exception { smsStore.discardCloudBacklog(); }
+
     String debugSnapshot() throws Exception {
         return new JSONObject().put("events", new JSONArray()).put("runtime_profile", "android-standalone")
                 .put("log_available_in_app", true).toString();
@@ -203,6 +207,20 @@ final class StandaloneAgentGateway {
     }
 
     synchronized JSONObject executeCloudCommand(JSONObject command, java.util.function.BooleanSupplier stillCurrent) throws Exception {
+        RelayEgressGate.Lease lease;
+        try { lease = RelayEgressGate.shared.acquire(() -> {}); }
+        catch (java.io.IOException denied) {
+            return new JSONObject().put("command_id", command.optString("command_id", ""))
+                    .put("status", "failed").put("error", "pure_local_relay_disabled");
+        }
+        // Track the action as well as its HTTP/socket: an already dispatched operation
+        // must finish before Android can acknowledge that the old generation drained.
+        try (lease) {
+            return executeAdmittedCloudCommand(command, () -> lease.isCurrent() && stillCurrent.getAsBoolean());
+        }
+    }
+
+    private JSONObject executeAdmittedCloudCommand(JSONObject command, java.util.function.BooleanSupplier stillCurrent) throws Exception {
         String commandID = command.optString("command_id", "");
         if (!stillCurrent.getAsBoolean()) return new JSONObject().put("command_id",commandID)
                 .put("status","failed").put("error","command_configuration_changed");
@@ -252,6 +270,8 @@ final class StandaloneAgentGateway {
         var outgoing = "dial".equals(action) ? CallRepository.observeOutgoing(command.optString("number", "")) : null;
         boolean handedToMedia = false;
         try {
+            if (!stillCurrent.getAsBoolean()) return new JSONObject().put("command_id", commandID)
+                    .put("status", "failed").put("error", "command_configuration_changed");
             AgentCommandDispatcher.Result result = execute(local);
             JSONObject output = new JSONObject().put("command_id", commandID)
                     .put("status", result.success() ? "completed" : "failed");

@@ -96,12 +96,12 @@ struct AirSIMFirstConnectionView: View {
 }
 
 #Preview("已配对设备 · 空列表") {
-    Form { Section("三星连接") { PairedAndroidDeviceRows(devices: [], onDelete: { _ in }) } }
+    Form { Section("安卓连接") { PairedAndroidDeviceRows(devices: [], onDelete: { _ in }) } }
 }
 
 #Preview("已配对设备 · 在线与离线") {
     Form {
-        Section("三星连接") {
+        Section("安卓连接") {
             PairedAndroidDeviceRows(devices: [
                 .init(id: "preview-flip", deviceName: "Samsung Flip7", phoneNumber: "+10000000001",
                       agentKind: "standalone", cloudOnline: false, vowlanOnline: false,
@@ -158,6 +158,154 @@ private struct PairedAndroidDeviceRows: View {
     }
 }
 
+private struct PureLocalSlideControl: View {
+    let enabled: Bool
+    let busy: Bool
+    let blockedByCall: Bool
+    let action: (Bool) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var dragTranslation: CGFloat = 0
+    @Namespace private var glassNamespace
+
+    private var isInteractive: Bool { !busy && !blockedByCall }
+    private var title: String {
+        if busy { return "正在切换连接策略" }
+        if blockedByCall { return "通话中不可切换" }
+        return enabled ? "纯本地模式已开启" : "滑动开启纯本地模式"
+    }
+
+    private var statusText: String { enabled ? "本地优先 · Relay 已阻断" : "标准连接" }
+    private var tint: Color { enabled ? .green : .blue }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: enabled ? "network.badge.shield.half.filled" : "network")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 30, height: 30)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.body.weight(.semibold))
+                    Text(statusText).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if busy { ProgressView().controlSize(.small) }
+                else {
+                    Text(enabled ? "已开启" : "已关闭")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(enabled ? Color.green : Color.secondary)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background((enabled ? Color.green : Color.secondary).opacity(0.1), in: Capsule())
+                }
+            }
+
+            GeometryReader { proxy in
+                let knob: CGFloat = 48
+                let inset: CGFloat = 4
+                let travel = max(1, proxy.size.width - knob - inset * 2)
+                let directionalDrag = enabled ? -dragTranslation : dragTranslation
+                let progress = min(1, max(0, directionalDrag / travel))
+                let restingOffset = enabled ? travel : 0
+                let movingOffset = enabled ? restingOffset - progress * travel : progress * travel
+
+                Group {
+                    if #available(iOS 26.0, *) {
+                        GlassEffectContainer(spacing: 6) {
+                            ZStack(alignment: .leading) {
+                                Capsule(style: .continuous)
+                                    .fill(.clear)
+                                    .glassEffect(
+                                        .regular.tint(tint.opacity(0.12 + progress * 0.12)).interactive(),
+                                        in: .capsule
+                                    )
+                                    .glassEffectID("pure-local-track", in: glassNamespace)
+
+                                trackLabel
+
+                                sliderThumb(knob: knob)
+                                    .glassEffect(
+                                        .regular.tint(tint.opacity(enabled ? 0.72 : 0.58)).interactive(),
+                                        in: .circle
+                                    )
+                                    .glassEffectID("pure-local-thumb", in: glassNamespace)
+                                    .offset(x: inset + movingOffset)
+                            }
+                        }
+                    } else {
+                        ZStack(alignment: .leading) {
+                            Capsule(style: .continuous)
+                                .fill(.ultraThinMaterial)
+                                .overlay {
+                                    Capsule(style: .continuous)
+                                        .fill(tint.opacity(0.12 + progress * 0.12))
+                                }
+                            trackLabel
+                            sliderThumb(knob: knob)
+                                .background(tint, in: Circle())
+                                .shadow(color: .black.opacity(0.14), radius: 3, y: 1)
+                                .offset(x: inset + movingOffset)
+                        }
+                    }
+                }
+                .contentShape(Capsule())
+                .gesture(
+                    DragGesture(minimumDistance: 6)
+                        .updating($dragTranslation) { value, state, _ in
+                            guard isInteractive else { return }
+                            state = value.translation.width
+                        }
+                        .onEnded { value in
+                            guard isInteractive else { return }
+                            let distance = enabled ? -value.translation.width : value.translation.width
+                            guard distance >= travel * 0.78 else { return }
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            action(enabled)
+                        }
+                )
+                .animation(reduceMotion ? nil : .interactiveSpring(response: 0.32, dampingFraction: 0.82), value: dragTranslation)
+            }
+            .frame(height: 56)
+        }
+        .padding(.vertical, 4)
+        .opacity(isInteractive ? 1 : 0.62)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("纯本地模式")
+        .accessibilityValue("\(enabled ? "已开启" : "已关闭")，\(statusText)")
+        .accessibilityHint(blockedByCall ? "结束通话后可以切换" : (enabled ? "双击关闭纯本地模式" : "双击开启纯本地模式"))
+        .accessibilityAddTraits(isInteractive ? .isButton : [])
+        .accessibilityAction {
+            guard isInteractive else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            action(enabled)
+        }
+        .accessibilityIdentifier("pureLocalModeSlider")
+    }
+
+    private var trackLabel: some View {
+        Text(blockedByCall ? "请先结束当前通话" : (enabled ? "向左滑动关闭" : "向右滑动开启"))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .contentTransition(.opacity)
+    }
+
+    private func sliderThumb(knob: CGFloat) -> some View {
+        Circle()
+            .fill(.clear)
+            .frame(width: knob, height: knob)
+            .overlay {
+                if busy { ProgressView().tint(.white) }
+                else {
+                    Image(systemName: enabled ? "chevron.left.2" : "chevron.right.2")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+    }
+}
+
 struct AirSIMSettingsView: View {
     private enum SelfTestPhase {
         case idle
@@ -194,6 +342,10 @@ struct AirSIMSettingsView: View {
     @State private var deviceDeletionInProgress = false
     @State private var networkPrefixesText = NetworkRoutePreferences.storedText()
     @State private var networkPrefixError: String?
+    @AppStorage(RelayEgressGate.persistenceKey) private var pureLocalEnabled = false
+    @State private var pureLocalBusy = false
+    @State private var pureLocalError: String?
+    @State private var diagnosticCloudOnline: Bool?
     @FocusState private var networkPrefixesFocused: Bool
     @FocusState private var feedbackFocusedField: FeedbackFocusedField?
 
@@ -205,6 +357,23 @@ struct AirSIMSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    PureLocalSlideControl(
+                        enabled: pureLocalEnabled,
+                        busy: pureLocalBusy,
+                        blockedByCall: model.activeCall != nil,
+                        action: { currentValue in
+                            let requestedValue = !currentValue
+                            Task { @MainActor in await setPureLocalMode(requestedValue) }
+                        }
+                    )
+                    if let pureLocalError { Text(pureLocalError).font(.footnote).foregroundStyle(.red) }
+                    Text(pureLocalEnabled
+                         ? "已硬阻断 AirSIM Relay、云端注册、心跳、命令、媒体与反馈；VoWLAN、VoBLE、Tailscale 和本地短信继续可用。"
+                         : "滑到底启用。启用后不会因本地链路失败回退到 Relay；GitHub 版本检查不受影响。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } header: { Text("纯本地模式") }
+
                 Section {
                     Toggle(isOn: $cloudSignalingEnabled) {
                         Label("云端通知（APNs）", systemImage: "bell.badge")
@@ -254,10 +423,15 @@ struct AirSIMSettingsView: View {
                     LabeledContent("VoWLAN", value: VoWLANStatusCopy.text(for: model.vowlan.availability))
                     LabeledContent(
                         "云端 Relay",
-                        value: runtimePolicy.startsCloud
-                            ? (model.cloudAgentStatus?.cloudOnline == true ? "Agent 在线" : "不可达")
-                            : "当前模式已关闭"
+                        value: CloudRelayStatusCopy.text(pureLocal: pureLocalEnabled,
+                            cloudOnline: runtimePolicy.startsCloud ? model.cloudAgentStatus?.cloudOnline : diagnosticCloudOnline,
+                            usesCloudCalls: runtimePolicy.startsCloud)
                     )
+                    if !pureLocalEnabled && !runtimePolicy.startsCloud {
+                        Text("当前通话使用本地链路；云端通话未启用，但仍可手动检查 Relay、注册与 Agent 心跳。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Text(model.connectionModePresentation.detail)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -300,7 +474,7 @@ struct AirSIMSettingsView: View {
                         + "公网地址始终不会被视为私有网段。")
                 }
 
-                Section("三星连接") {
+                Section("安卓连接") {
                     LabeledContent("VoWLAN", value: VoWLANStatusCopy.text(for: model.vowlan.availability))
                     NavigationLink {
                         SamsungPairingView()
@@ -442,7 +616,7 @@ struct AirSIMSettingsView: View {
                             }
                         }
                     }
-                    .disabled(!runtimePolicy.startsCloud || selfTestPhase == .running)
+                    .disabled(pureLocalEnabled || selfTestPhase == .running)
 
                     if let report = selfTestReport {
                         ForEach(report.steps) { step in
@@ -476,8 +650,8 @@ struct AirSIMSettingsView: View {
                 } header: {
                     Text("云端模式自检")
                 } footer: {
-                    Text(!runtimePolicy.startsCloud
-                        ? "当前连接模式不运行云端自检。"
+                    Text(pureLocalEnabled
+                        ? "纯本地模式已开启，禁止访问 Relay；关闭后可手动自检。"
                         : "依次验证本机 Push 凭据、Relay 身份、设备注册、Agent 记录、150 秒心跳和命令路由；失败步骤会给出具体卡点，不会拨号或发送短信。")
                 }
 
@@ -622,6 +796,40 @@ struct AirSIMSettingsView: View {
         }
     }
 
+    @MainActor
+    private func setPureLocalMode(_ enabled: Bool) async {
+        guard !pureLocalBusy else { return }
+        guard model.activeCall == nil else { pureLocalError = "通话中不能切换纯本地模式"; return }
+        pureLocalBusy = true; pureLocalError = nil
+        defer { pureLocalBusy = false }
+        if enabled {
+            UserDefaults.standard.set(connectionModeRaw, forKey: "airsim.pure-local.prior-mode")
+            UserDefaults.standard.set(cloudSignalingEnabled, forKey: "airsim.pure-local.prior-cloud")
+            RelayEgressGate.shared.setPersistentBlocked(true)
+            pureLocalEnabled = true
+            guard await RelayEgressGate.shared.disableAndDrain() else {
+                pureLocalError = "云端连接尚未完全排空，请稍后重试"
+                return
+            }
+            cloudSignalingEnabled = false
+            model.setCloudSignalingEnabled(false)
+            connectionModeRaw = AirSIMConnectionMode.localDual.rawValue
+            model.setConnectionMode(.localDual)
+        } else {
+            do {
+                try RelayEgressGate.shared.enableAfterRestore()
+                RelayEgressGate.shared.setPersistentBlocked(false)
+                pureLocalEnabled = false
+                let raw = UserDefaults.standard.string(forKey: "airsim.pure-local.prior-mode") ?? AirSIMConnectionMode.automatic.rawValue
+                let cloud = UserDefaults.standard.object(forKey: "airsim.pure-local.prior-cloud") as? Bool ?? true
+                connectionModeRaw = raw
+                cloudSignalingEnabled = cloud
+                model.setCloudSignalingEnabled(cloud)
+                model.setConnectionMode(AirSIMConnectionMode(rawValue: raw) ?? .automatic)
+            } catch { pureLocalError = "本地退出尚未完成：\(error.localizedDescription)" }
+        }
+    }
+
     private var updateCallBusy: Bool {
         model.activeCall != nil || model.remoteCall != nil || model.pendingOutgoingCall != nil
     }
@@ -639,6 +847,7 @@ struct AirSIMSettingsView: View {
     }
 
     private func startCloudSelfTest() {
+        guard !pureLocalEnabled, !RelayEgressGate.shared.isBlocked else { return }
         selfTestTask?.cancel()
         selfTestPhase = .running
         selfTestReport = .initial
@@ -650,7 +859,14 @@ struct AirSIMSettingsView: View {
             guard !Task.isCancelled else { return }
             selfTestReport = report
             selfTestPhase = .completed
-            await model.refreshCloudStatusForDiagnostics()
+            if runtimePolicy.startsCloud {
+                await model.refreshCloudStatusForDiagnostics()
+            } else {
+                // Explicit diagnostics must not use the automatic cloud-mode fetch guard.
+                let status = try? await VoIPPushController.shared.fetchCloudAgentStatusForDiagnostics(allowLocalMode: true)
+                guard !Task.isCancelled, !pureLocalEnabled else { return }
+                diagnosticCloudOnline = status?.cloudOnline
+            }
         }
     }
 
@@ -948,7 +1164,11 @@ final class FeedbackUploader {
 
     private init() {}
 
+    static func permitsUpload(trigger: String) -> Bool { trigger == "manual" }
+
     func upload(trigger: String, eventID: String, api: AirSIMAPI?, model: AppModel?) async -> String {
+        // Reject before collecting Android logs or contacting either endpoint.
+        guard Self.permitsUpload(trigger: trigger) else { return "自动反馈上传已关闭，请手动上传" }
 
         let snapshot: AgentFeedbackSnapshot?
         if let api {
@@ -1001,7 +1221,7 @@ final class FeedbackUploader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
         do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
+            let (responseData, response) = try await RelayEgressGate.shared.send(request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 return "上传失败（HTTP \( (response as? HTTPURLResponse)?.statusCode ?? 0)）"
             }

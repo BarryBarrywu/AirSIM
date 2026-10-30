@@ -16,18 +16,27 @@ enum AirSIMConnectionMode: String, CaseIterable, Codable, Identifiable, Sendable
         case .bluetooth: return "蓝牙"
         case .cloud: return "云端"
         case .automatic: return "自动"
-        case .localDual: return "本地双通道"
+        case .localDual: return "VoWLAN+VoBLE"
         }
     }
 
     var detail: String {
         switch self {
-        case .vowlan: return "使用 Wi-Fi、手机热点或手动 VPN 地址直连，不连接 Relay"
-        case .bluetooth: return "仅使用蓝牙控制与通话音频，不依赖 Wi-Fi 或 Relay"
+        case .vowlan: return "通话使用 Wi-Fi、手机热点或手动 VPN 地址直连；纯本地关闭时可手动自检 Relay"
+        case .bluetooth: return "通话使用蓝牙控制与音频；纯本地关闭时可手动自检 Relay"
         case .cloud: return "仅使用 Relay、PushKit 与 CallKit"
         case .automatic: return "按 VoWLAN、蓝牙、云端的可用性自动选择"
-        case .localDual: return "同时连接 VoWLAN 与 VoBLE；同一安卓优先 Wi-Fi、其次蓝牙，不使用 Relay，通话途中不切换音频链路"
+        case .localDual: return "通话优先 Wi-Fi、其次蓝牙，途中不切换音频链路；纯本地关闭时可手动自检 Relay"
         }
+    }
+}
+
+enum CloudRelayStatusCopy {
+    static func text(pureLocal: Bool, cloudOnline: Bool?, usesCloudCalls: Bool) -> String {
+        if pureLocal { return "纯本地模式已阻断" }
+        guard let cloudOnline else { return "尚未检查，可手动自检" }
+        let status = cloudOnline ? "Agent 在线" : "Agent 无有效心跳"
+        return usesCloudCalls ? status : "最近自检：\(status)"
     }
 }
 
@@ -38,6 +47,7 @@ enum CloudSignalingPreference {
     /// It defaults off for a fresh install and is enabled when cloud pairing is
     /// written or the user turns on "云端通知".
     static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.bool(forKey: RelayEgressGate.persistenceKey) { return false }
         if let stored = defaults.object(forKey: key) as? Bool { return stored }
         // Existing automatic/cloud installations already rely on Relay.
         let mode = ConnectionModePreference.selected(defaults: defaults)

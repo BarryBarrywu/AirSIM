@@ -703,7 +703,7 @@ enum CloudCallControlClient {
         session: URLSession,
         acceptedStatusCodes: ClosedRange<Int>
     ) async throws -> T {
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await RelayEgressGate.shared.send(request, using: session)
         guard let http = response as? HTTPURLResponse else {
             throw CloudCallControlClientError.invalidResponse
         }
@@ -1450,6 +1450,7 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "com.example.airsim.iphone-cloud-media", qos: .userInteractive)
     private var webSocket: URLSessionWebSocketTask?
+    private var relayLease: RelayEgressGate.Lease?
     private var connectionID = UUID()
     func isCurrentConnection(_ id: UUID) -> Bool { queue.sync { connectionID == id } }
     private var engine: AVAudioEngine?
@@ -1493,6 +1494,9 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
     }
 
     func connect(to url: URL) async throws {
+        let lease = try RelayEgressGate.shared.admitSocket { [weak self] in
+            self?.queue.async { self?.webSocket?.cancel(with: .goingAway, reason: nil) }
+        }
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
             let gate = OneShotThrowingContinuation(continuation)
@@ -1502,6 +1506,7 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
                     return
                 }
                 stopped = false
+                relayLease = lease
                 connectionID = UUID()
                 let socket = URLSession(configuration: .ephemeral).webSocketTask(with: url)
                 webSocket = socket
@@ -1739,6 +1744,8 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
             connectionID = UUID()
             webSocket?.cancel(with: .normalClosure, reason: nil)
             webSocket = nil
+            relayLease?.close()
+            relayLease = nil
             uplinkBuffer.removeAll(keepingCapacity: false)
             controlOperations.removeAll(keepingCapacity: false)
             stopAudioLocked()
@@ -1761,6 +1768,8 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
                     self.receiveNext(socket)
                 case .failure:
                     self.webSocket = nil
+                    self.relayLease?.close()
+                    self.relayLease = nil
                     self.stopped = true
                     self.onConnectionLost?(self.connectionID)
                 }
@@ -1813,6 +1822,8 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
         if let inFlight = uplinkSender.inFlightAt, now - inFlight >= 6 {
             stopped = true
             webSocket = nil
+            relayLease?.close()
+            relayLease = nil
             socket.cancel(with: .goingAway, reason: nil)
             onConnectionLost?(connectionID)
             return
@@ -1827,6 +1838,8 @@ private final class IPhoneCloudCallMediaBridge: @unchecked Sendable {
                 guard error == nil else {
                     self.stopped = true
                     self.webSocket = nil
+                    self.relayLease?.close()
+                    self.relayLease = nil
                     socket.cancel(with: .goingAway, reason: nil)
                     self.onConnectionLost?(self.connectionID)
                     return

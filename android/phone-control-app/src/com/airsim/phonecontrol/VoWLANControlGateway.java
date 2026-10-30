@@ -82,6 +82,30 @@ public final class VoWLANControlGateway implements Closeable {
                 respond(peer, 401, "{\"error\":\"authentication_failed\"}");
                 return;
             }
+            if ("/api/local-mode".equals(request.path)) {
+                byte[] statusSecret = matched.secretCopy();
+                try {
+                    PureLocalModeRuntime runtime = PureLocalModeRuntime.get(context);
+                    PureLocalModeCoordinator.Status status;
+                    if ("GET".equals(request.method)) {
+                        status = runtime.status();
+                    } else {
+                        status = runtime.apply(PureLocalModeWire.command(new org.json.JSONObject(
+                                new String(request.body, StandardCharsets.UTF_8))), "wlan:" + matched.id());
+                    }
+                    respond(peer, 200, PureLocalModeWire.signedStatus(status, nonce, statusSecret).toString());
+                } catch (PureLocalModePolicy.Rejected rejected) {
+                    String code = rejected.getMessage();
+                    int status = "unauthenticated".equals(code) ? 401
+                            : "storage_corrupt".equals(code) ? 503 : 409;
+                    respond(peer, status, new org.json.JSONObject().put("error", code).toString());
+                } catch (IOException unavailable) {
+                    respond(peer, 503, "{\"error\":\"agent_pending\"}");
+                } finally {
+                    Arrays.fill(statusSecret, (byte) 0);
+                }
+                return;
+            }
             String identityProof = null;
             byte[] requestSecret = matched.secretCopy();
             try {

@@ -205,6 +205,7 @@ actor AgentVerboseTraceRecorder {
             "AirSIM Agent Verbose Trace",
             "app_version=\(AppInformation.version)",
             "exported_at=\(Self.iso8601.string(from: Date()))",
+            "verbose_enabled=\(enabled)",
             "local_entries=\(entries.count) agent_events=\(agentEvents.count)",
             ""
         ]

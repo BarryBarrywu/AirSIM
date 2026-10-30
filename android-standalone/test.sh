@@ -91,6 +91,7 @@ assert_not_contains "$MANIFEST" 'AgentWatchdogService' \
 sh "$ROOT/../android/phone-control-app/test-cloud-call.sh"
 sh "$ROOT/../android/phone-control-app/test-gateway-lifecycle.sh"
 sh "$ROOT/../android/phone-control-app/test-owned-dial.sh"
+sh "$ROOT/../android/phone-control-app/test-pure-local-integration.sh"
 APK="$ROOT/build/android/AirSIM-Android-Standalone-debug.apk"
 APKANALYZER=${APKANALYZER:-$(command -v apkanalyzer || true)}
 if [ -z "$APKANALYZER" ]; then

@@ -185,6 +185,11 @@ export async function handleFeedback(request, env) {
   if (JSON.stringify(body).length > MAX_FEEDBACK_BYTES) {
     return json(413, { error: "feedback too large" });
   }
+  // Reject legacy automatic triggers before uploading attachments or creating pages.
+  // This is a product policy, not authentication/proof of a human click.
+  if (body.trigger !== "manual") {
+    return json(403, { error: "manual_feedback_required" });
+  }
 
   try {
     const files = {};

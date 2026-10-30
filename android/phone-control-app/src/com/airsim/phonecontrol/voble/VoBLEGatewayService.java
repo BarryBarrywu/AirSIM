@@ -26,6 +26,9 @@ import com.airsim.phonecontrol.RuntimeMode;
 import com.airsim.phonecontrol.SMSCommandExecutor;
 import com.airsim.phonecontrol.SimSlotJson;
 import com.airsim.phonecontrol.RemoteAudioSessionRegistry;
+import com.airsim.phonecontrol.PureLocalModeCoordinator;
+import com.airsim.phonecontrol.PureLocalModeRuntime;
+import com.airsim.phonecontrol.PureLocalModeWire;
 
 import org.json.JSONObject;
 
@@ -323,7 +326,8 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                     + " request_id=" + com.airsim.phonecontrol.DebugRedactor.safeIdentifier(requestId));
             // Reading fresh metadata or sending SMS must not replace an active
             // call's ID/generation.
-            if ((!"device_info".equals(action) && !"sms_send".equals(action)) || session == null) {
+            if ((!"device_info".equals(action) && !"sms_send".equals(action)
+                    && !"local_mode_status".equals(action) && !"local_mode_set".equals(action)) || session == null) {
                 session = new SessionContext(deviceId, envelope.sessionId(),
                         envelope.callId(), envelope.generation());
             }
@@ -332,7 +336,12 @@ public final class VoBLEGatewayService extends Service implements VoBLEGattServe
                     envelope.generation(), body.optString("sim_account", ""));
             VoBLECallController.Result result;
             boolean revokeAfterResponse = false;
-            if ("sms_send".equals(action)) {
+            if ("local_mode_status".equals(action) || "local_mode_set".equals(action)) {
+                PureLocalModeRuntime runtime = PureLocalModeRuntime.get(this);
+                PureLocalModeCoordinator.Status status = "local_mode_status".equals(action)
+                        ? runtime.status() : runtime.apply(PureLocalModeWire.command(body), "ble:" + identity);
+                result = VoBLECallController.Result.success(PureLocalModeWire.status(status).toString());
+            } else if ("sms_send".equals(action)) {
                 String sent = SMSCommandExecutor.sendFromVoBLE(
                         this, requestId, body.optString("number", ""),
                         body.optString("message", ""), body.optString("sim_account", ""));

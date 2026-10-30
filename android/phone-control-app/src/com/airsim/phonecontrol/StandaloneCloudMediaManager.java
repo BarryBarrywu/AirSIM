@@ -43,13 +43,14 @@ final class StandaloneCloudMediaManager implements Closeable {
     }
 
     void startOutgoing(JSONObject call, CallRepository.OutgoingCallObservation observation) {
+        var generation = RelayEgressGate.shared.generation();
         boolean started = false;
         try {
-            if (call == null) return;
+            if (call == null || !generation.isCurrent()) return;
             Descriptor descriptor = Descriptor.from(call);
             descriptor.outgoingObservation = observation;
             bindOutgoing(descriptor);
-            start(descriptor);
+            start(descriptor, generation);
             started = true;
         }
         catch (Exception error) { BridgeLog.error("standalone_outgoing_media_invalid", error); }
@@ -85,6 +86,8 @@ final class StandaloneCloudMediaManager implements Closeable {
     }
 
     void handleCallEvent(JSONObject registration, JSONObject event, StandaloneRelayClient relay) throws Exception {
+        var generation = RelayEgressGate.shared.generation();
+        if (!generation.isCurrent()) return;
         String state = event.optString("state", "");
         String direction = event.optString("direction", "");
         String androidID = event.optString("call_id", "");
@@ -110,7 +113,7 @@ final class StandaloneCloudMediaManager implements Closeable {
             // Keep ringing latency bounded; a failed call event stays queued for
             // the priority retry path instead of blocking the agent loop for 15s.
             postRelay(registration, relay, "/v2/events/call", payload, 5_000);
-            start(descriptor);
+            start(descriptor, generation);
         } else if (descriptor != null && descriptor.androidID.isEmpty()) {
             bindOutgoing(descriptor);
             synchronized (lock) {
@@ -206,11 +209,12 @@ final class StandaloneCloudMediaManager implements Closeable {
         }
     }
 
-    private void start(Descriptor descriptor) {
+    private void start(Descriptor descriptor, RelayEgressGate.Generation generation) {
         synchronized (lock) {
+            if (!generation.isCurrent()) return;
             if (active != null && active.descriptor.same(descriptor)) return;
             if (active != null) active.close();
-            active = new CloudSession(descriptor);
+            active = new CloudSession(descriptor, generation);
             sessions.execute(active);
         }
     }
@@ -247,6 +251,7 @@ final class StandaloneCloudMediaManager implements Closeable {
     private final class CloudSession implements Runnable, Closeable {
         final Descriptor descriptor;
         final CloudCallRetryPolicy.MediaRetry mediaRetry = new CloudCallRetryPolicy.MediaRetry();
+        final RelayEgressGate.Generation relayGeneration;
         volatile boolean running = true;
         volatile StandaloneWebSocket webSocket;
         volatile Socket pcm;
@@ -255,11 +260,15 @@ final class StandaloneCloudMediaManager implements Closeable {
         volatile boolean mediaStarted;
         int sequence;
 
-        CloudSession(Descriptor descriptor) { this.descriptor = descriptor; }
+        CloudSession(Descriptor descriptor) { this(descriptor, RelayEgressGate.shared.generation()); }
+        CloudSession(Descriptor descriptor, RelayEgressGate.Generation generation) {
+            this.descriptor = descriptor;
+            this.relayGeneration = generation;
+        }
 
         @Override public void run() {
             int reconnectFailures = 0;
-            while (running) {
+            while (running && relayGeneration.isCurrent()) {
                 StandaloneWebSocket owner = null;
                 boolean connected = false;
                 try {
@@ -268,7 +277,7 @@ final class StandaloneCloudMediaManager implements Closeable {
                             + URLEncoder.encode(descriptor.secret, "UTF-8"));
                     owner = StandaloneWebSocket.connect(endpoint, "");
                     synchronized (this) {
-                        if (!running) { closeSocket(owner); return; }
+                        if (!running || !relayGeneration.isCurrent()) { closeSocket(owner); return; }
                         webSocket = owner;
                     }
                     mediaRetry.authenticated();

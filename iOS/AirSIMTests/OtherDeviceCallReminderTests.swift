@@ -106,10 +106,16 @@ final class OtherDeviceCallReminderTests: XCTestCase {
         XCTAssertNil(model.deviceCallContext.media.owner)
         XCTAssertTrue(backend.answered.isEmpty); XCTAssertTrue(backend.ended.isEmpty)
     }
-    func testPrimaryWLANAlertsStopAtAnswerAndNeverAlertForB() async throws {
+    func testPrimaryWLANFallbackAlertsStopAtAnswerAndNeverAlertForB() async throws {
         let old = ConnectionModePreference.selected(); ConnectionModePreference.set(.vowlan)
         defer { ConnectionModePreference.set(old) }
-        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()), deviceBackend: { _, _ in ReminderBackend() })
+        let controller = CallKitController()
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            deviceBackend: { _, _ in ReminderBackend() }, callKitController: controller)
+        defer { model.stop() }
+        // Exercise the in-app fallback, not the asynchronous simulator CallKit service.
+        // An accepted/pending system report correctly suppresses duplicate tones.
+        controller.setEnabled(false)
         _ = model.receiveOwnedCallEvent(.init(agentID: "A", callID: "a", state: .ringing,
             transport: .vowlan, transportEpoch: 1))
         XCTAssertTrue(model.audio.hasCallTone)

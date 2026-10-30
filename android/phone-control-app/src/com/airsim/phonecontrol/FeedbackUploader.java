@@ -17,7 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Best-effort Android-only feedback upload; never blocks Telecom or SMS callbacks. */
+/** Manual-only feedback upload; never invoked by Telecom, SMS or background timers. */
 final class FeedbackUploader {
     private static final String ENDPOINT = "https://airsim-push.remotepilot.site/v1/feedback";
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
@@ -46,10 +46,13 @@ final class FeedbackUploader {
     }
 
     static void submit(Context context, String trigger, String eventID) {
-        if (context == null || trigger == null || trigger.isEmpty()) return;
+        if (context == null || !FeedbackUploadPolicy.allows(trigger)) return;
+        RelayEgressGate.Generation generation = RelayEgressGate.shared.generation();
+        if (!generation.isCurrent()) return;
         Context app = context.getApplicationContext();
         WORKER.execute(() -> {
             try {
+                if (!generation.isCurrent()) return;
                 if (alreadyUploaded(app, eventID)) return;
                 JSONObject body = new JSONObject()
                         .put("feedback_id", UUID.randomUUID().toString())
@@ -66,7 +69,9 @@ final class FeedbackUploader {
                         .put("description", description(app))
                         .put("remark", remark(app))
                         .put("android_log", BridgeLog.read());
-                post(body.toString());
+                if (!generation.isCurrent()) return;
+                post(body.toString(), generation);
+                if (!generation.isCurrent()) return;
                 markUploaded(app, eventID);
                 BridgeLog.info("feedback_uploaded trigger=" + trigger);
             } catch (Exception error) {
@@ -75,9 +80,13 @@ final class FeedbackUploader {
         });
     }
 
-    private static void post(String body) throws Exception {
+    private static void post(String body, RelayEgressGate.Generation generation) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(ENDPOINT).openConnection();
+        RelayEgressGate.Lease lease = null;
         try {
+            lease = RelayEgressGate.shared.acquire(generation, connection::disconnect);
+            lease.checkCurrent();
+            connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(10_000);
             connection.setReadTimeout(20_000);
             connection.setRequestMethod("POST");
@@ -87,9 +96,11 @@ final class FeedbackUploader {
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream output = connection.getOutputStream()) { output.write(bytes); }
             int status = connection.getResponseCode();
+            lease.checkCurrent();
             if (status < 200 || status >= 300) throw new IllegalStateException("feedback HTTP " + status);
         } finally {
-            connection.disconnect();
+            try { connection.disconnect(); }
+            finally { if (lease != null) lease.close(); }
         }
     }
 

@@ -257,6 +257,11 @@ final class LocalDeviceDirectoryTests: XCTestCase {
     }
 
     func testProductionTwoDeviceChainUsesAuthenticatedAPIsAndNeverRetargetsA() async throws {
+        let previousMode = ConnectionModePreference.selected()
+        ConnectionModePreference.set(.vowlan)
+        defer { ConnectionModePreference.set(previousMode) }
+        let historyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: historyURL) }
         let a = try AuthenticatedHealthPeer(agentID: "A", secret: aSecret, callID: "telecom-A", backendCallID: "backend-A")
         let b = try AuthenticatedHealthPeer(agentID: "B", secret: bSecret, callID: "telecom-B", backendCallID: "backend-B", dialSuffix: "-next")
         a.setCallState(nil); b.setCallState(nil)
@@ -267,7 +272,8 @@ final class LocalDeviceDirectoryTests: XCTestCase {
             healthTransport: AuthenticatedHealthPeer.transport)
         try await directory.verifyPairing(agentID: "A", endpoint: ae, credential: VoWLANCredential(secret: aSecret))
         try await directory.verifyPairing(agentID: "B", endpoint: be, credential: VoWLANCredential(secret: bSecret))
-        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()), localDirectory: directory)
+        let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
+            localDirectory: directory, callKitController: CallKitController(), historyStore: LocalHistoryStore(directoryURL: historyURL))
         defer { model.stop() }
         let oldBinding = AndroidAgentBindingPreference.selected()
         defer { AndroidAgentBindingPreference.set(oldBinding) }

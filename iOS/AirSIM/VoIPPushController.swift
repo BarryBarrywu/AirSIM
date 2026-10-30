@@ -312,7 +312,7 @@ struct ConnectionModePresentation: Equatable, Sendable {
         )
         if selectedMode == .localDual {
             return .init(mode: selected == .vowlan ? .vowlan : (selected == .bluetooth ? .bluetooth : .offline),
-                title: "本地双通道",
+                title: "VoWLAN+VoBLE",
                 status: vowlanOnline && bluetoothReady ? "双链路就绪" : (vowlanOnline ? "仅 VoWLAN 在线" : (bluetoothReady ? "仅 VoBLE 在线" : "无可用本地路由")),
                 detail: "同一安卓优先 VoWLAN、其次 VoBLE；云端关闭，通话途中固定链路")
         }
@@ -344,7 +344,7 @@ struct ConnectionModePresentation: Equatable, Sendable {
         }
         switch selectedMode {
         case .localDual:
-            return .init(mode: .offline, title: "本地双通道", status: "无可用本地路由",
+            return .init(mode: .offline, title: "VoWLAN+VoBLE", status: "无可用本地路由",
                          detail: "等待所选安卓的 VoWLAN 或 VoBLE 认证；云端已关闭")
         case .vowlan:
             return .init(mode: .vowlan, title: "VoWLAN", status: "不可达",
@@ -1044,7 +1044,7 @@ final class VoIPPushController: NSObject {
             updateToken: token
         ))
         let configuration = URLSessionConfiguration.ephemeral
-        _ = try? await URLSession(configuration: configuration).data(for: request)
+        _ = try? await RelayEgressGate.shared.send(request)
     }
 
     func storeAlertToken(_ token: Data) {
@@ -1240,22 +1240,28 @@ final class VoIPPushController: NSObject {
     ) async -> CloudSelfTestReport {
         var report = CloudSelfTestReport.initial
 
-        report.update(.configuration, state: .running, detail: "云端开关 · 设备身份 · PushKit/通知 Token · Relay URL")
+        guard !RelayEgressGate.shared.isBlocked,
+              !UserDefaults.standard.bool(forKey: RelayEgressGate.persistenceKey) else {
+            report.fail(.configuration, detail: "纯本地模式已开启，禁止云端自检")
+            onUpdate(report)
+            return report
+        }
+
+        report.update(.configuration, state: .running, detail: "设备身份 · PushKit/通知 Token · Relay URL")
         onUpdate(report)
         let readiness = registrationReadiness()
         var missing: [String] = []
-        if !CloudModePreference.isEnabled() { missing.append("云端模式未开启") }
         if !readiness.relayURLReady { missing.append("Relay HTTPS 地址无效") }
         if !readiness.deviceIdentityReady { missing.append("设备身份未生成") }
         if !readiness.voIPTokenReady { missing.append("PushKit token 未就绪") }
         if !readiness.alertTokenReady { missing.append("通知 token 未就绪") }
-        guard missing.isEmpty, let registration = currentRegistration() else {
+        guard missing.isEmpty, let registration = currentRegistration(allowLocalMode: true) else {
             report.fail(.configuration, detail: missing.isEmpty ? "设备注册信息不完整" : missing.joined(separator: "；"))
             onUpdate(report)
             return report
         }
         var configDetail = [
-            "云端=开启",
+            "检查方式=手动自检（不改变连接模式）",
             "设备=\(readiness.deviceIDHint ?? "已生成")",
             "APNs=\(readiness.environment)",
             "PushKit=\(readiness.voIPTokenReady ? "就绪" : "缺失")",
@@ -1296,12 +1302,12 @@ final class VoIPPushController: NSObject {
         let status: CloudAgentStatus
         do {
             do {
-                status = try await fetchCloudAgentStatusForDiagnostics()
+                status = try await fetchCloudAgentStatusForDiagnostics(allowLocalMode: true)
             } catch {
                 // One cold status-registry timeout must not turn this into a
                 // permanent cloud-offline verdict. Retry once before reporting.
                 try await Task.sleep(for: .milliseconds(500))
-                status = try await fetchCloudAgentStatusForDiagnostics()
+                status = try await fetchCloudAgentStatusForDiagnostics(allowLocalMode: true)
             }
         } catch {
             report.fail(.agentDirectory,
@@ -1386,8 +1392,12 @@ final class VoIPPushController: NSObject {
     }
 
     /// 检查单即使在公网 PCM 关闭时也需要读取心跳，避免用户无法判断开启条件。
-    func fetchCloudAgentStatusForDiagnostics() async throws -> CloudAgentStatus {
-        guard let registration = currentRegistration() else {
+    func fetchCloudAgentStatusForDiagnostics(allowLocalMode: Bool = false) async throws -> CloudAgentStatus {
+        guard !RelayEgressGate.shared.isBlocked,
+              !UserDefaults.standard.bool(forKey: RelayEgressGate.persistenceKey) else {
+            throw RelayEgressError.disabled
+        }
+        guard let registration = currentRegistration(allowLocalMode: allowLocalMode) else {
             throw CloudAgentStatusError.unavailable
         }
         guard let url = RelayEndpoint.url(
@@ -1415,7 +1425,7 @@ final class VoIPPushController: NSObject {
             deviceSecret: registration.deviceSecret
         ))
 
-        let (data, response) = try await Self.selfTestSession.data(for: request)
+        let (data, response) = try await RelayEgressGate.shared.send(request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw CloudAgentStatusError.invalidResponse
         }
@@ -1573,7 +1583,7 @@ final class VoIPPushController: NSObject {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 12
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await RelayEgressGate.shared.send(request)
         guard let http = response as? HTTPURLResponse else { throw CloudCommandError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             let message = (try? JSONDecoder().decode(RelayErrorResponse.self, from: data).error)
@@ -1624,7 +1634,7 @@ final class VoIPPushController: NSObject {
         request.httpMethod = "GET"
         request.timeoutInterval = 6
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (data, response) = try await Self.selfTestSession.data(for: request)
+        let (data, response) = try await RelayEgressGate.shared.send(request)
         guard let http = response as? HTTPURLResponse else {
             throw CloudAgentStatusError.invalidResponse
         }
@@ -1652,7 +1662,7 @@ final class VoIPPushController: NSObject {
         var relayRegistration = registration
         relayRegistration.notificationForwarding = nil
         request.httpBody = try JSONEncoder().encode(relayRegistration)
-        let (data, response) = try await Self.selfTestSession.data(for: request)
+        let (data, response) = try await RelayEgressGate.shared.send(request)
 #if DEBUG
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data.prefix(1_024), encoding: .utf8) ?? "<非文本响应>"

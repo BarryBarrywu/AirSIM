@@ -8,31 +8,198 @@ import SwiftUI
 @testable import AirSIM
 
 @MainActor
+final class ManualFeedbackPolicyTests: XCTestCase {
+    func testAutomaticTriggersAreRejectedBeforeCollectionOrUpload() async {
+        for trigger in ["", "periodic", "error", "call_ended", "sms_sent", "sms_received", "crash", "startup", "MANUAL", " manual "] {
+            XCTAssertFalse(FeedbackUploader.permitsUpload(trigger: trigger))
+            let message = await FeedbackUploader.shared.upload(trigger: trigger, eventID: "fixture", api: nil, model: nil)
+            XCTAssertEqual(message, "自动反馈上传已关闭，请手动上传")
+        }
+    }
+
+    func testExplicitManualActionRemainsAllowed() {
+        XCTAssertTrue(FeedbackUploader.permitsUpload(trigger: "manual"))
+    }
+}
+
+final class TunnelRecoveryRegressionTests: XCTestCase {
+    @MainActor
+    func testNetworkEpochCancelsOldProbeWithoutClearingNewFlight() async throws {
+        let flight = VoWLANProbeFlight()
+        let endpoint = try VoWLANEndpoint(host: "100.64.1.2", controlPort: 7592, pcmPort: 7593)
+        var oldResume: CheckedContinuation<Void, Never>?
+        var newResume: CheckedContinuation<Void, Never>?
+        var oldWasCancelled = false
+        let old = Task {
+            await flight.run(epoch: 1, endpoint: endpoint) {
+                await withCheckedContinuation { oldResume = $0 }
+                oldWasCancelled = Task.isCancelled
+            }
+        }
+        while oldResume == nil { await Task.yield() }
+        let new = Task {
+            await flight.run(epoch: 2, endpoint: endpoint) {
+                await withCheckedContinuation { newResume = $0 }
+            }
+        }
+        while newResume == nil { await Task.yield() }
+        oldResume?.resume()
+        await old.value
+        XCTAssertTrue(oldWasCancelled)
+        XCTAssertTrue(flight.isRunning, "An obsolete completion must not clear the new network's operation")
+        newResume?.resume()
+        await new.value
+        XCTAssertFalse(flight.isRunning)
+    }
+
+    @MainActor
+    func testWatchdogCallerCancellationDoesNotCancelSharedProbe() async throws {
+        let flight = VoWLANProbeFlight()
+        let endpoint = try VoWLANEndpoint(host: "100.64.1.2", controlPort: 7592, pcmPort: 7593)
+        var resume: CheckedContinuation<Void, Never>?
+        var operationWasCancelled = true
+        let caller = Task {
+            await flight.run(epoch: 1, endpoint: endpoint) {
+                await withCheckedContinuation { resume = $0 }
+                operationWasCancelled = Task.isCancelled
+            }
+        }
+        while resume == nil { await Task.yield() }
+        caller.cancel()
+        resume?.resume()
+        await caller.value
+        XCTAssertFalse(operationWasCancelled,
+                       "Publishing unavailable/fallback cancels the watchdog, not the health operation it awaits")
+    }
+
+    @MainActor
+    func testConcurrentProbeTriggersShareOneOperation() async throws {
+        let flight = VoWLANProbeFlight()
+        let endpoint = try VoWLANEndpoint(host: "100.64.1.2", controlPort: 7592, pcmPort: 7593)
+        var starts = 0
+        var pending: [CheckedContinuation<Void, Never>] = []
+        let operation: @MainActor () async -> Void = {
+            starts += 1
+            await withCheckedContinuation { pending.append($0) }
+        }
+        let first = Task { await flight.run(epoch: 1, endpoint: endpoint, operation: operation) }
+        while pending.isEmpty { await Task.yield() }
+        let second = Task { await flight.run(epoch: 1, endpoint: endpoint, operation: operation) }
+        for _ in 0..<30 { await Task.yield() }
+        for continuation in pending { continuation.resume() }
+        await first.value
+        await second.value
+        XCTAssertEqual(starts, 1, "Foreground, discovery and watchdog must not invalidate each other's signed probe")
+    }
+
+    func testSavedTailnetRouteIsNotReplacedByLANAdvertisementDuringVerification() throws {
+        let vpn = VoWLANManualRoute(agentID: "peer", host: "100.64.1.2", controlPort: 7592, pcmPort: 7593)
+        let lan = VoWLANDiscoveredAgent(id: "peer",
+            endpoint: try .init(host: "192.168.31.203", controlPort: 7592, pcmPort: 7593),
+            deviceName: "Phone", manufacturer: nil, model: nil, phoneNumber: nil, agentKind: nil)
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [lan], manual: [vpn],
+            live: [], preferred: nil).first?.endpoint, vpn.endpoint)
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [lan], manual: [vpn],
+            live: [lan], preferred: lan.endpoint).first?.endpoint, lan.endpoint,
+            "An already verified LAN route or active call must remain stable")
+    }
+
+    func testNetworkChangeKeepsPairedVPNCandidatesOutsideCGNAT() throws {
+        let routes = ["100.64.1.2", "10.88.0.2", "172.20.1.2", "192.168.50.2"].map {
+            VoWLANManualRoute(agentID: $0, host: $0, controlPort: 39001, pcmPort: 39002)
+        }
+        XCTAssertEqual(VoWLANNetworkChangePolicy.manualCandidates(routes), routes)
+        for route in routes {
+            let endpoint = try XCTUnwrap(route.endpoint)
+            XCTAssertTrue(VoWLANNetworkRoutePolicy.usesSystemRouting(host: endpoint.host, isLocalSubnet: false))
+            XCTAssertFalse(VoWLANAvailability.discovered(endpoint, at: Date()).isReady(),
+                           "Restoring a saved VPN route must not restore online state")
+        }
+    }
+
+    func testRecoveryCandidatesRejectMalformedRoutes() {
+        let invalid = [
+            VoWLANManualRoute(agentID: "", host: "10.88.0.2", controlPort: 39001, pcmPort: 39002),
+            VoWLANManualRoute(agentID: "peer", host: "127.0.0.1", controlPort: 39001, pcmPort: 39002),
+            VoWLANManualRoute(agentID: "peer", host: "10.88.0.2", controlPort: 0, pcmPort: 39002)
+        ]
+        XCTAssertTrue(VoWLANNetworkChangePolicy.manualCandidates(invalid).isEmpty)
+    }
+
+    func testFreshDHCPAddressBeatsSavedCandidateExceptDuringCall() throws {
+        let saved = VoWLANManualRoute(agentID: "peer", host: "10.88.0.2", controlPort: 39001, pcmPort: 39002)
+        let fresh = VoWLANDiscoveredAgent(id: "peer",
+            endpoint: try .init(host: "192.168.50.3", controlPort: 40001, pcmPort: 40002),
+            deviceName: "Phone", manufacturer: nil, model: nil, phoneNumber: nil, agentKind: nil)
+        let candidates = VoWLANNetworkChangePolicy.manualCandidates([saved])
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [fresh], manual: candidates,
+            live: [], preferred: nil).first?.endpoint, fresh.endpoint)
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [fresh], manual: candidates,
+            live: [], preferred: saved.endpoint).first?.endpoint, saved.endpoint)
+        XCTAssertEqual(VoWLANRouteCandidates.merge(discovered: [], manual: candidates,
+            live: [], preferred: nil).first?.endpoint, saved.endpoint)
+    }
+
+    func testOfflineLANAndVPNFallbackCannotCycleWithinOneProbe() throws {
+        let lan = try VoWLANEndpoint(host: "192.168.50.3", controlPort: 7592, pcmPort: 7593)
+        let vpn = try VoWLANEndpoint(host: "100.64.1.2", controlPort: 39001, pcmPort: 39002)
+        var attempts = VoWLANProbeAttempts()
+        XCTAssertTrue(attempts.begin(lan))
+        XCTAssertTrue(attempts.permits(vpn))
+        XCTAssertTrue(attempts.begin(vpn))
+        XCTAssertFalse(attempts.permits(lan))
+        XCTAssertFalse(attempts.begin(lan))
+        XCTAssertFalse(attempts.begin(vpn))
+        var nextRecovery = VoWLANProbeAttempts()
+        XCTAssertTrue(nextRecovery.begin(vpn), "A later recovery can retry the VPN")
+    }
+
+    func testVerboseExportDisclosesWhenTunnelTracingWasDisabled() async {
+        let recorder = AgentVerboseTraceRecorder(initiallyEnabled: false, maxEntries: 20, persistenceURL: nil)
+        await recorder.recordAudioStartup(phase: "answer_observed")
+        await recorder.recordEvent(source: "ios", category: "vowlan", phase: "failed", title: "not collected")
+        let disabled = await recorder.exportText(agentEvents: [])
+        XCTAssertTrue(disabled.contains("verbose_enabled=false"))
+        XCTAssertFalse(disabled.contains("not collected"))
+        await recorder.setEnabled(true)
+        let enabled = await recorder.exportText(agentEvents: [])
+        XCTAssertTrue(enabled.contains("verbose_enabled=true"))
+    }
+}
+
+@MainActor
 final class CloudStandbyLifecycleRegressionTests: XCTestCase {
-    func testFailedFreshDialQueryClearsPreviousOnlinePresentation() async throws {
+    func testKnownTargetDialDoesNotWaitForStatusAndFailedCommandKeepsTarget() async throws {
         let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
         ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
         defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
         let online = try status(online: true)
-        var requests = 0, now = Date()
+        let previousTarget = CloudAgentTargetStore.last()
+        defer { if let previousTarget { CloudAgentTargetStore.remember(previousTarget) } else { CloudAgentTargetStore.forget() } }
+        var requests = 0, now = Date(), targets: [CloudCommandTarget] = []
         let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
             cloudStatusFetcher: {
                 requests += 1
                 if requests > 1 { throw URLError(.notConnectedToInternet) }
                 return online
+            }, cloudOutgoingStarter: { number, target in
+                XCTAssertEqual(number, "fixture")
+                targets.append(target)
+                throw URLError(.notConnectedToInternet)
             }, cloudStatusNow: { now })
         defer { model.stop() }
         _ = await model.refreshCloudStatusForDiagnostics()
         now.addTimeInterval(600)
         do {
             try await model.callKitStart(number: "fixture")
-            XCTFail("failed fresh status query must not authorize a cached cloud dial")
+            XCTFail("the command's own failure must reach the caller")
         } catch { XCTAssertEqual((error as? URLError)?.code, .notConnectedToInternet) }
-        XCTAssertEqual(requests, 2)
-        XCTAssertNil(model.cloudAgentStatus)
-        XCTAssertNil(model.cloudAgentDirectory)
-        XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline })
-        XCTAssertFalse(model.canStartOutgoingCommand)
+        XCTAssertEqual(requests, 1, "a known target must not wait for another Relay status round trip")
+        XCTAssertEqual(targets, [.init(agentID: "standby-fixture", routingVersion: 1)])
+        XCTAssertEqual(model.cloudAgentStatus?.activeAgentID, "standby-fixture")
+        XCTAssertEqual(CloudAgentTargetStore.last(), "standby-fixture")
+        XCTAssertTrue(model.canStartOutgoingCommand, "a failed attempt must allow a deliberate retry")
+        XCTAssertNil(model.pendingOutgoingCall)
     }
 
     func testForegroundIdleKeepsCloudDeviceCardWithoutRepeatingRelayQuery() async throws {
@@ -115,7 +282,7 @@ final class CloudStandbyLifecycleRegressionTests: XCTestCase {
         XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline })
     }
 
-    func testFailedExplicitQueryDoesNotReviveOldOnlineDirectory() async throws {
+    func testFailedExplicitQueryPreservesLastObservationAndReportsProbeError() async throws {
         let previous = ConnectionModePreference.selected(), binding = AndroidAgentBindingPreference.selected()
         ConnectionModePreference.set(.cloud); AndroidAgentBindingPreference.set(nil)
         defer { ConnectionModePreference.set(previous); AndroidAgentBindingPreference.set(binding) }
@@ -130,10 +297,12 @@ final class CloudStandbyLifecycleRegressionTests: XCTestCase {
         _ = await model.refreshCloudStatusForDiagnostics()
         model.didEnterBackground()
         shouldFail = true
-        _ = await model.refreshCloudStatusForDiagnostics()
-        XCTAssertNil(model.cloudAgentStatus)
-        XCTAssertNil(model.cloudAgentDirectory)
-        XCTAssertFalse(model.pairedAndroidAgents.contains { $0.cloudOnline })
+        let reply = await model.refreshCloudStatusForDiagnostics()
+        XCTAssertNil(reply, "a failed probe must not be returned as a fresh success")
+        XCTAssertNotNil(model.cloudStatusError)
+        XCTAssertEqual(model.cloudAgentStatus?.activeAgentID, "standby-fixture")
+        XCTAssertEqual(model.cloudAgentDirectory?.activeAgentID, "standby-fixture")
+        XCTAssertTrue(model.canStartOutgoingCommand, "the saved target stays dialable; the command validates reachability")
     }
 }
 
@@ -990,126 +1159,7 @@ final class VoWLANNetworkRecoveryTests: XCTestCase {
 }
 
 final class SMSDeletionTests: XCTestCase {
-    @MainActor
-    func testConversationRowCanReopenAfterReturning() async throws {
-        let model = AppModel()
-        defer { model.stop() }
-        model.messages = [SMSMessage(sender: "sms-navigation-fixture", content: "test message",
-                                    code: nil, timestamp: Date(), deliveryID: "navigation-fixture")]
-        let suite = UUID().uuidString
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set(true, forKey: "airsim.first-connection-complete")
-        defaults.set(PhoneTab.messages.rawValue, forKey: "airsim.selected-tab")
-        let updates = AppUpdateController(defaults: defaults, fetch: { [] })
-        updates.acknowledgeNotes()
-        let view = RootView()
-            .environmentObject(model)
-            .environmentObject(model.contacts)
-            .environmentObject(model.audio)
-            .environmentObject(AppSettings())
-            .environmentObject(updates)
-            .defaultAppStorage(defaults)
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
-        let previous = scene.windows.first(where: \.isKeyWindow)
-        let window = UIWindow(windowScene: scene)
-        window.rootViewController = UIHostingController(rootView: view)
-        window.makeKeyAndVisible()
-        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
-        try await Task.sleep(nanoseconds: 500_000_000)
-        func accessibilityObjects() -> [NSObject] {
-            var pending: [NSObject] = [window]
-            var visited: Set<ObjectIdentifier> = []
-            var result: [NSObject] = []
-            while let object = pending.popLast() {
-                guard visited.insert(ObjectIdentifier(object)).inserted else { continue }
-                result.append(object)
-                if let children = object.accessibilityElements as? [NSObject] {
-                    pending.append(contentsOf: children)
-                }
-                if let view = object as? UIView { pending.append(contentsOf: view.subviews) }
-            }
-            return result
-        }
-        func conversationRow() -> NSObject? {
-            accessibilityObjects().first {
-                $0.accessibilityTraits.contains(.button)
-                    && $0.accessibilityLabel?.contains("sms-navigation-fixture") == true
-            }
-        }
-        func button(_ label: String) -> NSObject? {
-            accessibilityObjects().first {
-                $0.accessibilityTraits.contains(.button) && $0.accessibilityLabel == label
-            }
-        }
-        func controllers(_ controller: UIViewController) -> [UIViewController] {
-            [controller] + controller.children.flatMap(controllers)
-        }
-        func selectTab(_ tab: PhoneTab) async throws {
-            let index = try XCTUnwrap(PhoneTab.allCases.firstIndex(of: tab))
-            defaults.set(tab.rawValue, forKey: "airsim.selected-tab")
-            let deadline = Date().addingTimeInterval(5)
-            while Date() < deadline {
-                if let root = window.rootViewController,
-                   controllers(root).compactMap({ $0 as? UITabBarController }).first?.selectedIndex == index {
-                    return
-                }
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
-            XCTFail("The requested tab must be rendered before opening a conversation")
-            throw NSError(domain: "SMSNavigationRegression", code: 1)
-        }
-        for iteration in 0..<3 {
-            try await selectTab(.settings)
-            try await selectTab(.messages)
-            let deadline = Date().addingTimeInterval(5)
-            while conversationRow() == nil && Date() < deadline {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
-            let headerDeadline = Date().addingTimeInterval(5)
-            while (button(L10n.t("新信息")) == nil || button(L10n.t("短信操作")) == nil)
-                    && Date() < headerDeadline {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
-            let compose = try XCTUnwrap(button(L10n.t("新信息")))
-            XCTAssertNotNil(button(L10n.t("短信操作")))
-            let rootNavigation = try XCTUnwrap(controllers(try XCTUnwrap(window.rootViewController))
-                .compactMap { $0 as? UINavigationController }.first {
-                    !$0.isNavigationBarHidden && $0.navigationBar.topItem?.title == L10n.t("短信")
-                })
-            XCTAssertEqual(rootNavigation.viewControllers.count, 1)
-            if iteration == 0 {
-                XCTAssertTrue(compose.accessibilityActivate())
-                let composerDeadline = Date().addingTimeInterval(5)
-                while button(L10n.t("取消")) == nil && Date() < composerDeadline {
-                    try await Task.sleep(nanoseconds: 10_000_000)
-                }
-                XCTAssertTrue(try XCTUnwrap(button(L10n.t("取消"))).accessibilityActivate())
-                let dismissalDeadline = Date().addingTimeInterval(5)
-                while window.rootViewController?.presentedViewController != nil && Date() < dismissalDeadline {
-                    try await Task.sleep(nanoseconds: 10_000_000)
-                }
-                XCTAssertNil(window.rootViewController?.presentedViewController)
-            }
-            let row = try XCTUnwrap(conversationRow())
-            XCTAssertTrue(row.accessibilityActivate(), "The actual row action must remain usable after returning")
-            try await Task.sleep(nanoseconds: 600_000_000)
-            let all = controllers(try XCTUnwrap(window.rootViewController))
-            let tabs = try XCTUnwrap(all.compactMap { $0 as? UITabBarController }.first)
-            let navigation = try XCTUnwrap(all.compactMap { $0 as? UINavigationController }
-                .first { $0.topViewController?.navigationItem.title == "sms-navigation-fixture" })
-            let conversation = try XCTUnwrap(navigation.topViewController)
-            XCTAssertFalse(conversation.view.isDescendant(of: tabs.view),
-                           "The conversation must cover the tabs, not be rendered beneath them")
-            XCTAssertTrue(navigation.navigationBar.topItem === conversation.navigationItem)
-            navigation.popViewController(animated: false)
-            try await Task.sleep(nanoseconds: 300_000_000)
-            XCTAssertEqual(navigation.viewControllers.count, 1)
-            XCTAssertEqual(navigation.navigationBar.topItem?.title, L10n.t("短信"))
-            XCTAssertNotNil(button(L10n.t("新信息")))
-            XCTAssertNotNil(button(L10n.t("短信操作")))
-        }
-    }
+    // Full navigation interaction lives in AirSIMUITests/SMSNavigationUITests.swift.
 
     func testRepeatedFractionalLegacySaveAndUpgradeDoNotDuplicateMessages() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1532,11 +1582,13 @@ final class AirSIMTests: XCTestCase {
         XCTAssertNil(VoWLANManualRouteStore.selected(defaults: reopened))
     }
 
-    func testFreshDiscoveryReplacesUnreachableManualRouteForSamePhone() throws {
+    func testExplicitLANFallbackReplacesFailedManualRouteForSamePhone() throws {
         let saved = VoWLANManualRoute(agentID: "agent", host: "100.64.1.2", controlPort: 39001, pcmPort: 39002)
         let wifi = VoWLANDiscoveredAgent(id: "agent", endpoint: try .init(host: "192.168.1.2", controlPort: 40001, pcmPort: 40002),
             deviceName: "Fresh phone", manufacturer: nil, model: nil, phoneNumber: nil, agentKind: "standalone")
-        let fallback = VoWLANRouteCandidates.merge(discovered: [wifi], manual: [saved], live: [], preferred: nil)
+        // The probe selects this fallback after failure. nil only means that
+        // nothing has verified yet; it is not evidence that the VPN is dead.
+        let fallback = VoWLANRouteCandidates.merge(discovered: [wifi], manual: [saved], live: [], preferred: wifi.endpoint)
         XCTAssertEqual(fallback, [wifi])
         let manualFirst = VoWLANRouteCandidates.merge(discovered: [wifi], manual: [saved], live: [], preferred: saved.endpoint)
         XCTAssertEqual(manualFirst.first?.endpoint, saved.endpoint)

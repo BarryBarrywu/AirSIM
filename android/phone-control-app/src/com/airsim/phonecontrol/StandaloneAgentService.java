@@ -19,14 +19,14 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** AVF-free foreground Agent: Relay registration, heartbeat and command execution. */
 public final class StandaloneAgentService extends Service {
-    private static final ConcurrentLinkedQueue<String> CALL_EVENTS = new ConcurrentLinkedQueue<>();
+    private static final RelayEventQueue<String> CALL_EVENTS = new RelayEventQueue<>(RelayEgressGate.shared);
     private static volatile StandaloneAgentService instance;
+    private static final java.util.concurrent.atomic.AtomicBoolean manualHeartbeatRunning = new java.util.concurrent.atomic.AtomicBoolean();
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
     // CallKit latency must not wait behind heartbeat/registration/command I/O.
     private final ExecutorService eventWorker = Executors.newSingleThreadExecutor();
@@ -39,8 +39,8 @@ public final class StandaloneAgentService extends Service {
     private int syncedRegistrationHash;
     private final RelayRegistrationRecovery registrationRecovery = new RelayRegistrationRecovery();
     private final CloudCallRetryPolicy callEventRetry = new CloudCallRetryPolicy();
-    private long lastHeartbeat;
-    private long nextHeartbeatAttempt;
+    private volatile long lastHeartbeat;
+    private volatile long nextHeartbeatAttempt;
     private long lastCommandPoll;
     private volatile StandaloneWebSocket commandSocket;
     private volatile boolean commandChannelConnected;
@@ -54,8 +54,41 @@ public final class StandaloneAgentService extends Service {
         catch (RuntimeException error) { BridgeLog.error("standalone_agent_start_failed", error); }
     }
 
+    /** Explicit user action; call off the UI thread. Never enables cloud or bypasses the gate. */
+    static void sendManualHeartbeat() throws Exception {
+        if (!manualHeartbeatRunning.compareAndSet(false, true))
+            throw new IllegalStateException("心跳正在发送，请稍候");
+        try { performManualHeartbeat(); }
+        finally { manualHeartbeatRunning.set(false); }
+    }
+
+    private static void performManualHeartbeat() throws Exception {
+        StandaloneAgentService active = instance;
+        if (active == null || !active.running) throw new IllegalStateException("Agent 服务未运行，请返回首页启动后重试");
+        var generation = RelayEgressGate.shared.generation();
+        if (!generation.isCurrent()) throw new IllegalStateException("纯本地模式已开启，禁止发送云端心跳");
+        var snapshot = active.commandConfiguration.snapshot();
+        if (snapshot.scope() == null || !active.store.cloudEnabled())
+            throw new IllegalStateException("云端未开启或尚未配对，请先检查云端配置");
+        active.relay.postJSON(snapshot.registration(), "/v1/devices/register",
+                new JSONObject(snapshot.registration().toString()), 15_000, generation);
+        if (!generation.isCurrent() || !active.commandConfiguration.isCurrent(snapshot))
+            throw new IllegalStateException("连接配置已变更，请重新发送");
+        try {
+            active.sendHeartbeat(snapshot.registration(), generation);
+            active.nextHeartbeatAttempt = 0;
+        } catch (Exception error) {
+            active.nextHeartbeatAttempt = android.os.SystemClock.elapsedRealtime()
+                    + RelayHTTPException.heartbeatRetryDelay(error);
+            throw error;
+        }
+        if (!generation.isCurrent() || !active.commandConfiguration.isCurrent(snapshot))
+            throw new IllegalStateException("连接配置已变更，请重新自检");
+        BridgeLog.info("standalone_manual_heartbeat_accepted");
+    }
+
     static void enqueueCallEvent(Context context, String json) {
-        CALL_EVENTS.add(json);
+        if (!CALL_EVENTS.add(json)) return;
         start(context);
         StandaloneAgentService active = instance;
         if (active != null) active.eventWorker.execute(active::flushCallEvents);
@@ -112,14 +145,16 @@ public final class StandaloneAgentService extends Service {
                 long now = System.currentTimeMillis();
                 // 120s remains inside the 150s cloud-online window and cuts
                 // Relay heartbeat/observability churn on weak cellular links.
-                if (now - lastHeartbeat >= 120_000 && now >= nextHeartbeatAttempt) {
+                if (now - lastHeartbeat >= 120_000 &&
+                        android.os.SystemClock.elapsedRealtime() >= nextHeartbeatAttempt) {
                     try {
                         sendHeartbeat(registration);
                         nextHeartbeatAttempt = 0;
                         registrationRecovery.onAuthenticated();
                     } catch (Exception heartbeatError) {
                         // Do not spin the whole agent loop on a failed heartbeat.
-                        nextHeartbeatAttempt = now + 30_000;
+                        nextHeartbeatAttempt = android.os.SystemClock.elapsedRealtime()
+                                + RelayHTTPException.heartbeatRetryDelay(heartbeatError);
                         registrationRecovery.onFailure(heartbeatError, android.os.SystemClock.elapsedRealtime());
                         BridgeLog.error("standalone_heartbeat_failed", heartbeatError);
                     }
@@ -166,6 +201,10 @@ public final class StandaloneAgentService extends Service {
     }
 
     private void sendHeartbeat(JSONObject registration) throws Exception {
+        sendHeartbeat(registration, RelayEgressGate.shared.generation());
+    }
+
+    private void sendHeartbeat(JSONObject registration, RelayEgressGate.Generation generation) throws Exception {
         JSONObject heartbeat = identity(registration)
                 .put("event", "agent_heartbeat").put("agent_version", "standalone-0.1.0")
                 .put("agent_id", registration.optString("android_agent_id", AndroidAgentIdentity.agentID(this)))
@@ -178,18 +217,21 @@ public final class StandaloneAgentService extends Service {
                 .put("at_ok", true).put("cellular_state", "registered")
                 .put("cellular_registration", "Android Telecom")
                 .put("cellular_recovery", "not_required").put("ecm_carrier", "android-default");
-        relay.postJSON(registration, "/v1/events/heartbeat", heartbeat, 12_000);
+        relay.postJSON(registration, "/v1/events/heartbeat", heartbeat, 12_000, generation);
         lastHeartbeat = System.currentTimeMillis();
         store.recordHeartbeat();
     }
 
     private void pollCommands(RelayCommandConfiguration.Snapshot<JSONObject> snapshot) throws Exception {
+        var generation = RelayEgressGate.shared.generation();
+        if (!generation.isCurrent()) return;
         if (!commandConfiguration.isCurrent(snapshot)) return;
         JSONObject registration = snapshot.registration();
         JSONObject batch = relay.postJSON(registration, "/v2/commands/pull", identity(registration), 12_000);
         JSONArray commands = batch.optJSONArray("commands");
         if (commands == null) return;
         for (int index = 0; index < commands.length(); index++) {
+            if (!generation.isCurrent()) return;
             if (!commandConfiguration.isCurrent(snapshot)) return;
             JSONObject command = commands.getJSONObject(index);
             if (!agentID(registration).equals(command.optString("target_agent_id"))) continue;
@@ -204,7 +246,7 @@ public final class StandaloneAgentService extends Service {
                 } else {
                     if (!commandConfiguration.isCurrent(snapshot)) return;
                     result = StandaloneAgentGateway.get(this).executeCloudCommand(command,
-                            () -> commandConfiguration.isCurrent(snapshot));
+                            () -> generation.isCurrent() && commandConfiguration.isCurrent(snapshot));
                 }
             } catch (Exception error) {
                 result = new JSONObject().put("command_id", commandID).put("status", "failed")
@@ -215,6 +257,7 @@ public final class StandaloneAgentService extends Service {
                 if (result.has(key)) completion.put(key, result.get(key));
             }
             if (!commandConfiguration.isCurrent(snapshot)) return;
+            if (!generation.isCurrent()) return;
             relay.postJSON(registration, "/v2/commands/complete", completion, 12_000);
             rememberCompleted(commandID);
         }
@@ -222,6 +265,7 @@ public final class StandaloneAgentService extends Service {
 
     private void commandLoop() {
         while (running) {
+            var generation = RelayEgressGate.shared.generation();
             StandaloneWebSocket socket = null;
             long connectedAt = -1;
             long epoch = -1;
@@ -254,15 +298,16 @@ public final class StandaloneAgentService extends Service {
                 socket.setReadTimeout(20_000);
                 BridgeLog.info("standalone_command_channel_connected");
                 final var commandSnapshot = snapshot;
-                while (running && commandConfiguration.isCurrent(snapshot)) {
+                while (running && generation.isCurrent() && commandConfiguration.isCurrent(snapshot)) {
                     try {
                         StandaloneWebSocket.Message message = socket.read();
                         if (message.opcode() != 1) continue;
                         JSONObject command = new JSONObject(new String(message.payload(), StandardCharsets.UTF_8));
                         if (!commandConfiguration.isCurrent(snapshot)) break;
+                        if (!generation.isCurrent()) break;
                         if (!agentID(registration).equals(command.optString("target_agent_id"))) continue;
                         JSONObject result = StandaloneAgentGateway.get(this).executeCloudCommand(command,
-                                () -> commandConfiguration.isCurrent(commandSnapshot));
+                                () -> generation.isCurrent() && commandConfiguration.isCurrent(commandSnapshot));
                         socket.writeText(result.toString());
                     } catch (SocketTimeoutException timeout) {
                         socket.writePing("command-keepalive".getBytes(StandardCharsets.US_ASCII));
@@ -283,7 +328,7 @@ public final class StandaloneAgentService extends Service {
 
     private String commandScope(JSONObject registration) {
         String scope = null;
-        if (running && registration != null && !registration.optBoolean("local_mode",false)
+        if (!RelayEgressGate.shared.isBlocked() && running && registration != null && !registration.optBoolean("local_mode",false)
                 && registration.optBoolean("cloud_enabled",true)) {
             String id = agentID(registration);
             if (RelayCommandRetryState.validAgentID(id)) {
@@ -309,18 +354,22 @@ public final class StandaloneAgentService extends Service {
     }
 
     private void flushCallEvents() {
+        var generation = RelayEgressGate.shared.generation();
         if (store == null || !store.cloudEnabled()) return;
         JSONObject registration = store.registration();
         if (registration == null) return;
         synchronized (callEventLock) {
             for (int attempt = 0; attempt < 3; attempt++) {
+                if (!generation.isCurrent()) return;
                 String encoded = CALL_EVENTS.peek();
                 if (encoded == null) return;
                 try {
                     StandaloneCloudMediaManager.get(this).handleCallEvent(
                             registration, new JSONObject(encoded), relay);
+                    if (!generation.isCurrent()) return;
                     CALL_EVENTS.poll();
                 } catch (Exception error) {
+                    if (!generation.isCurrent()) return;
                     if (callEventRetry.shouldDrop(encoded, error, android.os.SystemClock.elapsedRealtime())) {
                         // A refused or long-failing event must not hold every later event,
                         // including the "ended" that closes the cloud call, behind it.
@@ -348,10 +397,12 @@ public final class StandaloneAgentService extends Service {
     }
 
     private void flushEvents(JSONObject registration) throws Exception {
+        var generation = RelayEgressGate.shared.generation();
         flushCallEvents();
         StandaloneSMSStore smsStore = new StandaloneSMSStore(this);
         JSONArray smsPending = smsStore.cloudPending();
         for (int index = 0; index < smsPending.length(); index++) {
+            if (!generation.isCurrent()) return;
             JSONObject source = smsPending.getJSONObject(index);
             JSONObject event = identity(registration).put("event", "incoming_sms")
                     .put("delivery_id", source.optString("delivery_id"))
