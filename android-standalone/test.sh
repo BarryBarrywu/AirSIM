@@ -43,6 +43,23 @@ assert_contains "$S" '" " + CloudCallRetryPolicy.describe(error)' \
   'call event retries must log the Relay status'
 assert_contains "$S" 'BridgeLog.error("standalone_call_event_drop_failed", abandonError);' \
   'a failure while closing a dropped call must not escape to the event worker thread'
+assert_contains "$S" 'smsUploader.flush(' \
+  'cloud SMS must go through the uploader so one message cannot block the queue'
+assert_contains "$S" 'id -> relay.postJSON(registration, "/v1/events/sms", events.get(id), 12_000,' \
+  'cloud SMS must be posted by the uploader'"'"'s sender'
+assert_not_contains "$S" 'relay.postJSON(registration, "/v1/events/sms", event, 12_000)' \
+  'the old in-loop SMS post (first failure blocks the queue) must be gone'
+assert_contains "$S" 'smsStore.markCloudSent(id)' 'delivered SMS must leave the queue'
+assert_contains "$S" 'smsStore.markCloudRejected(id)' 'rejected SMS must not be labelled delivered'
+assert_contains "$S" 'worker.execute(this::smsLoop)' 'SMS must not block heartbeat or HTTP polling'
+assert_contains "$S" 'smsTransport, snapshot.epoch()' 'SMS HTTP must be cancellable'
+assert_contains "$S" 'android.os.SystemClock::elapsedRealtime' 'SMS cooldown must sample after failure'
+assert_contains "$S" 'registrationRecovery.onFailure(smsError, android.os.SystemClock.elapsedRealtime());' \
+  'an SMS upload 401 must still request re-registration'
+assert_contains "$S" 'CloudSMSUploader.uploadTimestamp(source.optString("timestamp", ""), System.currentTimeMillis())' \
+  'a carrier time in the future must be clamped before upload, or the Relay answers 400'
+assert_contains "$S" '"standalone_sms_upload_retry verdict="' \
+  'SMS retry logs must tell an unreachable Relay from a refusing one'
 M="$ROOT/../android/phone-control-app/src/com/airsim/phonecontrol/StandaloneCloudMediaManager.java"
 assert_contains "$M" 'mediaRetry.outcome(error, CallRepository.state(descriptor.androidID),' \
   'a media session must ask the retry policy about every failed connect'

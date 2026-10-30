@@ -1446,8 +1446,7 @@ async function receiveSMS(request, env) {
   }
   await bestEffortWriteRelayState(env, dedupeKey, "1", 7 * 24 * 60 * 60);
 
-  const [content, truncated] = truncateCodePoints(message.content, 700);
-  const payload = {
+  const payload = fittedSMSPayload(message.content, (content, truncated) => ({
     aps: {
       alert: { title: sender, body: content },
       sound: "default",
@@ -1462,7 +1461,7 @@ async function receiveSMS(request, env) {
     content_truncated: truncated,
     code: stringValue(message.code),
     timestamp: deliveryTimestamp,
-  };
+  }));
   try {
     await sendAPNs(env, authenticated.device, authenticated.device.alert_token, {
       topic: authenticated.device.bundle_id,
@@ -1997,6 +1996,30 @@ async function boundedCollapseID(value) {
   const text = stringValue(value);
   if (encoder.encode(text).byteLength <= 64) return text;
   return `airsim-${(await sha256Hex(text)).slice(0, 57)}`;
+}
+
+/**
+ * APNs rejects payloads over 4096 bytes and the SMS text appears twice (alert body and
+ * `content`). Keep the longest prefix, at most 700 code points, whose payload still fits.
+ */
+function fittedSMSPayload(content, build) {
+  const attempt = (limit) => {
+    const payload = build(...truncateCodePoints(content, limit));
+    return encoder.encode(JSON.stringify(payload)).byteLength <= MAX_APNS_PAYLOAD_BYTES ? payload : null;
+  };
+  let fitted = attempt(700);
+  if (fitted) return fitted;
+  // Every candidate below is cut and ends in "…", so the size grows with the limit.
+  let low = 0;
+  let high = Math.min([...content].length, 700) - 1;
+  fitted = attempt(low);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const payload = attempt(middle);
+    if (payload) { fitted = payload; low = middle; } else { high = middle - 1; }
+  }
+  // Only an absurdly long sender can miss even at zero; sendAPNs then reports it as before.
+  return fitted ?? build(...truncateCodePoints(content, 0));
 }
 
 function truncateCodePoints(value, maximum) {

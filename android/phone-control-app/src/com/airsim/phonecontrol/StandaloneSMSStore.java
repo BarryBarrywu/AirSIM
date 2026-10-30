@@ -63,7 +63,7 @@ final class StandaloneSMSStore {
             JSONArray records = records();
             for (int i = 0; i < records.length(); i++) {
                 JSONObject record = records.getJSONObject(i);
-                if (!record.optBoolean("cloud_sent")) pending.put(publicMessage(record));
+                if (!record.optBoolean("cloud_sent") && !record.optBoolean("cloud_rejected")) pending.put(publicMessage(record));
             }
             return pending;
         }
@@ -95,6 +95,10 @@ final class StandaloneSMSStore {
         }
     }
 
+    void markCloudRejected(String id) throws Exception {
+        synchronized (LOCK) { mutate(Set.of(id), "cloud_rejected"); }
+    }
+
     int pendingCount() throws Exception { return localMessages().length(); }
     long revision() { synchronized (LOCK) { return preferences.getLong(REVISION, 0); } }
 
@@ -109,7 +113,8 @@ final class StandaloneSMSStore {
                 record.put(flag, true);
                 changed = true;
             }
-            if (!record.optBoolean("local_ack") || !record.optBoolean("cloud_sent")) updated.put(record);
+            if (!record.optBoolean("local_ack")
+                    || (!record.optBoolean("cloud_sent") && !record.optBoolean("cloud_rejected"))) updated.put(record);
             else recent.remember(record.optString("delivery_id"));
         }
         if (changed) persist(updated, recent, "local_ack".equals(flag));

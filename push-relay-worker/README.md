@@ -390,7 +390,7 @@ npx wrangler tail
 - Secret 只通过 Wrangler Secret/CI Secret 管理；密钥疑似泄露时立即在 Apple/Cloudflare 轮换并撤销旧值。
 - Dashboard token 与设备 Secret 分离，设备不能调用 Dashboard 管理 API。
 - Worker 只保存设备 Secret 哈希；媒体连接还会校验 call UUID、角色、generation 和单次 call secret。
-- APNs payload 在本实现中统一限制为 4096 字节。
+- APNs payload 在本实现中统一限制为 4096 字节。短信正文在推送里出现两次（`aps.alert.body` 与 `content`），超长时截到仍能放进 4096 字节的最长前缀（最多 700 个码点，末尾加「…」），并标记 `content_truncated: true`；中文大约 600 字以上就会被截断。
 - 发布前保留上一 Worker version。故障时优先回滚 Worker version，不要删除 KV namespace 或 Durable Object migration。
 - Worker、Agent、iOS/watchOS 的 JSON 和媒体协议变更必须兼容旧客户端或同步发布。
 

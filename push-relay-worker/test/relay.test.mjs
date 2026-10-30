@@ -1621,3 +1621,36 @@ test("expired ActivityKit token never turns a delivered VoIP call into a relay f
     assert.equal((await response.json()).pushed, true);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("relay shortens long SMS until the APNs payload fits 4096 bytes", async () => {
+  const env = testEnvironment();
+  await worker.fetch(post("/v1/devices/register", registration), env);
+  const captured = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    captured.push({ bytes: new TextEncoder().encode(options.body).byteLength, payload: JSON.parse(options.body) });
+    return new Response("", { status: 200 });
+  };
+  const sms = (id, content) => worker.fetch(post("/v1/events/sms", {
+    event: "incoming_sms", device_id: registration.device_id, device_secret: registration.device_secret,
+    agent_id: "android-" + "a".repeat(32), delivery_id: id, sender: "95588",
+    content, timestamp: new Date().toISOString(),
+  }), env);
+  try {
+    // 617 CJK characters fit; the old 700-code-point cut produced 4591 bytes and a 502.
+    for (const [id, original] of [["cjk", "短".repeat(1000)], ["emoji", "😀".repeat(1000)]]) {
+      const response = await sms(id, original);
+      assert.equal(response.status, 202, `${id} SMS is delivered`);
+      const { bytes, payload } = captured.at(-1);
+      assert.ok(bytes <= 4096, `${id} payload is ${bytes} bytes`);
+      assert.equal(payload.content_truncated, true);
+      assert.equal(payload.aps.alert.body, payload.content);
+      assert.ok(payload.content.endsWith("…"));
+      assert.ok(original.startsWith(payload.content.slice(0, -1)), `${id} content is a prefix`);
+    }
+    const short = await sms("short", "余额提醒");
+    assert.equal(short.status, 202);
+    assert.equal(captured.at(-1).payload.content, "余额提醒");
+    assert.equal(captured.at(-1).payload.content_truncated, false);
+  } finally { globalThis.fetch = originalFetch; }
+});
