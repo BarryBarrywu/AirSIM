@@ -15,6 +15,8 @@ mkdir -p "$OUT"
 "$TASK_JAVA_HOME/bin/javac" --release 17 -cp "$CRYPTO:$JSON_JAR" -d "$OUT" \
   "$ROOT/src/com/airsim/phonecontrol/StandaloneRelayClient.java" \
   "$ROOT/src/com/airsim/phonecontrol/RelayHTTPException.java" \
+  "$ROOT/src/com/airsim/phonecontrol/RelayCommandRetryState.java" \
+  "$ROOT/src/com/airsim/phonecontrol/WebSocketPeerClose.java" \
   "$ROOT/test/com/airsim/phonecontrol/StandaloneRelayEgressTests.java" \
   "$ROOT/src/com/airsim/phonecontrol/PureLocalModePolicy.java" \
   "$ROOT/src/com/airsim/phonecontrol/PureLocalModeProof.java" \

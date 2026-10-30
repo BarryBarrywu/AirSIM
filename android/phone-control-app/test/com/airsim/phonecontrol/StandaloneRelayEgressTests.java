@@ -43,6 +43,20 @@ public final class StandaloneRelayEgressTests {
             throw new AssertionError("stale manual heartbeat admitted after off/on");
         } catch (IOException expected) {}
         assert sends.get() == 0 : "stale manual heartbeat emitted network traffic";
+        var smsLifetime = new RelayCommandRetryState();
+        long smsEpoch = smsLifetime.configure("paired-device");
+        try {
+            client.postJSON(registration, "/v1/events/sms", new JSONObject(), 100,
+                    manualGeneration, smsLifetime, smsEpoch);
+            throw new AssertionError("SMS from a previous Relay generation admitted");
+        } catch (IOException expected) {}
+        smsLifetime.configure("different-device");
+        try {
+            client.postJSON(registration, "/v1/events/sms", new JSONObject(), 100,
+                    RelayEgressGate.shared.generation(), smsLifetime, smsEpoch);
+            throw new AssertionError("SMS from a previous pairing admitted");
+        } catch (IOException expected) {}
+        assert sends.get() == 0 : "cancelled SMS emitted network traffic";
         assert client.post(registration, "/register", new JSONObject(), 100).status() == 200;
         assert sends.get() == 1;
         assert !latest.getInstanceFollowRedirects() : "redirect bypasses admission";
