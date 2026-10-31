@@ -1205,11 +1205,9 @@ final class AppModel: ObservableObject {
             while self.localDirectoryRefreshPending, !Task.isCancelled {
               self.localDirectoryRefreshPending = false
               let candidates = self.vowlan.discoveredAgents
-              for candidate in candidates where PairedAndroidDeviceStore.permits(candidate.id) {
-                if self.localDevices.routes(for: candidate.id)?.vowlan == candidate.endpoint { continue }
-                try? await self.localDevices.verify(agentID: candidate.id, endpoint: candidate.endpoint)
-                self.rememberVerifiedLocalDevice(candidate)
-              }
+              await self.localDevices.verifyCandidates(candidates)
+              guard !Task.isCancelled else { return }
+              for candidate in candidates { self.rememberVerifiedLocalDevice(candidate) }
             }
             self.pairedDeviceRecords = PairedAndroidDeviceStore.records()
         }
@@ -1517,7 +1515,10 @@ final class AppModel: ObservableObject {
         }
         vowlan.callInProgress = { [weak self] in
             guard let self else { return false }
-            return self.callLifecycleSnapshot.state.representsCall || IPhoneCloudCallSession.shared.hasActiveCall
+            return VoWLANNetworkChangePolicy.preservesCallRoute(
+                state: self.callLifecycleSnapshot.state,
+                transportLocked: self.currentCallTransport != nil,
+                cloudCallActive: IPhoneCloudCallSession.shared.hasActiveCall)
         }
         vowlan.onNetworkRecoveryVerified = { [weak self] in
             guard let self, self.hasStarted,
@@ -1828,6 +1829,8 @@ final class AppModel: ObservableObject {
             )
         }
         eventStreamSupported = nil
+        eventRevision = AgentEventCursor.initial
+        localDevices.refreshAfterForeground()
         consecutivePollFailures = 0
         isReconnecting = false
         backgroundStandby.setApplicationIsBackground(false)

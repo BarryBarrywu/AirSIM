@@ -7,6 +7,57 @@ import WatchConnectivity
 
 @MainActor
 final class LocalDeviceDirectoryTests: XCTestCase {
+    func testOfflinePeerCannotDelayAnotherPeersAuthentication() async throws {
+        let slowID = "slow-" + UUID().uuidString, fastID = "fast-" + UUID().uuidString
+        let fast = try AuthenticatedHealthPeer(agentID: fastID, secret: aSecret)
+        defer { fast.stop() }
+        let fastEndpoint = try await fast.start()
+        let slowEndpoint = try VoWLANEndpoint(host: "10.0.0.2", controlPort: 39002, pcmPort: 39003)
+        let store = MemoryWLANCredentials()
+        let credential = try VoWLANCredential(secret: aSecret)
+        try store.save(credential, agentID: slowID)
+        try store.save(credential, agentID: fastID)
+        let gate = ResponseGate()
+        let slowWaiting = expectation(description: "offline peer probe pending")
+        let fastVerified = expectation(description: "healthy peer verified independently")
+        let directory = LocalDeviceDirectory(credentials: store, healthTransport: { request in
+            if request.url?.host == slowEndpoint.host {
+                slowWaiting.fulfill()
+                await gate.wait()
+                throw URLError(.timedOut)
+            }
+            return try await AuthenticatedHealthPeer.transport(request)
+        })
+        directory.onVerified = { _ in fastVerified.fulfill() }
+        let candidates = [(slowID, slowEndpoint), (fastID, fastEndpoint)].map { id, endpoint in
+            VoWLANDiscoveredAgent(id: id, endpoint: endpoint, deviceName: "fixture",
+                manufacturer: nil, model: nil, phoneNumber: nil, agentKind: nil)
+        }
+        let verification = Task { await directory.verifyCandidates(candidates) }
+        await fulfillment(of: [slowWaiting, fastVerified], timeout: 2)
+        XCTAssertNotNil(directory.api(for: fastID))
+        XCTAssertNil(directory.api(for: slowID))
+        await gate.release()
+        await verification.value
+    }
+
+    func testForegroundRefreshRequestsSnapshotWithoutWaitingForOldCursor() async throws {
+        let peer = try AuthenticatedHealthPeer(agentID: "wake-peer", secret: aSecret)
+        defer { peer.stop() }
+        let endpoint = try await peer.start()
+        let cursor = CursorHTTPBoundary()
+        let directory = LocalDeviceDirectory(credentials: MemoryWLANCredentials(),
+            apiFactory: { AirSIMAPI(route: $0, transport: cursor) }, healthTransport: AuthenticatedHealthPeer.transport)
+        try await directory.verifyPairing(agentID: "wake-peer", endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
+        directory.start(); defer { directory.stop() }
+        try await Task.sleep(for: .milliseconds(200))
+        let before = cursor.afterValues.count
+        directory.refreshAfterForeground()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(cursor.afterValues.first, AgentEventCursor.initial)
+        XCTAssertEqual(cursor.afterValues.dropFirst(before).first, AgentEventCursor.initial)
+    }
+
     func testPushRegistrationCallbackOnlyReceivesAuthenticatedGateways() async throws {
         let id = "push-sync-" + UUID().uuidString
         let peer = try AuthenticatedHealthPeer(agentID: id, secret: aSecret)
@@ -155,7 +206,7 @@ final class LocalDeviceDirectoryTests: XCTestCase {
         try await directory.verifyPairing(agentID: "A", endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
         directory.start(); defer { directory.stop() }
         try await Task.sleep(for: .milliseconds(400))
-        XCTAssertEqual(Array(cursor.afterValues.prefix(3)), [0, 8, 2])
+        XCTAssertEqual(Array(cursor.afterValues.prefix(3)), [AgentEventCursor.initial, 8, 2])
     }
 
     func testWatchDialOwnsSourceAndBlocksSecondPhoneDial() async throws {

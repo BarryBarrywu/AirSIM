@@ -323,7 +323,7 @@ final class CallKitController: NSObject {
         endActionFulfilled = false
 
         do {
-            let handle = CXHandle(type: .phoneNumber, value: number)
+            let handle = CallKitNumberPresentation.handle(number: number)
             let action = CXStartCallAction(call: uuid, handle: handle)
             if let systemStart { try await systemStart(action) } else { try await request(action) }
         } catch {
@@ -525,7 +525,7 @@ final class CallKitController: NSObject {
     }
 
     private func update(number: String?, callerName: String?, genericHandle: Bool) -> CXCallUpdate {
-        let update = CXCallUpdate()
+        let update = CallKitNumberPresentation.update(number: number, callerName: callerName)
         let value = number?.isEmpty == false ? number! : "未知号码"
         if genericHandle {
             // Dashboard virtual calls use a title, not a phone number. A
@@ -533,11 +533,6 @@ final class CallKitController: NSObject {
             let title = callerName?.isEmpty == false ? callerName! : value
             update.remoteHandle = CXHandle(type: .generic, value: title)
             update.localizedCallerName = title
-        } else {
-            update.remoteHandle = CXHandle(type: .phoneNumber, value: value)
-            if let callerName, !callerName.isEmpty, callerName != number {
-                update.localizedCallerName = callerName
-            }
         }
         update.supportsHolding = false
         update.supportsGrouping = false

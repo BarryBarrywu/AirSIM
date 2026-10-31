@@ -1,5 +1,7 @@
 # AirSIM Android Standalone
 
+2026-10-31 发布准备：[Apps v0.9.8.20](../docs/releases/0.9.8.20.md)，Android `0.9.8.20 (125)`，配套 iPhone build 152。包含认证网关 Push POST 允许规则修正；正式包沿用原签名，后台接听与 OEM 音频仍需真机验证。下文旧候选说明保留历史追溯。
+
 反馈仅支持用户在设置页面主动点击上传，不支持自动上传。客户端在收集日志及进入上传队列前拒绝非手动触发；Relay 接收端也拒绝非手动反馈。本轮为未发布改动，需安装新版并部署 Worker 后生效。[手动反馈策略](../docs/manual-feedback-policy.md)。
 
 2026-10-20 发布：[Apps v0.9.8.8](../docs/releases/0.9.8.8.md)，Android `0.9.8.8 (102)`。推荐 Android 10–13 用户升级；包含配对时钟校正、双卡短信/卡槽、KernelSU Root 通道、私有网段与可配置端口、VoBLE 静音修复。双 SIM、Root 与问题设备双向声音仍待实测；下文旧候选记录为历史依据。

@@ -50,7 +50,9 @@ final class AppUpdatePresenter {
     void showNotes(Runnable after) {
         Activity activity = liveOwner();
         if (activity == null || dialog != null) return;
-        String notes = "• 新增全局后台静音音频保活开关，默认关闭以降低耗电。\n\n"
+        String notes = "• 修复本地网关对来电推送 POST 路径的允许规则，配合新版 iPhone 改善云端来电注册。\n\n"
+                + "• 配套 iPhone build 152 改善后台接听与 VoWLAN 恢复，并避免无区号号码按手机地区误识别。\n\n"
+                + "• 新增全局后台静音音频保活开关，默认关闭以降低耗电。\n\n"
                 + "• 反馈改为手动上传：填写描述与备注后点击上传，不会自动提交。\n\n"
                 + "• VoWLAN 在 Wi-Fi/DHCP 换址后丢弃旧地址并重新验证。\n\n"
                 + "• 所有厂商统一使用最低非零音量，兼容小米等机型通话下行采集。\n\n"

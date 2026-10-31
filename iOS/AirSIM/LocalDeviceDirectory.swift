@@ -29,7 +29,7 @@ final class LocalDeviceDirectory: ObservableObject {
         let epoch: UInt64
         var metadata: VoWLANHealthIdentity
         var verified = true
-        var revision: UInt64 = 0
+        var revision: UInt64 = AgentEventCursor.initial
         var poll: Task<Void, Never>?
         init(endpoint: VoWLANEndpoint, api: AirSIMAPI, credential: VoWLANCredential, epoch: UInt64,
              metadata: VoWLANHealthIdentity) {
@@ -106,6 +106,18 @@ final class LocalDeviceDirectory: ObservableObject {
         guard let credential else { throw VoWLANControllerError.notPaired }
         try await verifyPairing(agentID: agentID, endpoint: endpoint, credential: credential)
     }
+
+    func verifyCandidates(_ candidates: [VoWLANDiscoveredAgent]) async {
+        await withTaskGroup(of: Void.self) { group in
+            for candidate in candidates where PairedAndroidDeviceStore.permits(candidate.id) {
+                if routes(for: candidate.id)?.vowlan == candidate.endpoint { continue }
+                group.addTask { [self] in
+                    guard !Task.isCancelled else { return }
+                    try? await verify(agentID: candidate.id, endpoint: candidate.endpoint)
+                }
+            }
+        }
+    }
     func verifyPairing(agentID: String, endpoint: VoWLANEndpoint, credential: VoWLANCredential) async throws {
         guard !agentID.isEmpty, PairedAndroidDeviceStore.permits(agentID) else { throw VoWLANControllerError.notPaired }
         let token = UUID()
@@ -157,6 +169,19 @@ final class LocalDeviceDirectory: ObservableObject {
     func stop(except agentID: String? = nil) {
         enabled = false
         for (id, peer) in peers where id != agentID { peer.poll?.cancel(); peer.poll = nil }
+    }
+
+    /// Do not wait for a suspended long poll or its exponential backoff on wake.
+    /// Restart with an immediate authenticated snapshot; late old results are
+    /// still rejected by the subscription's cancellation/peer identity checks.
+    func refreshAfterForeground() {
+        guard enabled else { return }
+        for (id, peer) in peers {
+            peer.poll?.cancel()
+            peer.poll = nil
+            peer.revision = AgentEventCursor.initial
+            subscribe(agentID: id)
+        }
     }
 
     private func authenticatedHealth(agentID: String, endpoint: VoWLANEndpoint,

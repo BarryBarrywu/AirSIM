@@ -117,6 +117,12 @@ struct VoWLANHealthIdentity: Decodable {
 }
 
 enum VoWLANNetworkChangePolicy {
+    /// A PushKit ringing notification is not a locked media route. Recovery
+    /// must still discover/authenticate the gateway before the user can answer.
+    static func preservesCallRoute(state: CallLifecycleState, transportLocked: Bool, cloudCallActive: Bool) -> Bool {
+        state == .active || (transportLocked && state.representsCall) || cloudCallActive
+    }
+
     /// A network change invalidates cached LAN liveness, not saved pairing
     /// candidates: RFC1918 addresses can also belong to a VPN.
     static func discardsLocalRoute(host: String, isLocalSubnet: Bool, callInProgress: Bool) -> Bool {

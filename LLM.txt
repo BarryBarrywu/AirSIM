@@ -1,6 +1,8 @@
 AIRSIM PROJECT CONTEXT
 ======================
 
+2026-10-31 release preparation: Apps v0.9.8.20, Android 0.9.8.20 (125), iOS/Watch/Live Activity 0.9.8 (152). See docs/releases/0.9.8.20.md. This turn authorizes committing/pushing VoBLE, GitHub Release and TestFlight upload, not Worker deployment or Linux Agent release. Preserve the existing Latest marker. Use production APNs for TestFlight; upload, processing, beta review and tester availability are separate. Historical authorization below does not authorize future operations.
+
 2026-10-19 release preparation: Apps v0.9.8.1, Android0.9.8.1(95), iOS/Watch/Live Activity0.9.8(95). See docs/releases/0.9.8.1.md. User authorizes commit/push, app Release and Xcode TestFlight upload in this turn; no Relay deployment, workflow or Linux Agent publication. Keep Linux Agentv0.4.6 Latest. Upload/processing/review/tester availability are separate. Historical candidate records below remain for traceability.
 
 2026-10-18 release preparation: Apps v0.9.8, Android/iOS/Watch/Live Activity 0.9.8 (92). See docs/releases/0.9.8.md. Recommend Standalone for Android10–13. Includes local-dual/multi-device ownership, pairing/Verbose updates and Android confirmed hangup receipts. Top local-only control is derived from connection mode, not a second preference. Latest audio/hangup and simultaneous multi-Android physical acceptance remains pending. No Relay deployment, workflow addition or new Linux Agent binary; verify Apple upload, processing and review separately. Older baselines below are historical.

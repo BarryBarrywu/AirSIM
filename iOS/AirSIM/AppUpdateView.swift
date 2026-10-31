@@ -13,6 +13,10 @@ enum AppReleaseNotes {
     // Bundled: showing installed-version notes never needs GitHub, Relay or pairing.
     // Keep this summary in sync with the candidate's source and docs when publishing.
     static let items = [
+        "修复接听后的音频启动被前后台轮询取消；取消后的新通话请求等待旧任务清理再启动。",
+        "改善 VoWLAN 后台恢复：未接听来电允许重新认证，多设备并发验证，回前台立即获取状态快照。",
+        "CallKit 无区号号码按原样显示，不根据接收设备地区猜测国家；明确的 +86、+1 等区号保持不变。",
+        "不同安卓设备的云端 Push 注册独立处理，避免一个离线设备阻塞另一台。",
         "VoWLAN 增加独立“云端通知（APNs）”开关；关闭本地模式不再自动切换到自动模式。",
         "iOS 18 受限通讯录会明确提示，新增联系人会刷新；不再被旧缓存挡住。",
         "短信会话支持日期分组、原生文本选择、多选删除与系统分享，并完整覆盖 Tab 栏。",

@@ -1,4 +1,5 @@
 import CryptoKit
+import CallKit
 import CoreBluetooth
 import AVFoundation
 import XCTest
@@ -6,6 +7,107 @@ import Contacts
 import Network
 import SwiftUI
 @testable import AirSIM
+
+final class CallKitNumberPresentationTests: XCTestCase {
+    @MainActor
+    func testIncomingPushPassesLiteralNumberToSystemWithoutRewritingPayload() throws {
+        let call = try IncomingVoIPCall(userInfo: [
+            "event": "incoming_call", "call_id": "number-fixture", "call_uuid": UUID().uuidString,
+            "number": "13800138000",
+        ])
+        let controller = CallKitController()
+        controller.setEnabled(true)
+        var reported = false
+        controller.reportIncomingPush(call, systemReport: { _, update, _ in
+            reported = true
+            XCTAssertEqual(update.remoteHandle?.type, .generic)
+            XCTAssertEqual(update.remoteHandle?.value, "13800138000")
+            XCTAssertEqual(update.localizedCallerName, "13800138000")
+        }) { _ in }
+        XCTAssertTrue(reported)
+        XCTAssertEqual(controller.currentIncomingPush?.number, "13800138000")
+    }
+
+    @MainActor
+    func testOutgoingCallKitActionKeepsDialTarget() async throws {
+        let controller = CallKitController()
+        controller.setEnabled(true)
+        try await controller.startOutgoingCall(number: "13800138000", systemStart: { action in
+            XCTAssertEqual(action.handle.type, .generic)
+            XCTAssertEqual(action.handle.value, "13800138000")
+        })
+    }
+
+    @MainActor
+    func testVirtualCallsStillUseTheirTitle() throws {
+        let call = try IncomingVoIPCall(userInfo: [
+            "event": "incoming_call", "call_id": "virtual-fixture", "call_uuid": UUID().uuidString,
+            "number": "+8613800138000", "caller_name": "测试通知", "virtual_call": true, "tts_text": "测试",
+        ])
+        let controller = CallKitController()
+        controller.setEnabled(true)
+        var reported = false
+        controller.reportIncomingPush(call, systemReport: { _, update, _ in
+            reported = true
+            XCTAssertEqual(update.remoteHandle?.type, .generic)
+            XCTAssertEqual(update.remoteHandle?.value, "测试通知")
+            XCTAssertEqual(update.localizedCallerName, "测试通知")
+        }) { _ in }
+        XCTAssertTrue(reported)
+    }
+
+    func testNationalNumbersNeverAcquireLocalDeviceCountryCode() {
+        for number in ["13800138000", "010-12345678", "020 7946 0018", "2025550100", "10086", "*123#"] {
+            let update = CallKitNumberPresentation.update(number: number, callerName: nil)
+            XCTAssertEqual(update.remoteHandle?.type, .generic, number)
+            XCTAssertEqual(update.remoteHandle?.value, number)
+            XCTAssertEqual(update.localizedCallerName, number)
+        }
+    }
+
+    func testExplicitInternationalNumbersKeepTheirOwnCountryCode() {
+        for number in ["+8613800138000", "+86 138-0013-8000", "+1 (202) 555-0100", "+442079460018", "+819012345678"] {
+            let update = CallKitNumberPresentation.update(number: number, callerName: nil)
+            XCTAssertEqual(update.remoteHandle?.type, .phoneNumber, number)
+            XCTAssertEqual(update.remoteHandle?.value, number)
+            XCTAssertNil(update.localizedCallerName)
+        }
+    }
+
+    func testNamesAndUnknownNumbersRemainDisplayable() {
+        let named = CallKitNumberPresentation.update(number: "13800138000", callerName: "测试联系人")
+        XCTAssertEqual(named.localizedCallerName, "测试联系人")
+        XCTAssertEqual(named.remoteHandle?.value, "13800138000")
+        for number: String? in [nil, "", "   "] {
+            let unknown = CallKitNumberPresentation.update(number: number, callerName: nil)
+            XCTAssertEqual(unknown.remoteHandle?.type, .generic)
+            XCTAssertEqual(unknown.remoteHandle?.value, "未知号码")
+        }
+    }
+
+    func testNumericCallerNameDoesNotReenableRegionalFormatting() {
+        for name in ["13800138000", "", "  "] {
+            let update = CallKitNumberPresentation.update(number: "13800138000", callerName: name)
+            XCTAssertEqual(update.localizedCallerName, "13800138000")
+            XCTAssertEqual(update.remoteHandle?.type, .generic)
+        }
+    }
+
+    func testDialTargetsAreNeverRewrittenIncludingInternationalAccessPrefixes() {
+        for number in ["13800138000", "008613800138000", "0118613800138000", "+86 138-0013-8000", "*123#"] {
+            XCTAssertEqual(CallKitNumberPresentation.handle(number: number).value, number)
+        }
+        XCTAssertEqual(CallKitNumberPresentation.handle(number: "008613800138000").type, .generic)
+    }
+
+    func testInvalidInternationalTextRemainsLiteral() {
+        for number in ["+", "++8613800138000", "+0123456789", "+8613800138000 ext 12", "+1234567890123456", "匿名来电"] {
+            let handle = CallKitNumberPresentation.handle(number: number)
+            XCTAssertEqual(handle.type, .generic)
+            XCTAssertEqual(handle.value, number)
+        }
+    }
+}
 
 @MainActor
 final class ManualFeedbackPolicyTests: XCTestCase {
@@ -23,6 +125,53 @@ final class ManualFeedbackPolicyTests: XCTestCase {
 }
 
 final class TunnelRecoveryRegressionTests: XCTestCase {
+    func testUnansweredPushDoesNotFreezeLocalRouteRecovery() {
+        XCTAssertFalse(VoWLANNetworkChangePolicy.preservesCallRoute(
+            state: .ringing, transportLocked: false, cloudCallActive: false))
+        XCTAssertTrue(VoWLANNetworkChangePolicy.preservesCallRoute(
+            state: .ringing, transportLocked: true, cloudCallActive: false))
+        XCTAssertTrue(VoWLANNetworkChangePolicy.preservesCallRoute(
+            state: .active, transportLocked: false, cloudCallActive: false))
+        XCTAssertTrue(VoWLANNetworkChangePolicy.preservesCallRoute(
+            state: .ringing, transportLocked: false, cloudCallActive: true))
+    }
+
+    func testCancelledLocalHTTPRequestDoesNotWaitForNetworkTimeout() async throws {
+        // 127/8 is intentionally routed via the Wi-Fi-only path: without task
+        // cancellation it waits for the path deadline (then may try fallback).
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:9/v1/health")!)
+        request.timeoutInterval = 30
+        let entered = expectation(description: "request entered")
+        let cancelled = expectation(description: "request cancelled promptly")
+        let requestTask = Task {
+            entered.fulfill()
+            do {
+                _ = try await WiredHTTPTransport().send(request)
+                XCTFail("Cancelled request must not succeed")
+            } catch is CancellationError {
+                cancelled.fulfill()
+            } catch {
+                XCTFail("Expected cancellation, got \(error)")
+            }
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        requestTask.cancel()
+        await fulfillment(of: [cancelled], timeout: 1)
+        await requestTask.value
+    }
+
+    func testAlreadyCancelledLocalHTTPRequestCannotStart() async throws {
+        let task = Task {
+            while !Task.isCancelled { await Task.yield() }
+            do {
+                _ = try await WiredHTTPTransport().send(URLRequest(url: URL(string: "http://127.0.0.1:9/")!))
+                XCTFail("Already cancelled task must not send")
+            } catch { XCTAssertTrue(error is CancellationError) }
+        }
+        task.cancel()
+        await task.value
+    }
+
     @MainActor
     func testNetworkEpochCancelsOldProbeWithoutClearingNewFlight() async throws {
         let flight = VoWLANProbeFlight()

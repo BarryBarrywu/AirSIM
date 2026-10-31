@@ -133,6 +133,7 @@ final class WiredHTTPTransport: @unchecked Sendable {
     }
 
     func send(_ request: URLRequest, uploadFileURL: URL? = nil) async throws -> WiredHTTPResponse {
+        try Task.checkCancellation()
         guard let url = request.url,
               url.scheme?.lowercased() == "http",
               let host = url.host,
@@ -162,6 +163,7 @@ final class WiredHTTPTransport: @unchecked Sendable {
             return try await sendOnce(
                 request, host: NWEndpoint.Host(host), port: port, body: body, route: .type(.wifi))
         } catch {
+            try Task.checkCancellation()
             guard Self.allowsInterfaceFallback(httpMethod: request.httpMethod),
                   (error as? WiredHTTPError)?.isInterfaceFailure == true else { throw error }
             // A local address can also be reached through a VPN when the phone is not on
@@ -178,18 +180,40 @@ final class WiredHTTPTransport: @unchecked Sendable {
         body: WiredHTTPBody,
         route: WiredInterfaceRoute
     ) async throws -> WiredHTTPResponse {
-        try await withCheckedThrowingContinuation { continuation in
-            let operation = WiredHTTPRequestOperation(
-                request: request,
-                host: host,
-                port: port,
-                body: body,
-                route: route,
-                queue: queue,
-                continuation: continuation
-            )
-            operation.start()
-        }
+        let cancellation = WiredHTTPRequestCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                let operation = WiredHTTPRequestOperation(
+                    request: request, host: host, port: port, body: body,
+                    route: route, queue: queue, continuation: continuation)
+                cancellation.install(operation)
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+}
+
+/// Cancellation may race installation or a network callback. Operation state
+/// and continuation completion remain confined to the operation's serial queue.
+private final class WiredHTTPRequestCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var operation: WiredHTTPRequestOperation?
+    private var cancelled = false
+
+    func install(_ next: WiredHTTPRequestOperation) {
+        lock.lock()
+        operation = next
+        let wasCancelled = cancelled
+        lock.unlock()
+        if wasCancelled { next.cancel() } else { next.start() }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let current = operation
+        lock.unlock()
+        current?.cancel()
     }
 }
 
@@ -282,6 +306,15 @@ private final class WiredHTTPRequestOperation: @unchecked Sendable {
     }
 
     func start() {
+        queue.async { self.startOnQueue() }
+    }
+
+    func cancel() {
+        queue.async { self.finish(.failure(CancellationError())) }
+    }
+
+    private func startOnQueue() {
+        guard !finished else { return }
         // NWConnection 的回调使用弱引用；请求结束前由操作自持有，避免局部变量离开作用域后提前释放。
         keepAlive = self
 #if DEBUG

@@ -161,7 +161,7 @@ final class WatchCallSession: NSObject, ObservableObject {
             activeDialRequestID = requestID
             answered = false
             publishLocalPhase(.connecting)
-            let handle = CXHandle(type: .phoneNumber, value: outgoing.number ?? "AirSIM")
+            let handle = CallKitNumberPresentation.handle(number: outgoing.number, fallback: "AirSIM")
             let action = CXStartCallAction(call: outgoing.uuid, handle: handle)
             isSendingAction = true
             callController.request(CXTransaction(action: action)) { [weak self] error in
@@ -299,9 +299,8 @@ final class WatchCallSession: NSObject, ObservableObject {
                 self.voIPCall = incoming
                 self.resetAnswerState()
                 self.call = payload
-                let update = CXCallUpdate()
-                update.remoteHandle = CXHandle(type: .phoneNumber, value: incoming.number ?? "AirSIM")
-                update.localizedCallerName = incoming.callerName
+                let update = CallKitNumberPresentation.update(
+                    number: incoming.number, callerName: incoming.callerName, fallback: "AirSIM")
                 update.supportsHolding = false
                 update.supportsGrouping = false
                 update.supportsUngrouping = false
@@ -454,12 +453,8 @@ extension WatchCallSession: PKPushRegistryDelegate {
             resetAnswerState()
             errorMessage = nil
 
-            let update = CXCallUpdate()
-            update.remoteHandle = CXHandle(
-                type: incoming.number == nil ? .generic : .phoneNumber,
-                value: incoming.number ?? incoming.displayName
-            )
-            update.localizedCallerName = incoming.callerName
+            let update = CallKitNumberPresentation.update(
+                number: incoming.number, callerName: incoming.callerName, fallback: incoming.displayName)
             update.hasVideo = false
             update.supportsHolding = false
             update.supportsGrouping = false
