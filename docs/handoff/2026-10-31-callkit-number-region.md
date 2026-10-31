@@ -29,7 +29,9 @@
 
 验证状态：iPhone / Watch 模拟器目标和包含 9 个号码专项测试的测试目标完成编译、链接，无编译错误；`git diff --check` 通过。
 
-自动测试尚无通过结论：iOS 27 测试停在启动阶段，重启该模拟器后以 `-testLanguage en -testRegion US` 重试仍未开始执行。独立新建 iOS 26.5 模拟器也未能开始执行。期间 Mac 的 load averages 达到 `363.04 / 230.47 / 124.61`。已中断本次启动的测试命令，不将编译结果算作测试通过，也未关闭其他项目进程。
+最初自动测试停在启动阶段：iOS 27 重启后以 `-testLanguage en -testRegion US` 重试仍未开始执行，独立新建 iOS 26.5 模拟器也未能开始执行。期间 Mac 的 load averages 达到 `363.04 / 230.47 / 124.61`。当时已中断本次启动的测试命令，不将编译结果算作测试通过，也未关闭其他项目进程。
+
+发布阶段补测：英文／美国地区下，新增 9 项号码展示及 CallKit 入口测试全部通过。最终源码完整回归 387 项中 385 通过、2 项失败（多设备链路超时、Watch 占用释放后的接听返回 `stale`），不宣称全量通过。最终复跑及 TestFlight 152 上传回执见发布说明。
 
 日志：`/tmp/airsim-number-presentation-tests.log`、`/tmp/airsim-number-us-tests.log`、`/tmp/airsim-number-us-clean-tests.log`。独立测试模拟器：`DB712BA4-C0B9-4DB1-A3C0-0E7FAC5F9497`（AirSIM-Number-Region，iOS 26.5）。环境恢复后重跑 `CallKitNumberPresentationTests`、`DeviceCallActionRouterTests`、`OtherDeviceCallReminderTests`，再做真机验收。
 
