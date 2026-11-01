@@ -132,7 +132,13 @@ final class CallKitController: NSObject {
     private var incomingDeduplicator = IncomingCallDeduplicator()
     private(set) var currentIncomingPush: IncomingVoIPCall?
 
-    override init() {
+    override convenience init() {
+        self.init(observesSystemCallbacks: true)
+    }
+
+    /// Synthetic report callbacks in unit tests must not race the simulator's
+    /// unrelated provider reset. Production always observes the real provider.
+    init(observesSystemCallbacks: Bool) {
         let configuration = CXProviderConfiguration()
         configuration.maximumCallGroups = 1
         configuration.maximumCallsPerCallGroup = 1
@@ -141,7 +147,7 @@ final class CallKitController: NSObject {
         configuration.includesCallsInRecents = true
         provider = CXProvider(configuration: configuration)
         super.init()
-        provider.setDelegate(self, queue: .main)
+        if observesSystemCallbacks { provider.setDelegate(self, queue: .main) }
     }
 
     deinit {

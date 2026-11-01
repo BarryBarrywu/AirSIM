@@ -131,7 +131,7 @@ final class LocalDeviceDirectoryTests: XCTestCase {
             apiFactory: { AirSIMAPI(route: $0, transport: PeerHTTPTransport()) },
             healthTransport: AuthenticatedHealthPeer.transport)
         try await directory.verifyPairing(agentID: "A", endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
-        let controller = CallKitController()
+        let controller = CallKitController(observesSystemCallbacks: false)
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: path) }
         let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
@@ -218,7 +218,7 @@ final class LocalDeviceDirectoryTests: XCTestCase {
             AirSIMAPI(route: route, transport: GatedPeerHTTPTransport(gate: gate, held: held, heldPath: "/api/calls/answer"))
         }, healthTransport: AuthenticatedHealthPeer.transport)
         try await directory.verifyPairing(agentID: "A", endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
-        let controller = CallKitController()
+        let controller = CallKitController(observesSystemCallbacks: false)
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: path) }
         let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
@@ -272,7 +272,7 @@ final class LocalDeviceDirectoryTests: XCTestCase {
             apiFactory: { AirSIMAPI(route: $0, transport: PeerHTTPTransport()) },
             healthTransport: AuthenticatedHealthPeer.transport)
         try await directory.verifyPairing(agentID: "A", endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
-        let controller = CallKitController()
+        let controller = CallKitController(observesSystemCallbacks: false)
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: path) }
         let model = AppModel(audioController: AudioSessionController(toneOutput: FixtureToneOutput()),
@@ -330,7 +330,7 @@ final class LocalDeviceDirectoryTests: XCTestCase {
             apiFactory: { AirSIMAPI(route: $0, transport: PeerHTTPTransport()) },
             healthTransport: AuthenticatedHealthPeer.transport)
         try await directory.verifyPairing(agentID: "A", endpoint: endpoint, credential: VoWLANCredential(secret: aSecret))
-        let controller = CallKitController(); controller.setEnabled(true)
+        let controller = CallKitController(observesSystemCallbacks: false); controller.setEnabled(true)
         let pushed = IncomingVoIPCall(bluetoothCallID: "cold-call", uuid: UUID(), generation: 7, number: nil, agentID: "A")
         let reported = expectation(description: "push reported before AppModel exists")
         controller.reportIncomingPush(pushed, systemReport: { _, _, done in done(nil) }) { error in

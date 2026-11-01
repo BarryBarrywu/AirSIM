@@ -180,7 +180,7 @@ final class OtherDeviceCallReminderTests: XCTestCase {
         await model.hangup()
     }
     func testLateNativeIncomingReportFailureCannotResetReplacementUUID() async throws {
-        let controller = CallKitController()
+        let controller = CallKitController(observesSystemCallbacks: false)
         controller.setEnabled(true)
         let a = IncomingVoIPCall(bluetoothCallID: "A", uuid: UUID(), generation: 1, number: nil)
         let b = IncomingVoIPCall(bluetoothCallID: "B", uuid: UUID(), generation: 1, number: nil)
